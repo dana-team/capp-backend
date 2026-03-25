@@ -103,7 +103,7 @@ func (m *dexManager) PasswordLogin(ctx context.Context, username, password strin
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB limit
 	if err != nil {
 		return TokenPair{}, fmt.Errorf("dex: reading token response: %w", err)
 	}

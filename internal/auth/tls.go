@@ -21,6 +21,9 @@ func buildTLSTransport(caCertB64 string) (*http.Transport, error) {
 		return nil, fmt.Errorf("CACert: no valid PEM certificates found")
 	}
 	return &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool}, //nolint:gosec
+		TLSClientConfig: &tls.Config{
+			RootCAs:    pool,
+			MinVersion: tls.VersionTLS12,
+		},
 	}, nil
 }
