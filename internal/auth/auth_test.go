@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -253,4 +254,115 @@ func TestNew_UnknownMode(t *testing.T) {
 	cfg := &config.Config{Auth: config.AuthConfig{Mode: "magic"}}
 	_, err := New(cfg)
 	require.Error(t, err)
+}
+
+// ── Dex tests ─────────────────────────────────────────────────────────────────
+
+// mockDexServer returns an httptest.Server that serves:
+//
+//	/.well-known/openid-configuration  — OIDC discovery pointing to itself
+//	/keys                              — empty JWKS (no real tokens needed for factory tests)
+//	/token                             — configurable token response
+func mockDexServer(t *testing.T, tokenStatus int, tokenBody string) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{
+                "issuer": %q,
+                "authorization_endpoint": %q,
+                "token_endpoint": %q,
+                "jwks_uri": %q
+            }`, srv.URL, srv.URL+"/auth", srv.URL+"/token", srv.URL+"/keys")
+		case "/keys":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"keys":[]}`)
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(tokenStatus)
+			fmt.Fprint(w, tokenBody)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestNew_Dex(t *testing.T) {
+	srv := mockDexServer(t, http.StatusOK, `{}`)
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			Mode: "dex",
+			Dex: config.DexConfig{
+				Endpoint:     srv.URL,
+				ClientID:     "capp",
+				ClientSecret: "secret",
+				Scopes:       []string{"openid"},
+			},
+			JWT: config.JWTConfig{SecretKey: "test-key"},
+		},
+	}
+	mgr, err := New(cfg)
+	assert.NoError(t, err)
+	assert.NotNil(t, mgr)
+}
+
+func TestDex_PasswordLogin_BadCredentials(t *testing.T) {
+	srv := mockDexServer(t, http.StatusUnauthorized, `{"error":"invalid_grant","error_description":"Invalid credentials"}`)
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			Mode: "dex",
+			Dex: config.DexConfig{
+				Endpoint:     srv.URL,
+				ClientID:     "capp",
+				ClientSecret: "secret",
+				Scopes:       []string{"openid"},
+			},
+			JWT: config.JWTConfig{SecretKey: "test-key"},
+		},
+	}
+	mgr, err := New(cfg)
+	require.NoError(t, err)
+
+	_, err = mgr.PasswordLogin(context.Background(), "user", "wrongpassword")
+	assert.ErrorIs(t, err, ErrBadCredentials)
+}
+
+func TestDex_Login_NotSupported(t *testing.T) {
+	srv := mockDexServer(t, http.StatusOK, `{}`)
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			Mode: "dex",
+			Dex: config.DexConfig{
+				Endpoint:     srv.URL,
+				ClientID:     "capp",
+				ClientSecret: "secret",
+				Scopes:       []string{"openid"},
+			},
+			JWT: config.JWTConfig{SecretKey: "test-key"},
+		},
+	}
+	mgr, err := New(cfg)
+	require.NoError(t, err)
+
+	_, err = mgr.Login(context.Background(), "cluster", "token")
+	assert.ErrorIs(t, err, ErrNotSupported)
+}
+
+func TestDex_PasswordLogin_NotSupported_On_JWT(t *testing.T) {
+	// jwtManager should return ErrNotSupported for PasswordLogin
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			Mode: "jwt",
+			JWT:  config.JWTConfig{SecretKey: "test-key"},
+		},
+	}
+	mgr, err := New(cfg)
+	require.NoError(t, err)
+
+	_, err = mgr.PasswordLogin(context.Background(), "user", "pass")
+	assert.ErrorIs(t, err, ErrNotSupported)
 }
