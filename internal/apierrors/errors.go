@@ -214,5 +214,5 @@ func RespondCreated(c *gin.Context, data any) {
 
 // RespondNoContent writes a 204 response with no body.
 func RespondNoContent(c *gin.Context) {
-	c.Status(http.StatusNoContent)
+	c.AbortWithStatus(http.StatusNoContent)
 }
