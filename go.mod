@@ -3,6 +3,7 @@ module github.com/dana-team/capp-backend
 go 1.25.5
 
 require (
+	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/dana-team/container-app-operator v0.0.0
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -36,7 +37,6 @@ require (
 	github.com/cisco-open/operator-tools v0.37.0 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
 	github.com/cloudwego/iasm v0.2.0 // indirect
-	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
 	github.com/crossplane/crossplane-runtime/v2 v2.0.0 // indirect
 	github.com/crossplane/upjet/v2 v2.0.1-0.20251009193737-0b7f640373c8 // indirect
 	github.com/dana-team/nfspvc-operator v0.5.2 // indirect
