@@ -10,6 +10,7 @@ var validAuthModes = map[string]struct{}{
 	"passthrough": {},
 	"jwt":         {},
 	"static":      {},
+	"dex":         {},
 }
 
 // Validate checks the fully-loaded Config for semantic errors that cannot be
@@ -89,7 +90,7 @@ func validateAuth(auth *AuthConfig) []error {
 
 	if _, ok := validAuthModes[auth.Mode]; !ok {
 		errs = append(errs, fmt.Errorf(
-			"config: auth.mode %q is not valid; must be one of: passthrough, jwt, static",
+			"config: auth.mode %q is not valid; must be one of: passthrough, jwt, static, dex",
 			auth.Mode,
 		))
 		// Cannot validate mode-specific fields if mode is unknown.
@@ -108,6 +109,30 @@ func validateAuth(auth *AuthConfig) []error {
 		if len(auth.Static.APIKeys) == 0 {
 			errs = append(errs, errors.New(
 				"config: auth.static.apiKeys must contain at least one key when auth.mode is 'static'",
+			))
+		}
+	case "dex":
+		if auth.Dex.Endpoint == "" {
+			errs = append(errs, errors.New(
+				"config: auth.dex.endpoint is required when auth.mode is 'dex'",
+			))
+		}
+		if auth.Dex.ClientID == "" {
+			errs = append(errs, errors.New(
+				"config: auth.dex.clientId is required when auth.mode is 'dex'",
+			))
+		}
+		if auth.Dex.ClientSecret == "" {
+			errs = append(errs, errors.New(
+				"config: auth.dex.clientSecret is required when auth.mode is 'dex'; "+
+					"set via CAPP_AUTH_DEX_CLIENTSECRET environment variable",
+			))
+		}
+		if auth.JWT.SecretKey == "" {
+			errs = append(errs, errors.New(
+				"config: auth.jwt.secretKey is required when auth.mode is 'dex' "+
+					"(used for signing backend session JWTs); "+
+					"set via CAPP_AUTH_JWT_SECRETKEY environment variable",
 			))
 		}
 	}

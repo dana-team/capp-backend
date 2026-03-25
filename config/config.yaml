@@ -26,6 +26,17 @@ server:
     # - "https://console.example.com"
 
 # ── Authentication ────────────────────────────────────────────────────────────
+# Dex OIDC auth mode example:
+# Requires Dex static client with grantTypes: [password] enabled.
+# auth:
+#   mode: dex
+#   dex:
+#     endpoint: https://dex.example.com
+#     clientId: capp-backend
+#     clientSecret: ""  # inject via CAPP_AUTH_DEX_CLIENTSECRET
+#     scopes: [openid, profile, email]
+#   jwt:
+#     secretKey: ""  # inject via CAPP_AUTH_JWT_SECRETKEY
 auth:
   # mode controls how incoming requests are authenticated. Options:
   #

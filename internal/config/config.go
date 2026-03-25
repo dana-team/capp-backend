@@ -58,6 +58,31 @@ type StaticConfig struct {
 	APIKeys []string `mapstructure:"apiKeys"`
 }
 
+// DexConfig holds settings for the Dex OIDC auth mode.
+// This mode exchanges username/password via OIDC ROPC against a Dex instance
+// and issues backend-managed JWT sessions. Kubernetes API calls use the
+// cluster's pre-configured service account — the user's Dex identity is NOT
+// forwarded to K8s.
+type DexConfig struct {
+	// Endpoint is the Dex issuer URL, e.g. "https://dex.example.com".
+	// OIDC discovery is fetched from {Endpoint}/.well-known/openid-configuration.
+	Endpoint string `mapstructure:"endpoint"`
+
+	// ClientID is the OAuth2 client ID registered in Dex for capp-backend.
+	ClientID string `mapstructure:"clientId"`
+
+	// ClientSecret is the OAuth2 client secret. Inject via CAPP_AUTH_DEX_CLIENTSECRET.
+	ClientSecret string `mapstructure:"clientSecret"`
+
+	// Scopes is the list of OIDC scopes requested during login.
+	// Default: ["openid", "profile", "email"].
+	Scopes []string `mapstructure:"scopes"`
+
+	// CACert is a base64-encoded PEM CA bundle for TLS to the Dex server.
+	// If empty, the system root CAs are used.
+	CACert string `mapstructure:"caCert"`
+}
+
 // RateLimitConfig controls per-IP request rate limiting.
 type RateLimitConfig struct {
 	// Enabled toggles rate limiting globally. Default: true.
@@ -79,10 +104,12 @@ type AuthConfig struct {
 	//   jwt         — a login endpoint issues short-lived JWTs backed by a
 	//                 server-side session store.
 	//   static      — a fixed list of API keys (development only).
+	//   dex         — OIDC ROPC login via a Dex instance; backend issues JWTs.
 	// Default: "passthrough".
 	Mode      string          `mapstructure:"mode"`
 	JWT       JWTConfig       `mapstructure:"jwt"`
 	Static    StaticConfig    `mapstructure:"static"`
+	Dex       DexConfig       `mapstructure:"dex"`
 	RateLimit RateLimitConfig `mapstructure:"rateLimit"`
 }
 
@@ -248,6 +275,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.mode", "passthrough")
 	v.SetDefault("auth.jwt.tokenTTLMinutes", 60)
 	v.SetDefault("auth.jwt.refreshTTLMinutes", 1440)
+	v.SetDefault("auth.dex.scopes", []string{"openid", "profile", "email"})
 	v.SetDefault("auth.rateLimit.enabled", true)
 	v.SetDefault("auth.rateLimit.requestsPerSecond", 20.0)
 	v.SetDefault("auth.rateLimit.burst", 40)
