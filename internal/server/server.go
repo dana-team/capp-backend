@@ -76,7 +76,7 @@ func New(
 
 	// ── Auth endpoints ────────────────────────────────────────────────────────
 	authGroup := engine.Group("/api/v1/auth")
-	registerAuthRoutes(authGroup, authMgr)
+	registerAuthRoutes(authGroup, authMgr, cfg.Auth.Mode)
 
 	// ── Cluster endpoints (listing only — no cluster middleware needed) ────────
 	clusterListGroup := engine.Group("/api/v1/clusters")

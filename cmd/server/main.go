@@ -33,6 +33,12 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// cleanupStarter is implemented by auth managers that run a background
+// session garbage collector (jwt and dex modes).
+type cleanupStarter interface {
+	StartCleanup(context.Context)
+}
+
 func main() {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "Path to the YAML configuration file")
@@ -87,9 +93,9 @@ func main() {
 		logger.Fatal("failed to initialise auth manager", zap.Error(err))
 	}
 
-	// In JWT mode, start the session garbage collector.
-	if jwtMgr, ok := authMgr.(interface{ StartCleanup(context.Context) }); ok {
-		go jwtMgr.StartCleanup(rootCtx)
+	// In JWT and dex modes, start the session garbage collector.
+	if cs, ok := authMgr.(cleanupStarter); ok {
+		go cs.StartCleanup(rootCtx)
 	}
 
 	// ── 6. Build resource registry ────────────────────────────────────────────
