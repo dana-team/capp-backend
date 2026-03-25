@@ -64,6 +64,11 @@ func (m *staticManager) Login(_ context.Context, _ string, _ string) (TokenPair,
 	return TokenPair{}, ErrNotSupported
 }
 
+// PasswordLogin is not supported in static mode.
+func (m *staticManager) PasswordLogin(_ context.Context, _, _ string) (TokenPair, error) {
+	return TokenPair{}, ErrNotSupported
+}
+
 // Refresh is not supported in static mode.
 func (m *staticManager) Refresh(_ context.Context, _ string) (TokenPair, error) {
 	return TokenPair{}, ErrNotSupported

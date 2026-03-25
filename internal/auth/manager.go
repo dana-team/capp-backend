@@ -1,5 +1,5 @@
-// Package auth implements the AuthManager interface and its three concrete
-// modes: passthrough, jwt, and static.
+// Package auth implements the AuthManager interface and its four concrete
+// modes: passthrough, jwt, static, and dex.
 //
 // Mode selection is determined at startup by the auth.mode config value and
 // never changes at runtime. All implementations are safe for concurrent use.
@@ -17,6 +17,13 @@
 //	              cluster token is never sent over the wire again.
 //
 //	static      — a hard-coded list of API keys, for development/CI only.
+//
+//	dex         — POST /api/v1/auth/login accepts username + password, which
+//	              are exchanged for an OIDC ID token via the Resource Owner
+//	              Password Credentials grant against a Dex instance. On success
+//	              a backend-managed JWT session is created and a TokenPair is
+//	              returned. Kubernetes API calls use the cluster's pre-configured
+//	              service-account token.
 package auth
 
 import (
@@ -44,6 +51,10 @@ var (
 
 	// ErrInvalidToken is returned when a JWT signature or format is invalid.
 	ErrInvalidToken = errors.New("token is invalid")
+
+	// ErrBadCredentials is returned by PasswordLogin when the identity provider
+	// rejects the provided username/password combination.
+	ErrBadCredentials = errors.New("invalid username or password")
 )
 
 // ── Core types ────────────────────────────────────────────────────────────────
@@ -90,6 +101,13 @@ type AuthManager interface {
 	// Returns ErrNotSupported in passthrough and static modes.
 	Login(ctx context.Context, clusterName string, token string) (TokenPair, error)
 
+	// PasswordLogin authenticates a user with username and password against an
+	// external identity provider (dex mode only).
+	//
+	// Returns ErrNotSupported in passthrough and static modes.
+	// Returns ErrBadCredentials if the provider rejects the credentials.
+	PasswordLogin(ctx context.Context, username, password string) (TokenPair, error)
+
 	// Refresh exchanges a valid refresh token for a new TokenPair (jwt mode only).
 	//
 	// Returns ErrNotSupported in passthrough and static modes.
@@ -125,6 +143,9 @@ func New(cfg *config.Config) (AuthManager, error) {
 
 	case "static":
 		return newStaticManager(cfg.Auth.Static.APIKeys), nil
+
+	case "dex":
+		return newDexManager(cfg)
 
 	default:
 		// Validate() should catch this before we reach New(), but guard anyway.

@@ -54,6 +54,11 @@ func (m *passthroughManager) Login(_ context.Context, _ string, _ string) (Token
 	return TokenPair{}, ErrNotSupported
 }
 
+// PasswordLogin is not supported in passthrough mode.
+func (m *passthroughManager) PasswordLogin(_ context.Context, _, _ string) (TokenPair, error) {
+	return TokenPair{}, ErrNotSupported
+}
+
 // Refresh is not supported in passthrough mode.
 func (m *passthroughManager) Refresh(_ context.Context, _ string) (TokenPair, error) {
 	return TokenPair{}, ErrNotSupported
