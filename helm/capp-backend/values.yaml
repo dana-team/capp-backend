@@ -1,0 +1,190 @@
+# Default values for the capp-backend Helm chart.
+# Override these in a separate values file or with --set on the CLI.
+
+# ── Deployment mode ───────────────────────────────────────────────────────────
+# deployAs controls whether the backend is deployed as a standard Kubernetes
+# Deployment or as a Capp resource managed by the CAPP operator.
+#
+#   deployment — standard Kubernetes Deployment + Service. Works on any cluster
+#                and does not require the CAPP operator to be installed.
+#
+#   capp       — deploys as a rcs.dana.io/v1alpha1 Capp. The CAPP operator
+#                manages autoscaling (Knative), optional TLS (cert-manager),
+#                custom hostname (DNS), and logging. Requires the operator.
+#
+deployAs: deployment   # "deployment" | "capp"
+
+# ── Image ─────────────────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/dana-team/capp-backend
+  tag: ""        # defaults to .Chart.AppVersion
+  pullPolicy: Always
+
+imagePullSecrets: []
+
+# ── Replica count (deployment mode only) ─────────────────────────────────────
+# In "capp" mode, autoscaling is managed by Knative via the CAPP operator.
+replicaCount: 1
+
+# ── Service ───────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 8080
+
+# ── Ingress (deployment mode only) ───────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: capp-backend.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ── Backend configuration ─────────────────────────────────────────────────────
+# These values are rendered into the ConfigMap that the server reads at startup.
+# Sensitive values (tokens, JWT secret) go in the secret block below.
+config:
+  server:
+    port: 8080
+    readTimeoutSeconds: 30
+    writeTimeoutSeconds: 30
+    idleTimeoutSeconds: 60
+    corsAllowedOrigins: []
+
+  auth:
+    mode: "passthrough"
+    jwt:
+      tokenTTLMinutes: 60
+      refreshTTLMinutes: 1440
+    rateLimit:
+      enabled: true
+      requestsPerSecond: 20
+      burst: 40
+
+  logging:
+    level: "info"
+    format: "json"
+    addCallerInfo: false
+
+  metrics:
+    enabled: true
+    path: "/metrics"
+
+  tracing:
+    enabled: false
+    otlpEndpoint: ""
+    serviceName: "capp-backend"
+    sampleRate: 0.1
+
+  # Cluster entries. At least one is required.
+  # Tokens must be provided via the secret block, not here.
+  clusters:
+    - name: "default"
+      displayName: "Default Cluster"
+      credential:
+        inline:
+          apiServer: "https://kubernetes.default.svc"
+          # caCert: ""    # base64 PEM — omit for in-cluster service account
+          token: ""       # overridden by secret.clusterTokens[0]
+      allowedNamespaces: []
+
+  resources:
+    namespaces:
+      enabled: true
+    capps:
+      enabled: true
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# These values are placed in a Kubernetes Secret and injected as environment
+# variables. They MUST be overridden at install time — never leave defaults.
+secret:
+  # JWT signing secret. Required when config.auth.mode is "jwt".
+  # Override: --set secret.jwtSecretKey="$(openssl rand -hex 32)"
+  jwtSecretKey: ""
+
+  # Cluster bearer tokens. Each entry corresponds to the cluster at the same
+  # index in config.clusters[]. Injected as CAPP_CLUSTERS_<N>_CREDENTIAL_INLINE_TOKEN.
+  clusterTokens:
+    - ""
+
+# ── Capp-mode specific settings ───────────────────────────────────────────────
+# These settings are only used when deployAs: capp.
+capp:
+  # scaleMetric used by the CAPP operator for autoscaling.
+  scaleMetric: "concurrency"
+
+  # state: enabled | disabled
+  state: "enabled"
+
+  # route configures the external hostname. Optional.
+  route:
+    enabled: false
+    hostname: ""
+    tlsEnabled: true
+    routeTimeoutSeconds: 30
+
+  # log configures Elasticsearch log shipping. Optional.
+  log:
+    enabled: false
+    type: "elastic"
+    host: ""
+    index: ""
+    user: ""
+    passwordSecret: ""
+
+# ── Resource requests/limits ──────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+# ── Pod security ──────────────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]
+
+# ── Probes ────────────────────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# ── ServiceMonitor (Prometheus Operator) ──────────────────────────────────────
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: "30s"
+  path: "/metrics"
+  labels: {}
+
+# ── Node selection ────────────────────────────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ── Namespace ─────────────────────────────────────────────────────────────────
+# The Kubernetes namespace to deploy into.
+namespace: capp-system

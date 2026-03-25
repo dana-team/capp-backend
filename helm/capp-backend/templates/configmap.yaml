@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "capp-backend.configMapName" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      port: {{ .Values.config.server.port }}
+      readTimeoutSeconds: {{ .Values.config.server.readTimeoutSeconds }}
+      writeTimeoutSeconds: {{ .Values.config.server.writeTimeoutSeconds }}
+      idleTimeoutSeconds: {{ .Values.config.server.idleTimeoutSeconds }}
+      corsAllowedOrigins:
+        {{- toYaml .Values.config.server.corsAllowedOrigins | nindent 8 }}
+
+    auth:
+      mode: {{ .Values.config.auth.mode | quote }}
+      jwt:
+        secretKey: ""
+        tokenTTLMinutes: {{ .Values.config.auth.jwt.tokenTTLMinutes }}
+        refreshTTLMinutes: {{ .Values.config.auth.jwt.refreshTTLMinutes }}
+      rateLimit:
+        enabled: {{ .Values.config.auth.rateLimit.enabled }}
+        requestsPerSecond: {{ .Values.config.auth.rateLimit.requestsPerSecond }}
+        burst: {{ .Values.config.auth.rateLimit.burst }}
+
+    logging:
+      level: {{ .Values.config.logging.level | quote }}
+      format: {{ .Values.config.logging.format | quote }}
+      addCallerInfo: {{ .Values.config.logging.addCallerInfo }}
+
+    metrics:
+      enabled: {{ .Values.config.metrics.enabled }}
+      path: {{ .Values.config.metrics.path | quote }}
+
+    tracing:
+      enabled: {{ .Values.config.tracing.enabled }}
+      otlpEndpoint: {{ .Values.config.tracing.otlpEndpoint | quote }}
+      serviceName: {{ .Values.config.tracing.serviceName | quote }}
+      sampleRate: {{ .Values.config.tracing.sampleRate }}
+
+    clusters:
+      {{- range $i, $cluster := .Values.config.clusters }}
+      - name: {{ $cluster.name | quote }}
+        displayName: {{ $cluster.displayName | quote }}
+        credential:
+          {{- if $cluster.credential.kubeconfigPath }}
+          kubeconfigPath: {{ $cluster.credential.kubeconfigPath | quote }}
+          {{- else if $cluster.credential.inline }}
+          inline:
+            apiServer: {{ $cluster.credential.inline.apiServer | quote }}
+            {{- if $cluster.credential.inline.caCert }}
+            caCert: {{ $cluster.credential.inline.caCert | quote }}
+            {{- end }}
+            token: ""
+          {{- end }}
+        allowedNamespaces:
+          {{- toYaml $cluster.allowedNamespaces | nindent 10 }}
+      {{- end }}
+
+    resources:
+      namespaces:
+        enabled: {{ .Values.config.resources.namespaces.enabled }}
+      capps:
+        enabled: {{ .Values.config.resources.capps.enabled }}

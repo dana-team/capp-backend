@@ -1,0 +1,170 @@
+# CI: Release workflow
+# Triggered when a semver tag (v*.*.*) is pushed. Builds and pushes the Docker
+# image and the Helm chart OCI artifact, then creates a GitHub Release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write       # create GitHub Release
+  packages: write       # push to GHCR
+  id-token: write       # cosign OIDC signing (optional)
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: dana-team/capp-backend
+  CHART_NAME: capp-backend
+
+jobs:
+  # ── Run tests before releasing ────────────────────────────────────────────────
+  test:
+    name: Run tests
+    uses: ./.github/workflows/test.yaml
+
+  # ── Build & push Docker image ─────────────────────────────────────────────────
+  docker:
+    name: Build & push Docker image
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # ── Publish Helm chart to GHCR OCI registry ───────────────────────────────────
+  helm:
+    name: Package & push Helm chart
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Chart.yaml version
+        run: |
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.VERSION }}/" helm/${{ env.CHART_NAME }}/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" helm/${{ env.CHART_NAME }}/Chart.yaml
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+          helm registry login ${{ env.REGISTRY }} \
+            --username ${{ github.actor }} \
+            --password-stdin
+
+      - name: Package chart
+        run: |
+          helm package helm/${{ env.CHART_NAME }} \
+            --version ${{ steps.version.outputs.VERSION }} \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --destination /tmp/charts/
+
+      - name: Push chart to GHCR OCI
+        run: |
+          helm push /tmp/charts/${{ env.CHART_NAME }}-${{ steps.version.outputs.VERSION }}.tgz \
+            oci://${{ env.REGISTRY }}/dana-team/charts
+
+  # ── Create GitHub Release ─────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [docker, helm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog from commits since last tag
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            LOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
+          else
+            LOG=$(git log --pretty=format:"- %s (%h)")
+          fi
+          echo "CHANGELOG<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: "Release ${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## capp-backend ${{ steps.version.outputs.VERSION }}
+
+            ### Docker image
+            ```
+            docker pull ghcr.io/dana-team/capp-backend:${{ steps.version.outputs.VERSION }}
+            ```
+
+            ### Helm chart
+            ```bash
+            helm install capp-backend \
+              oci://ghcr.io/dana-team/charts/capp-backend \
+              --version ${{ steps.version.outputs.VERSION }} \
+              --set secret.jwtSecretKey="<your-secret>" \
+              --set config.clusters[0].name="production" \
+              --set config.clusters[0].credential.inline.apiServer="https://api.your-cluster.com" \
+              --set secret.clusterTokens[0]="<your-cluster-token>"
+            ```
+
+            ### What's changed
+            ${{ steps.changelog.outputs.CHANGELOG }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}

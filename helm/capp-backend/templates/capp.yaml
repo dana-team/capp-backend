@@ -1,0 +1,77 @@
+{{- if eq .Values.deployAs "capp" }}
+# Deploys capp-backend as a rcs.dana.io/v1alpha1 Capp resource.
+# The CAPP operator handles:
+#   - Autoscaling via Knative (scale-to-zero enabled by default)
+#   - Optional custom hostname + TLS via cert-manager
+#   - Optional Elasticsearch log shipping via SyslogNG
+#
+# Prerequisites: the container-app-operator must be installed on the cluster.
+# Install guide: https://github.com/dana-team/container-app-operator
+apiVersion: rcs.dana.io/v1alpha1
+kind: Capp
+metadata:
+  name: {{ include "capp-backend.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+spec:
+  scaleMetric: {{ .Values.capp.scaleMetric }}
+  state: {{ .Values.capp.state }}
+
+  configurationSpec:
+    template:
+      spec:
+        containers:
+          - name: capp-backend
+            image: {{ include "capp-backend.image" . }}
+            args:
+              - "--config=/etc/capp/config.yaml"
+            ports:
+              - containerPort: {{ .Values.config.server.port }}
+                protocol: TCP
+            env:
+              - name: CAPP_AUTH_JWT_SECRETKEY
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" . }}
+                    key: jwtSecretKey
+              {{- range $i, $_ := .Values.secret.clusterTokens }}
+              - name: CAPP_CLUSTERS_{{ $i }}_CREDENTIAL_INLINE_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" $ }}
+                    key: clusterToken-{{ $i }}
+              {{- end }}
+            volumeMounts:
+              - name: config
+                mountPath: /etc/capp
+                readOnly: true
+            livenessProbe:
+              {{- toYaml .Values.livenessProbe | nindent 14 }}
+            readinessProbe:
+              {{- toYaml .Values.readinessProbe | nindent 14 }}
+            resources:
+              {{- toYaml .Values.resources | nindent 14 }}
+            securityContext:
+              {{- toYaml .Values.containerSecurityContext | nindent 14 }}
+        volumes:
+          - name: config
+            configMap:
+              name: {{ include "capp-backend.configMapName" . }}
+
+  {{- if .Values.capp.route.enabled }}
+  routeSpec:
+    hostname: {{ .Values.capp.route.hostname | quote }}
+    tlsEnabled: {{ .Values.capp.route.tlsEnabled }}
+    routeTimeoutSeconds: {{ .Values.capp.route.routeTimeoutSeconds }}
+  {{- end }}
+
+  {{- if .Values.capp.log.enabled }}
+  logSpec:
+    type: {{ .Values.capp.log.type | quote }}
+    host: {{ .Values.capp.log.host | quote }}
+    index: {{ .Values.capp.log.index | quote }}
+    user: {{ .Values.capp.log.user | quote }}
+    passwordSecret: {{ .Values.capp.log.passwordSecret | quote }}
+  {{- end }}
+{{- end }}

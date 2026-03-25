@@ -1,0 +1,79 @@
+{{- if eq .Values.deployAs "deployment" }}
+# Standard Kubernetes Deployment — used when deployAs: deployment (default).
+# For Capp-managed deployment, set deployAs: capp and see capp.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "capp-backend.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "capp-backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "capp-backend.selectorLabels" . | nindent 8 }}
+        {{- include "capp-backend.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: capp-backend
+          image: {{ include "capp-backend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--config=/etc/capp/config.yaml"
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.server.port }}
+              protocol: TCP
+          env:
+            - name: CAPP_AUTH_JWT_SECRETKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" . }}
+                  key: jwtSecretKey
+            {{- range $i, $_ := .Values.secret.clusterTokens }}
+            - name: CAPP_CLUSTERS_{{ $i }}_CREDENTIAL_INLINE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" $ }}
+                  key: clusterToken-{{ $i }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/capp
+              readOnly: true
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "capp-backend.configMapName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

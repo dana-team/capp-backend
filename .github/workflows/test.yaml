@@ -1,0 +1,150 @@
+# CI: Test workflow
+# Runs on every push and pull request. Performs static analysis, unit tests,
+# and Helm chart linting. No cluster is required.
+name: Test
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "helm/**"
+      - ".github/workflows/test.yaml"
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Go: lint + test ──────────────────────────────────────────────────────────
+  go:
+    name: Go lint & test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.5
+          args: --timeout=5m
+
+      - name: Unit tests (with race detector)
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Coverage report
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Go: build check ──────────────────────────────────────────────────────────
+  build:
+    name: Build binary
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o /dev/null ./cmd/server/...
+
+  # ── Helm: lint ───────────────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm chart lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.0
+
+      - name: Lint chart (deployment mode)
+        run: |
+          helm lint helm/capp-backend \
+            --set deployAs=deployment \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com
+
+      - name: Lint chart (capp mode)
+        run: |
+          helm lint helm/capp-backend \
+            --set deployAs=capp \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com
+
+      - name: Template chart (deployment mode)
+        run: |
+          helm template capp-backend helm/capp-backend \
+            --set deployAs=deployment \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com \
+            --set secret.jwtSecretKey=test-secret \
+            > /dev/null
+
+      - name: Template chart (capp mode)
+        run: |
+          helm template capp-backend helm/capp-backend \
+            --set deployAs=capp \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com \
+            --set secret.jwtSecretKey=test-secret \
+            > /dev/null
+
+  # ── Docker: build check (no push) ────────────────────────────────────────────
+  docker-build:
+    name: Docker build (no push)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: ghcr.io/dana-team/capp-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

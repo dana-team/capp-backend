@@ -1,0 +1,151 @@
+# capp-backend configuration
+# All values can be overridden by environment variables prefixed with CAPP_
+# using underscores as separators, e.g.:
+#   server.port          → CAPP_SERVER_PORT
+#   auth.jwt.secretKey   → CAPP_AUTH_JWT_SECRETKEY
+#   clusters[0].credential.inline.token → CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
+
+# ── HTTP Server ───────────────────────────────────────────────────────────────
+server:
+  # TCP port the backend listens on.
+  port: 8080
+
+  # Maximum duration (seconds) for reading a complete request including body.
+  readTimeoutSeconds: 30
+
+  # Maximum duration (seconds) before timing out a response write.
+  writeTimeoutSeconds: 30
+
+  # Maximum idle connection duration (seconds) when keep-alives are enabled.
+  idleTimeoutSeconds: 60
+
+  # Origins allowed to make cross-origin requests. In production, list only
+  # the frontend URLs. Use ["*"] only for local development.
+  corsAllowedOrigins:
+    - "http://localhost:5173"   # capp-frontend Vite dev server
+    # - "https://console.example.com"
+
+# ── Authentication ────────────────────────────────────────────────────────────
+auth:
+  # mode controls how incoming requests are authenticated. Options:
+  #
+  #   passthrough (recommended for initial deployment)
+  #     The Authorization: Bearer <token> header from the client is forwarded
+  #     directly to the Kubernetes API server. No server-side session is
+  #     created. This preserves the current frontend security model and
+  #     requires no key management on the backend.
+  #
+  #   jwt (recommended for production multi-tenant deployments)
+  #     POST /api/v1/auth/login accepts a cluster name + raw Kubernetes token.
+  #     The backend validates the token, creates a server-side session, and
+  #     returns a short-lived JWT. Subsequent requests carry only the JWT.
+  #     The cluster token never travels over the wire again after login.
+  #     Requires auth.jwt.secretKey to be set (use the env var).
+  #
+  #   static (development / CI only)
+  #     A fixed list of API keys in auth.static.apiKeys. The backend applies
+  #     no authentication against the cluster — suitable for local dev with
+  #     kind or minikube clusters that don't enforce RBAC.
+  mode: "passthrough"
+
+  jwt:
+    # HMAC signing secret for access and refresh JWTs. REQUIRED in jwt mode.
+    # Do NOT put a real value here — inject via CAPP_AUTH_JWT_SECRETKEY.
+    secretKey: ""
+
+    # Lifetime of an access JWT in minutes. Default: 60.
+    tokenTTLMinutes: 60
+
+    # Lifetime of a refresh JWT in minutes. Default: 1440 (24 hours).
+    refreshTTLMinutes: 1440
+
+  static:
+    # List of accepted bearer tokens when mode is "static".
+    apiKeys: []
+    # apiKeys:
+    #   - "local-dev-key"
+
+  rateLimit:
+    # Toggle per-IP rate limiting globally.
+    enabled: true
+
+    # Sustained request rate per second (token bucket refill rate).
+    requestsPerSecond: 20
+
+    # Maximum burst above the sustained rate.
+    burst: 40
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  # Minimum log level. One of: debug, info, warn, error.
+  level: "info"
+
+  # Log encoder format. One of:
+  #   json    — structured JSON (recommended for production / log aggregation)
+  #   console — human-readable (recommended for local development)
+  format: "json"
+
+  # Include the file:line caller location in each log entry.
+  addCallerInfo: false
+
+# ── Prometheus Metrics ────────────────────────────────────────────────────────
+metrics:
+  # Toggle the Prometheus scrape endpoint.
+  enabled: true
+
+  # HTTP path at which Prometheus scrapes metrics.
+  path: "/metrics"
+
+# ── OpenTelemetry Tracing ─────────────────────────────────────────────────────
+tracing:
+  # Toggle OTLP trace export. Requires otlpEndpoint to be set.
+  enabled: false
+
+  # gRPC endpoint of the OTLP collector, e.g. "localhost:4317".
+  otlpEndpoint: ""
+
+  # service.name resource attribute attached to every span.
+  serviceName: "capp-backend"
+
+  # Fraction of traces to sample, in [0.0, 1.0].
+  # 1.0 = always sample (use in development), 0.1 = 10% (typical production).
+  sampleRate: 0.1
+
+# ── Clusters ──────────────────────────────────────────────────────────────────
+# Each entry defines one managed Kubernetes/OpenShift cluster. The cluster's
+# name appears in every API path: /api/v1/clusters/{name}/...
+#
+# Credential: set exactly ONE of kubeconfigPath or inline.
+# Sensitive values (token, secretKey) must be injected via environment variables
+# — never committed in this file.
+clusters:
+  - name: "local"
+    displayName: "Local (kind)"
+    credential:
+      # Option A: path to a kubeconfig file (mounted from a Secret in production).
+      kubeconfigPath: ""
+      # Option B: inline credentials.
+      inline:
+        apiServer: "https://127.0.0.1:45883"
+        # caCert: ""        # base64-encoded PEM CA. Omit to skip TLS verification.
+        token: ""           # inject via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
+    # allowedNamespaces restricts which namespaces are visible through this
+    # cluster entry. Empty list means all namespaces are accessible.
+    allowedNamespaces: []
+
+  # Production cluster example (comment out above and fill in below):
+  # - name: "production"
+  #   displayName: "Production"
+  #   credential:
+  #     kubeconfigPath: "/etc/capp/kubeconfigs/production.yaml"
+  #   allowedNamespaces: []
+
+# ── Resource Handlers ─────────────────────────────────────────────────────────
+# Feature flags to enable/disable individual resource handlers. Disabling a
+# handler removes its routes entirely — the server behaves as if those
+# endpoints do not exist.
+resources:
+  namespaces:
+    enabled: true
+  capps:
+    enabled: true

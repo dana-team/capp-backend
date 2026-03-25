@@ -1,0 +1,18 @@
+{{/* The Service is created for both deployAs modes so Ingress and
+     ServiceMonitor can always reference the same DNS name. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "capp-backend.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "capp-backend.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

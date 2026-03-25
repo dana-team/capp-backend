@@ -1,0 +1,24 @@
+apiVersion: v2
+name: capp-backend
+description: |
+  Helm chart for the CAPP Backend — a secure API gateway that sits between
+  the capp-frontend / container-app-console-plugin and one or more
+  Kubernetes/OpenShift clusters.
+
+  The chart supports two deployment modes controlled by deployAs:
+    deployment — standard Kubernetes Deployment (default)
+    capp       — deploys as a rcs.dana.io/v1alpha1 Capp resource so the
+                 CAPP operator manages scaling, routing, and TLS.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - capp
+  - dana-team
+  - kubernetes
+  - api-gateway
+home: https://github.com/dana-team/capp-backend
+sources:
+  - https://github.com/dana-team/capp-backend
+maintainers:
+  - name: dana-team

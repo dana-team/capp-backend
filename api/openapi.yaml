@@ -1,0 +1,714 @@
+openapi: 3.1.0
+info:
+  title: capp-backend API
+  description: |
+    Multi-cluster API gateway for managing Capp (container-app) resources on
+    Kubernetes / OpenShift clusters.
+
+    ## Authentication
+
+    The backend supports three auth modes configured server-side:
+
+    - **passthrough** — supply a Kubernetes `Bearer <token>` on every request.
+    - **jwt** — call `/api/v1/auth/login` once to exchange a cluster token for a
+      short-lived JWT; refresh with `/api/v1/auth/refresh`.
+    - **static** — use a fixed API key configured on the server (dev / CI only).
+
+    All resource endpoints require the `Authorization: Bearer <token>` header.
+  version: "0.1.0"
+  contact:
+    name: dana-team
+    url: https://github.com/dana-team/capp-backend
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: auth
+    description: Authentication — login and token refresh
+  - name: clusters
+    description: Cluster discovery and metadata
+  - name: namespaces
+    description: Namespace listing within a cluster
+  - name: capps
+    description: Capp resource management
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        In **passthrough** mode supply the raw Kubernetes ServiceAccount token.
+        In **jwt** mode supply the JWT returned by `/api/v1/auth/login`.
+        In **static** mode supply one of the configured API keys.
+
+  schemas:
+    # ── Error ────────────────────────────────────────────────────────────────────
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: NOT_FOUND
+            message:
+              type: string
+              example: resource "my-capp" not found
+            status:
+              type: integer
+              example: 404
+
+    # ── Auth ─────────────────────────────────────────────────────────────────────
+    LoginRequest:
+      type: object
+      required: [cluster, token]
+      properties:
+        cluster:
+          type: string
+          description: Name of the cluster to authenticate against.
+          example: production
+        token:
+          type: string
+          description: Raw Kubernetes Bearer token (ServiceAccount or OIDC).
+          example: "eyJhbGci..."
+
+    TokenPair:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: Short-lived JWT for API requests.
+        refreshToken:
+          type: string
+          description: Long-lived JWT for refreshing the access token.
+        expiresAt:
+          type: string
+          format: date-time
+          description: UTC expiry time of the access token.
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          description: Refresh token obtained from a previous login or refresh.
+
+    # ── Clusters ──────────────────────────────────────────────────────────────────
+    ClusterMeta:
+      type: object
+      properties:
+        name:
+          type: string
+          example: production
+        displayName:
+          type: string
+          example: "Production (us-east-1)"
+        healthy:
+          type: boolean
+          example: true
+        allowedNamespaces:
+          type: array
+          items:
+            type: string
+          description: Empty list means all namespaces are accessible.
+          example: []
+
+    ClusterList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClusterMeta'
+
+    # ── Namespaces ────────────────────────────────────────────────────────────────
+    NamespaceItem:
+      type: object
+      properties:
+        name:
+          type: string
+          example: default
+        status:
+          type: string
+          example: Active
+
+    NamespaceList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NamespaceItem'
+
+    # ── Capps ─────────────────────────────────────────────────────────────────────
+    EnvVar:
+      type: object
+      properties:
+        name:
+          type: string
+          example: LOG_LEVEL
+        value:
+          type: string
+          example: info
+
+    VolumeMount:
+      type: object
+      properties:
+        name:
+          type: string
+          example: config-vol
+        mountPath:
+          type: string
+          example: /etc/config
+
+    RouteSpec:
+      type: object
+      properties:
+        hostname:
+          type: string
+          example: my-app.example.com
+        tlsEnabled:
+          type: boolean
+          example: true
+
+    LogSpec:
+      type: object
+      properties:
+        type:
+          type: string
+          example: elastic
+        host:
+          type: string
+          example: logs.example.com
+        index:
+          type: string
+          example: capp-logs
+
+    NFSVolume:
+      type: object
+      properties:
+        name:
+          type: string
+          example: nfs-vol
+        server:
+          type: string
+          example: nfs.example.com
+        path:
+          type: string
+          example: /exports/data
+        mountPath:
+          type: string
+          example: /mnt/data
+
+    CappRequest:
+      type: object
+      required: [name, image]
+      properties:
+        name:
+          type: string
+          example: my-app
+        scaleMetric:
+          type: string
+          enum: [rps, concurrency, cpu, memory]
+          example: rps
+        state:
+          type: string
+          enum: [enabled, disabled]
+          example: enabled
+        minReplicas:
+          type: integer
+          minimum: 0
+          example: 1
+        image:
+          type: string
+          example: ghcr.io/example/my-app:v1.2.3
+        containerName:
+          type: string
+          example: my-app
+        env:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        volumeMounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/VolumeMount'
+        routeSpec:
+          $ref: '#/components/schemas/RouteSpec'
+        logSpec:
+          $ref: '#/components/schemas/LogSpec'
+        nfsVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NFSVolume'
+
+    Condition:
+      type: object
+      properties:
+        type:
+          type: string
+          example: Ready
+        status:
+          type: string
+          enum: ["True", "False", Unknown]
+          example: "True"
+        reason:
+          type: string
+          example: RevisionReady
+        message:
+          type: string
+          example: Revision is ready.
+        lastTransitionTime:
+          type: string
+          format: date-time
+
+    ApplicationLink:
+      type: object
+      properties:
+        name:
+          type: string
+          example: url
+        url:
+          type: string
+          example: https://my-app.example.com
+
+    CappStatus:
+      type: object
+      properties:
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Condition'
+        applicationLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationLink'
+        stateStatus:
+          type: string
+          example: enabled
+
+    CappResponse:
+      allOf:
+        - $ref: '#/components/schemas/CappRequest'
+        - type: object
+          properties:
+            namespace:
+              type: string
+              example: default
+            labels:
+              type: object
+              additionalProperties:
+                type: string
+            annotations:
+              type: object
+              additionalProperties:
+                type: string
+            status:
+              $ref: '#/components/schemas/CappStatus'
+            creationTimestamp:
+              type: string
+              format: date-time
+
+    CappList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CappResponse'
+        total:
+          type: integer
+          example: 3
+
+  parameters:
+    clusterParam:
+      name: cluster
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Cluster name as configured on the backend.
+      example: production
+
+    namespaceParam:
+      name: namespace
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Kubernetes namespace.
+      example: default
+
+    cappNameParam:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Capp resource name.
+      example: my-app
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: The caller does not have permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: A resource with this name already exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ── Auth ───────────────────────────────────────────────────────────────────────
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Exchange a cluster token for a JWT pair
+      description: |
+        Validates the supplied token against the target cluster's `/version` endpoint.
+        On success, returns a short-lived access JWT and a long-lived refresh JWT.
+
+        Only available when `auth.mode` is `jwt`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        "200":
+          description: Login successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        "400":
+          description: Missing or malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          description: Cluster not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Refresh an expired access token
+      description: |
+        Validates the supplied refresh token, extends the server-side session,
+        and issues a new JWT pair.
+
+        Only available when `auth.mode` is `jwt`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        "200":
+          description: Token refreshed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Clusters ───────────────────────────────────────────────────────────────────
+  /api/v1/clusters:
+    get:
+      tags: [clusters]
+      summary: List all configured clusters
+      description: Returns metadata for every cluster registered in the server config.
+      responses:
+        "200":
+          description: Cluster list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/clusters/{cluster}:
+    get:
+      tags: [clusters]
+      summary: Get a single cluster
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Cluster metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterMeta'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  # ── Namespaces ─────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/namespaces:
+    get:
+      tags: [namespaces]
+      summary: List namespaces in a cluster
+      description: |
+        Lists all Kubernetes namespaces the authenticated user can access.
+        If the cluster was configured with `allowedNamespaces`, only those
+        namespaces are returned.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Namespace list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Capps ──────────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps:
+    get:
+      tags: [capps]
+      summary: List Capps in a namespace
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Capp list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [capps]
+      summary: Create a Capp
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CappRequest'
+      responses:
+        "201":
+          description: Capp created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}:
+    get:
+      tags: [capps]
+      summary: Get a Capp
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/cappNameParam'
+      responses:
+        "200":
+          description: Capp details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [capps]
+      summary: Update a Capp
+      description: |
+        Replaces the Capp spec. The backend fetches the current `resourceVersion`
+        before applying the update to avoid optimistic-concurrency conflicts.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/cappNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CappRequest'
+      responses:
+        "200":
+          description: Capp updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [capps]
+      summary: Delete a Capp
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/cappNameParam'
+      responses:
+        "204":
+          description: Capp deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  # ── Capps — cross-namespace list ───────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/capps:
+    get:
+      tags: [capps]
+      summary: List all Capps across all namespaces
+      description: |
+        Returns Capps from every namespace the authenticated user can access.
+        Useful for cluster-wide dashboards.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Capp list (all namespaces).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Observability ──────────────────────────────────────────────────────────────
+  /healthz:
+    get:
+      tags: []
+      summary: Liveness probe
+      description: Returns 200 if the process is alive.
+      security: []
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              example: {"status": "ok"}
+
+  /readyz:
+    get:
+      tags: []
+      summary: Readiness probe
+      description: Returns 200 when at least one cluster is healthy and accepting traffic.
+      security: []
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              example: {"status": "ready"}
+        "503":
+          description: No healthy clusters available.
+          content:
+            application/json:
+              example: {"status": "not ready", "reason": "no healthy clusters available"}
