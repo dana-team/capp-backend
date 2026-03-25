@@ -4,6 +4,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -222,7 +223,7 @@ func (s *sessionStore) parseToken(tokenStr string) (*jwtClaims, error) {
 		return []byte(s.cfg.SecretKey), nil
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "expired") {
+		if errors.Is(err, jwt.ErrTokenExpired) {
 			return nil, ErrTokenExpired
 		}
 		return nil, fmt.Errorf("%w: %s", ErrInvalidToken, err)
