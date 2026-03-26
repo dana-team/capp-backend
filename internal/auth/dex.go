@@ -140,7 +140,7 @@ func (m *dexManager) PasswordLogin(ctx context.Context, username, password strin
 	// Create a backend session with empty clusterToken.
 	// The cluster middleware will use the cluster's pre-configured service
 	// account token since BearerToken is empty.
-	return m.sessionStore.createSession("", "")
+	return m.createSession("", "")
 }
 
 // Login is not supported in dex mode; use PasswordLogin instead.
@@ -150,10 +150,10 @@ func (m *dexManager) Login(_ context.Context, _, _ string) (TokenPair, error) {
 
 // Authenticate delegates to the shared session store.
 func (m *dexManager) Authenticate(_ context.Context, _ string, r *http.Request) (ClusterCredential, error) {
-	return m.sessionStore.authenticate(r)
+	return m.authenticate(r)
 }
 
 // Refresh delegates to the shared session store.
 func (m *dexManager) Refresh(_ context.Context, refreshToken string) (TokenPair, error) {
-	return m.sessionStore.refresh(refreshToken)
+	return m.refresh(refreshToken)
 }

@@ -44,7 +44,7 @@ func (m *jwtManager) Login(ctx context.Context, clusterName string, token string
 	if err := m.validateTokenAgainstCluster(ctx, clusterName, token); err != nil {
 		return TokenPair{}, err
 	}
-	return m.sessionStore.createSession(clusterName, token)
+	return m.createSession(clusterName, token)
 }
 
 // PasswordLogin is not supported in jwt mode; it always returns ErrNotSupported.
@@ -58,12 +58,12 @@ func (m *jwtManager) PasswordLogin(_ context.Context, _, _ string) (TokenPair, e
 
 // Authenticate implements AuthManager by delegating to the embedded sessionStore.
 func (m *jwtManager) Authenticate(_ context.Context, _ string, r *http.Request) (ClusterCredential, error) {
-	return m.sessionStore.authenticate(r)
+	return m.authenticate(r)
 }
 
 // Refresh implements AuthManager by delegating to the embedded sessionStore.
 func (m *jwtManager) Refresh(_ context.Context, refreshToken string) (TokenPair, error) {
-	return m.sessionStore.refresh(refreshToken)
+	return m.refresh(refreshToken)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

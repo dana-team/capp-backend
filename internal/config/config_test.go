@@ -64,7 +64,7 @@ clusters:
         token: "dev-token"
 `
 	path := writeTempConfig(t, yaml)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ clusters:
         token: "tok"
 `
 	path := writeTempConfig(t, yaml)
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
