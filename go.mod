@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0
-	github.com/dana-team/container-app-operator v0.0.0
+	github.com/dana-team/container-app-operator v0.5.6
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
@@ -173,7 +173,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-// Point at the local operator repo so we can reuse its CRD types
-// without publishing a separate module.
-replace github.com/dana-team/container-app-operator => ../container-app-operator

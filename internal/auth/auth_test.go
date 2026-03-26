@@ -270,7 +270,7 @@ func mockDexServer(t *testing.T, tokenStatus int, tokenBody string) *httptest.Se
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{
+			_, _ = fmt.Fprintf(w, `{
                 "issuer": %q,
                 "authorization_endpoint": %q,
                 "token_endpoint": %q,
@@ -278,11 +278,11 @@ func mockDexServer(t *testing.T, tokenStatus int, tokenBody string) *httptest.Se
             }`, srv.URL, srv.URL+"/auth", srv.URL+"/token", srv.URL+"/keys")
 		case "/keys":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"keys":[]}`)
+			_, _ = fmt.Fprint(w, `{"keys":[]}`)
 		case "/token":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(tokenStatus)
-			fmt.Fprint(w, tokenBody)
+			_, _ = fmt.Fprint(w, tokenBody)
 		default:
 			http.NotFound(w, r)
 		}

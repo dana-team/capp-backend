@@ -53,7 +53,7 @@ func TestBuildRestConfig_Inline_NoCA(t *testing.T) {
 	assert.Equal(t, "https://localhost:6443", restCfg.Host)
 	assert.Equal(t, "tok", restCfg.BearerToken)
 	// No CA → insecure mode
-	assert.True(t, restCfg.TLSClientConfig.Insecure)
+	assert.True(t, restCfg.Insecure)
 	assert.Equal(t, userAgent, restCfg.UserAgent)
 }
 
@@ -72,8 +72,8 @@ func TestBuildRestConfig_Inline_WithCA(t *testing.T) {
 	}
 	restCfg, err := BuildRestConfig(cfg)
 	require.NoError(t, err)
-	assert.False(t, restCfg.TLSClientConfig.Insecure)
-	assert.Equal(t, []byte("test-ca-data"), restCfg.TLSClientConfig.CAData)
+	assert.False(t, restCfg.Insecure)
+	assert.Equal(t, []byte("test-ca-data"), restCfg.CAData)
 }
 
 func TestBuildRestConfig_NoCredential(t *testing.T) {

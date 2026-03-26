@@ -50,6 +50,8 @@ github.com/crossplane/crossplane-runtime/v2 v2.0.0 h1:PK2pTKfshdDZ5IfoiMRiCi0PBn
 github.com/crossplane/crossplane-runtime/v2 v2.0.0/go.mod h1:pkd5UzmE8esaZAApevMutR832GjJ1Qgc5Ngr78ByxrI=
 github.com/crossplane/upjet/v2 v2.0.1-0.20251009193737-0b7f640373c8 h1:zdxlqcXtEhqb7YKsipQk4lIfLhp42UuJSAyFTw+LhAs=
 github.com/crossplane/upjet/v2 v2.0.1-0.20251009193737-0b7f640373c8/go.mod h1:nXboF68y9ZQRu39kZirQQiPL/BA4Afic17rEdHE+VQo=
+github.com/dana-team/container-app-operator v0.5.6 h1:ZVPyq0GIFhb0KS9fUxNwkyf3bk9mgVSOVWGw2G2mWFM=
+github.com/dana-team/container-app-operator v0.5.6/go.mod h1:5xqHkW6EHhWbxPROCi5zPLXYTOUkyXvpfzx7F7EDkh8=
 github.com/dana-team/nfspvc-operator v0.5.2 h1:UXU/M4PIQdEvPwP7u2kY+gZEmGksxoj5YZCX4T58djo=
 github.com/dana-team/nfspvc-operator v0.5.2/go.mod h1:lqKxt8nFK81+HtR8CBAEOizm5I6VFiNQhhkz9z6ticM=
 github.com/dana-team/provider-dns-v2 v1.0.1 h1:Vm7v9bZ4ja7qFh8LTpHhopr8ZaK6ES7Nj2YTIFE531s=
