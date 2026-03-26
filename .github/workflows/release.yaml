@@ -68,7 +68,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
 
   # ── Publish Helm chart to GHCR OCI registry ───────────────────────────────────
   helm:
@@ -110,7 +110,7 @@ jobs:
       - name: Push chart to GHCR OCI
         run: |
           helm push /tmp/charts/${{ env.CHART_NAME }}-${{ steps.version.outputs.VERSION }}.tgz \
-            oci://${{ env.REGISTRY }}/dana-team/charts
+            oci://${{ env.REGISTRY }}/dana-team/helm-charts
 
   # ── Create GitHub Release ─────────────────────────────────────────────────────
   release:
@@ -125,7 +125,9 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog from commits since last tag
         id: changelog
@@ -143,20 +145,20 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          name: "Release ${{ steps.version.outputs.VERSION }}"
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: "Release ${{ steps.version.outputs.TAG }}"
           body: |
-            ## capp-backend ${{ steps.version.outputs.VERSION }}
+            ## capp-backend ${{ steps.version.outputs.TAG }}
 
             ### Docker image
             ```
-            docker pull ghcr.io/dana-team/capp-backend:${{ steps.version.outputs.VERSION }}
+            docker pull ghcr.io/dana-team/capp-backend:${{ steps.version.outputs.TAG }}
             ```
 
             ### Helm chart
             ```bash
             helm install capp-backend \
-              oci://ghcr.io/dana-team/charts/capp-backend \
+              oci://ghcr.io/dana-team/helm-charts/capp-backend \
               --version ${{ steps.version.outputs.VERSION }} \
               --set secret.jwtSecretKey="<your-secret>" \
               --set config.clusters[0].name="production" \
