@@ -55,7 +55,7 @@ config:
     corsAllowedOrigins: []
 
   auth:
-    mode: "passthrough"
+    mode: "dex"
     jwt:
       tokenTTLMinutes: 60
       refreshTTLMinutes: 1440
