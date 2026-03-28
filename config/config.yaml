@@ -76,6 +76,21 @@ auth:
     # apiKeys:
     #   - "local-dev-key"
 
+  # OpenShift OAuth auth mode example:
+  # Authenticates users via OpenShift OAuth, impersonates them on managed clusters.
+  # Requires an OAuthClient registered in OpenShift and a service account with
+  # impersonate permissions on each managed cluster.
+  # auth:
+  #   mode: openshift
+  #   openshift:
+  #     apiServer: "https://api.my-cluster.example.com:6443"
+  #     caCert: ""                # optional: base64-encoded PEM CA bundle
+  #     clientId: "capp-backend"
+  #     clientSecret: ""          # inject via CAPP_AUTH_OPENSHIFT_CLIENTSECRET
+  #     redirectUri: "https://console.example.com/auth/callback"
+  #     scopes: ["user:info", "user:check-access"]
+  #     tokenCacheTTLSeconds: 60
+
   rateLimit:
     # Toggle per-IP rate limiting globally.
     enabled: true

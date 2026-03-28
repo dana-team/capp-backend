@@ -11,6 +11,7 @@ var validAuthModes = map[string]struct{}{
 	"jwt":         {},
 	"static":      {},
 	"dex":         {},
+	"openshift":   {},
 }
 
 // Validate checks the fully-loaded Config for semantic errors that cannot be
@@ -22,6 +23,20 @@ func Validate(cfg *Config) error {
 
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
+
+	// In openshift mode every cluster must have an inline token (SA token)
+	// because the backend uses impersonation instead of forwarding user tokens.
+	if cfg.Auth.Mode == "openshift" {
+		for i, c := range cfg.Clusters {
+			if c.Credential.Inline == nil || c.Credential.Inline.Token == "" {
+				errs = append(errs, fmt.Errorf(
+					"config: clusters[%d] (%q): credential.inline.token is required when auth.mode is 'openshift' "+
+						"(used as the service-account token for K8s impersonation)",
+					i, c.Name,
+				))
+			}
+		}
+	}
 
 	return errors.Join(errs...)
 }
@@ -90,7 +105,7 @@ func validateAuth(auth *AuthConfig) []error {
 
 	if _, ok := validAuthModes[auth.Mode]; !ok {
 		errs = append(errs, fmt.Errorf(
-			"config: auth.mode %q is not valid; must be one of: passthrough, jwt, static, dex",
+			"config: auth.mode %q is not valid; must be one of: passthrough, jwt, static, dex, openshift",
 			auth.Mode,
 		))
 		// Cannot validate mode-specific fields if mode is unknown.
@@ -133,6 +148,28 @@ func validateAuth(auth *AuthConfig) []error {
 				"config: auth.jwt.secretKey is required when auth.mode is 'dex' "+
 					"(used for signing backend session JWTs); "+
 					"set via CAPP_AUTH_JWT_SECRETKEY environment variable",
+			))
+		}
+	case "openshift":
+		if auth.OpenShift.APIServer == "" {
+			errs = append(errs, errors.New(
+				"config: auth.openshift.apiServer is required when auth.mode is 'openshift'",
+			))
+		}
+		if auth.OpenShift.ClientID == "" {
+			errs = append(errs, errors.New(
+				"config: auth.openshift.clientId is required when auth.mode is 'openshift'",
+			))
+		}
+		if auth.OpenShift.ClientSecret == "" {
+			errs = append(errs, errors.New(
+				"config: auth.openshift.clientSecret is required when auth.mode is 'openshift'; "+
+					"set via CAPP_AUTH_OPENSHIFT_CLIENTSECRET environment variable",
+			))
+		}
+		if auth.OpenShift.RedirectURI == "" {
+			errs = append(errs, errors.New(
+				"config: auth.openshift.redirectUri is required when auth.mode is 'openshift'",
 			))
 		}
 	}

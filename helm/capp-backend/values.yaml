@@ -59,6 +59,16 @@ config:
     jwt:
       tokenTTLMinutes: 60
       refreshTTLMinutes: 1440
+    # OpenShift OAuth settings. Required when mode is "openshift".
+    openshift:
+      apiServer: ""        # External OpenShift API server URL
+      caCert: ""           # base64-encoded PEM CA bundle (optional)
+      clientId: ""         # OAuth client ID registered in OpenShift
+      redirectUri: ""      # Frontend callback URL
+      scopes:
+        - "user:info"
+        - "user:check-access"
+      tokenCacheTTLSeconds: 60
     rateLimit:
       enabled: true
       requestsPerSecond: 20
@@ -109,6 +119,16 @@ secret:
   # index in config.clusters[]. Injected as CAPP_CLUSTERS_<N>_CREDENTIAL_INLINE_TOKEN.
   clusterTokens:
     - ""
+
+  # OpenShift OAuth client secret. Required when config.auth.mode is "openshift".
+  # Override: --set secret.openshiftClientSecret="<client-secret>"
+  openshiftClientSecret: ""
+
+# ── Service Account (openshift mode) ──────────────────────────────────────────
+# Created when auth.mode is "openshift". The SA needs impersonation permissions.
+serviceAccount:
+  create: true
+  name: "capp-backend"
 
 # ── Capp-mode specific settings ───────────────────────────────────────────────
 # These settings are only used when deployAs: capp.

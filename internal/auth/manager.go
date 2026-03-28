@@ -1,5 +1,5 @@
-// Package auth implements the AuthManager interface and its four concrete
-// modes: passthrough, jwt, static, and dex.
+// Package auth implements the AuthManager interface and its five concrete
+// modes: passthrough, jwt, static, dex, and openshift.
 //
 // Mode selection is determined at startup by the auth.mode config value and
 // never changes at runtime. All implementations are safe for concurrent use.
@@ -24,6 +24,13 @@
 //	              a backend-managed JWT session is created and a TokenPair is
 //	              returned. Kubernetes API calls use the cluster's pre-configured
 //	              service-account token.
+//
+//	openshift   — authenticates users via the OpenShift OAuth server of the
+//	              home cluster (browser Authorization Code flow or direct
+//	              bearer token). Tokens are managed by OpenShift, not the
+//	              backend (fully stateless). On each request the token is
+//	              validated via TokenReview and the user's identity is used
+//	              for Kubernetes impersonation on all managed clusters.
 package auth
 
 import (
@@ -59,15 +66,26 @@ var (
 
 // ── Core types ────────────────────────────────────────────────────────────────
 
-// ClusterCredential holds the bearer token used to authenticate against a
-// specific Kubernetes API server on behalf of an incoming request.
+// ClusterCredential holds the information needed to authenticate and authorize
+// a Kubernetes API request on behalf of an incoming user.
 //
-// In passthrough mode this value is taken directly from the Authorization
+// In passthrough mode BearerToken is taken directly from the Authorization
 // header. In jwt mode it is retrieved from the server-side session store.
-// In static mode it is empty (the cluster is expected to permit unauthenticated
-// access or use the token configured in the cluster's credential block).
+// In static mode it is empty (the cluster uses its configured token).
+//
+// In openshift mode BearerToken is empty and the ImpersonateUser/Groups
+// fields are set. The cluster's service-account token is used for
+// authentication while impersonation headers enforce the user's RBAC identity.
 type ClusterCredential struct {
 	BearerToken string
+
+	// ImpersonateUser is the username to impersonate via the
+	// Impersonate-User header. Set only in openshift auth mode.
+	ImpersonateUser string
+
+	// ImpersonateGroups are the groups to impersonate via
+	// Impersonate-Group headers. Set only in openshift auth mode.
+	ImpersonateGroups []string
 }
 
 // TokenPair is issued by Login and Refresh in jwt auth mode.
@@ -114,6 +132,20 @@ type AuthManager interface {
 	Refresh(ctx context.Context, refreshToken string) (TokenPair, error)
 }
 
+// OAuthAuthorizer is an optional interface implemented by auth managers that
+// support the OAuth Authorization Code flow. Currently only openShiftManager
+// implements it. Route handlers type-assert to this interface to expose the
+// /openshift/authorize and /openshift/callback endpoints.
+type OAuthAuthorizer interface {
+	// GetAuthorizeURL returns the OAuth authorization URL that the frontend
+	// should redirect the user's browser to.
+	GetAuthorizeURL() (string, error)
+
+	// OAuthExchange exchanges an OAuth authorization code for an access token
+	// and refresh token from the identity provider.
+	OAuthExchange(ctx context.Context, code, redirectURI string) (TokenPair, error)
+}
+
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 // New instantiates the AuthManager implementation selected by cfg.Auth.Mode.
@@ -146,6 +178,9 @@ func New(cfg *config.Config) (AuthManager, error) {
 
 	case "dex":
 		return newDexManager(cfg)
+
+	case "openshift":
+		return newOpenShiftManager(cfg)
 
 	default:
 		// Validate() should catch this before we reach New(), but guard anyway.

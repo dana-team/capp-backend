@@ -212,6 +212,93 @@ func TestValidate_StaticMissingKeys(t *testing.T) {
 	assert.Contains(t, err.Error(), "auth.static.apiKeys")
 }
 
+func TestValidate_OpenShift_Valid(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{
+			Mode: "openshift",
+			OpenShift: OpenShiftConfig{
+				APIServer:    "https://api.ocp.example.com:6443",
+				ClientID:     "capp-backend",
+				ClientSecret: "secret",
+				RedirectURI:  "https://capp.example.com/callback",
+			},
+		},
+		Clusters: []ClusterConfig{
+			{
+				Name: "home",
+				Credential: CredentialConfig{
+					Inline: &InlineCredential{
+						APIServer: "https://kubernetes.default.svc",
+						Token:     "sa-token",
+					},
+				},
+			},
+		},
+	}
+	assert.NoError(t, Validate(cfg))
+}
+
+func TestValidate_OpenShift_MissingRequiredFields(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{
+			Mode:      "openshift",
+			OpenShift: OpenShiftConfig{}, // all empty
+		},
+		Clusters: []ClusterConfig{
+			{
+				Name: "home",
+				Credential: CredentialConfig{
+					Inline: &InlineCredential{
+						APIServer: "https://kubernetes.default.svc",
+						Token:     "sa-token",
+					},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auth.openshift.apiServer")
+	assert.Contains(t, err.Error(), "auth.openshift.clientId")
+	assert.Contains(t, err.Error(), "auth.openshift.clientSecret")
+	assert.Contains(t, err.Error(), "auth.openshift.redirectUri")
+}
+
+func TestValidate_OpenShift_ClusterMissingToken(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{
+			Mode: "openshift",
+			OpenShift: OpenShiftConfig{
+				APIServer:    "https://api.ocp.example.com:6443",
+				ClientID:     "capp-backend",
+				ClientSecret: "secret",
+				RedirectURI:  "https://capp.example.com/callback",
+			},
+		},
+		Clusters: []ClusterConfig{
+			{
+				Name: "home",
+				Credential: CredentialConfig{
+					Inline: &InlineCredential{
+						APIServer: "https://kubernetes.default.svc",
+						// Token intentionally omitted
+					},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential.inline.token is required")
+}
+
+func TestValidate_OpenShift_Defaults(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"user:info", "user:check-access"}, cfg.Auth.OpenShift.Scopes)
+	assert.Equal(t, 60, cfg.Auth.OpenShift.TokenCacheTTLSeconds)
+}
+
 func TestValidate_MultipleErrors(t *testing.T) {
 	// Both empty cluster name and bad auth mode — both should appear.
 	cfg := &Config{

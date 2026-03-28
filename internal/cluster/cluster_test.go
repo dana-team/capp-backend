@@ -231,6 +231,71 @@ func TestClientFor_EmptyCredentialUsesBaseToken(t *testing.T) {
 	assert.Equal(t, "service-account-token", cc.RestConfig.BearerToken)
 }
 
+func TestClientFor_Impersonation(t *testing.T) {
+	srv := alwaysOKServer(t)
+	defer srv.Close()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	cc := &ClusterClient{
+		Meta: ClusterMeta{Name: "test"},
+		RestConfig: mustBuildRestConfig(t, config.ClusterConfig{
+			Name: "test",
+			Credential: config.CredentialConfig{
+				Inline: &config.InlineCredential{
+					APIServer: srv.URL,
+					Token:     "sa-token",
+				},
+			},
+		}),
+		Scheme: scheme,
+	}
+
+	mgr := &defaultClusterManager{clusters: map[string]*ClusterClient{"test": cc}, logger: testLogger()}
+	cred := auth.ClusterCredential{
+		ImpersonateUser:   "jane",
+		ImpersonateGroups: []string{"developers", "system:authenticated"},
+	}
+
+	k8sClient, err := mgr.ClientFor(cc, cred)
+	require.NoError(t, err)
+	assert.NotNil(t, k8sClient)
+	// Base RestConfig must not be mutated.
+	assert.Equal(t, "sa-token", cc.RestConfig.BearerToken)
+	assert.Empty(t, cc.RestConfig.Impersonate.UserName)
+}
+
+func TestClientFor_NoImpersonation_BackwardCompat(t *testing.T) {
+	srv := alwaysOKServer(t)
+	defer srv.Close()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	cc := &ClusterClient{
+		Meta: ClusterMeta{Name: "test"},
+		RestConfig: mustBuildRestConfig(t, config.ClusterConfig{
+			Name: "test",
+			Credential: config.CredentialConfig{
+				Inline: &config.InlineCredential{
+					APIServer: srv.URL,
+					Token:     "sa-token",
+				},
+			},
+		}),
+		Scheme: scheme,
+	}
+
+	mgr := &defaultClusterManager{clusters: map[string]*ClusterClient{"test": cc}, logger: testLogger()}
+	// Empty impersonation fields — should not set Impersonate on rest.Config.
+	cred := auth.ClusterCredential{BearerToken: "user-token"}
+
+	_, err := mgr.ClientFor(cc, cred)
+	require.NoError(t, err)
+	assert.Empty(t, cc.RestConfig.Impersonate.UserName)
+}
+
 func TestHealthCheck(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()

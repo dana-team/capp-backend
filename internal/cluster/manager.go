@@ -135,6 +135,16 @@ func (m *defaultClusterManager) ClientFor(cluster *ClusterClient, cred auth.Clus
 		reqCfg.BearerTokenFile = ""
 	}
 
+	// Apply impersonation headers when present (openshift auth mode).
+	// The base config's service-account token is used for authentication,
+	// while Impersonate-User/Group headers enforce the end-user's RBAC identity.
+	if cred.ImpersonateUser != "" {
+		reqCfg.Impersonate = rest.ImpersonationConfig{
+			UserName: cred.ImpersonateUser,
+			Groups:   cred.ImpersonateGroups,
+		}
+	}
+
 	return client.New(reqCfg, client.Options{Scheme: cluster.Scheme})
 }
 

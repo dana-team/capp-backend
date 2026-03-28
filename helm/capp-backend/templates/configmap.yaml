@@ -21,6 +21,19 @@ data:
         secretKey: ""
         tokenTTLMinutes: {{ .Values.config.auth.jwt.tokenTTLMinutes }}
         refreshTTLMinutes: {{ .Values.config.auth.jwt.refreshTTLMinutes }}
+      {{- if eq .Values.config.auth.mode "openshift" }}
+      openshift:
+        apiServer: {{ .Values.config.auth.openshift.apiServer | quote }}
+        {{- if .Values.config.auth.openshift.caCert }}
+        caCert: {{ .Values.config.auth.openshift.caCert | quote }}
+        {{- end }}
+        clientId: {{ .Values.config.auth.openshift.clientId | quote }}
+        clientSecret: ""
+        redirectUri: {{ .Values.config.auth.openshift.redirectUri | quote }}
+        scopes:
+          {{- toYaml .Values.config.auth.openshift.scopes | nindent 10 }}
+        tokenCacheTTLSeconds: {{ .Values.config.auth.openshift.tokenCacheTTLSeconds }}
+      {{- end }}
       rateLimit:
         enabled: {{ .Values.config.auth.rateLimit.enabled }}
         requestsPerSecond: {{ .Values.config.auth.rateLimit.requestsPerSecond }}
