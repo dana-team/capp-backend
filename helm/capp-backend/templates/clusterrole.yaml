@@ -9,4 +9,7 @@ rules:
   - apiGroups: [""]
     resources: ["users", "groups"]
     verbs: ["impersonate"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
 {{- end }}

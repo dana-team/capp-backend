@@ -23,7 +23,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if and (eq .Values.config.auth.mode "openshift") .Values.serviceAccount.create }}
+      {{- if eq .Values.config.auth.mode "openshift" }}
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- end }}
       securityContext:

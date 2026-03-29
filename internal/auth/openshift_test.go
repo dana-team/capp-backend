@@ -36,7 +36,7 @@ func tokenReviewReactor(authenticated bool, username string, groups []string) k8
 func newTestOpenShiftManager(t *testing.T, oauthServer *httptest.Server, reactor k8stesting.ReactionFunc) *openShiftManager {
 	t.Helper()
 
-	fakeClient := fake.NewSimpleClientset()
+	fakeClient := fake.NewClientset()
 	if reactor != nil {
 		fakeClient.PrependReactor("create", "tokenreviews", reactor)
 	}
@@ -186,7 +186,7 @@ func TestOpenShift_OAuthExchange_ValidCode(t *testing.T) {
 	defer srv.Close()
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
-	pair, err := mgr.OAuthExchange(context.Background(), "auth-code", "https://app.example.com/callback")
+	pair, err := mgr.OAuthExchange(context.Background(), "auth-code")
 	require.NoError(t, err)
 	assert.Equal(t, "access-tok", pair.AccessToken)
 	assert.Equal(t, "refresh-tok", pair.RefreshToken)
@@ -201,7 +201,7 @@ func TestOpenShift_OAuthExchange_InvalidCode(t *testing.T) {
 	defer srv.Close()
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
-	_, err := mgr.OAuthExchange(context.Background(), "bad-code", "https://app.example.com/callback")
+	_, err := mgr.OAuthExchange(context.Background(), "bad-code")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }

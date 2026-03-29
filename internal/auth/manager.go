@@ -142,8 +142,9 @@ type OAuthAuthorizer interface {
 	GetAuthorizeURL() (string, error)
 
 	// OAuthExchange exchanges an OAuth authorization code for an access token
-	// and refresh token from the identity provider.
-	OAuthExchange(ctx context.Context, code, redirectURI string) (TokenPair, error)
+	// and refresh token from the identity provider. The redirect URI is
+	// sourced from the server's config, not from the caller.
+	OAuthExchange(ctx context.Context, code string) (TokenPair, error)
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────

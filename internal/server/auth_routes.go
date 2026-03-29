@@ -26,8 +26,10 @@ type refreshRequest struct {
 
 // openshiftCallbackRequest is the body for POST /api/v1/auth/openshift/callback.
 type openshiftCallbackRequest struct {
-	Code        string `json:"code" binding:"required"`
-	RedirectURI string `json:"redirectUri" binding:"required"`
+	Code string `json:"code" binding:"required"`
+	// RedirectURI is intentionally not accepted from the client. The server
+	// uses its configured auth.openshift.redirectUri to prevent the backend
+	// from being used as a generic code-to-token exchanger.
 }
 
 // openshiftAuthorizeResponse is returned by GET /api/v1/auth/openshift/authorize.
@@ -167,7 +169,7 @@ func openshiftCallbackHandler(mgr auth.AuthManager) gin.HandlerFunc {
 			return
 		}
 
-		pair, err := osMgr.OAuthExchange(c.Request.Context(), req.Code, req.RedirectURI)
+		pair, err := osMgr.OAuthExchange(c.Request.Context(), req.Code)
 		if err != nil {
 			if errors.Is(err, auth.ErrBadCredentials) {
 				apierrors.Respond(c, apierrors.NewUnauthorized("OAuth authentication failed"))

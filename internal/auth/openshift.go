@@ -179,9 +179,13 @@ func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Req
 	if val, ok := m.tokenCache.Load(cacheKey); ok {
 		cached := val.(*cachedIdentity)
 		if time.Now().Before(cached.expiresAt) {
+			// Return a copy of the cached groups so callers cannot mutate the
+			// shared cache entry.
+			groupsCopy := make([]string, len(cached.groups))
+			copy(groupsCopy, cached.groups)
 			return ClusterCredential{
 				ImpersonateUser:   cached.username,
-				ImpersonateGroups: cached.groups,
+				ImpersonateGroups: groupsCopy,
 			}, nil
 		}
 		// Expired — remove and re-validate.
@@ -208,16 +212,20 @@ func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Req
 	username := result.Status.User.Username
 	groups := result.Status.User.Groups
 
-	// Cache the result.
+	// Copy the groups slice before caching so downstream mutations cannot
+	// corrupt the cache entry or cause cross-request data races.
+	groupsCopy := make([]string, len(groups))
+	copy(groupsCopy, groups)
+
 	m.tokenCache.Store(cacheKey, &cachedIdentity{
 		username:  username,
-		groups:    groups,
+		groups:    groupsCopy,
 		expiresAt: time.Now().Add(m.cacheTTL),
 	})
 
 	return ClusterCredential{
 		ImpersonateUser:   username,
-		ImpersonateGroups: groups,
+		ImpersonateGroups: groupsCopy,
 	}, nil
 }
 
@@ -260,11 +268,14 @@ func (m *openShiftManager) GetAuthorizeURL() (string, error) {
 }
 
 // OAuthExchange exchanges an OAuth authorization code for tokens.
-func (m *openShiftManager) OAuthExchange(ctx context.Context, code, redirectURI string) (TokenPair, error) {
+// The redirect URI is always sourced from the server config, not from the
+// caller, to prevent the backend from being used as a generic code exchanger
+// for an attacker-controlled redirect URI.
+func (m *openShiftManager) OAuthExchange(ctx context.Context, code string) (TokenPair, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
-		"redirect_uri":  {redirectURI},
+		"redirect_uri":  {m.cfg.RedirectURI},
 		"client_id":     {m.cfg.ClientID},
 		"client_secret": {m.cfg.ClientSecret},
 	}
@@ -332,8 +343,16 @@ func (m *openShiftManager) oauthTokenRequest(ctx context.Context, form url.Value
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(body, &oauthErr)
-		return TokenPair{}, fmt.Errorf("%w: oauth server returned %q (status %d)",
-			ErrBadCredentials, oauthErr.Error, resp.StatusCode)
+		// Only explicit auth failures (invalid_grant on 400/401) map to
+		// ErrBadCredentials. Server errors and other failures are surfaced as
+		// internal errors so that operational incidents are not masked.
+		if (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized) &&
+			oauthErr.Error == "invalid_grant" {
+			return TokenPair{}, fmt.Errorf("%w: oauth server returned %q (status %d)",
+				ErrBadCredentials, oauthErr.Error, resp.StatusCode)
+		}
+		return TokenPair{}, fmt.Errorf("openshift: oauth server returned %q (status %d)",
+			oauthErr.Error, resp.StatusCode)
 	}
 
 	var tokenResp oauthTokenResponse
