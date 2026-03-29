@@ -3,7 +3,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "capp-backend.fullname" . }}
+  name: {{ include "capp-backend.fullname" . }}-svc
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "capp-backend.labels" . | nindent 4 }}

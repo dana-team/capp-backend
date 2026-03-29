@@ -28,7 +28,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "capp-backend.fullname" $ }}
+                name: {{ include "capp-backend.fullname" $ }}-svc
                 port:
                   name: http
           {{- end }}

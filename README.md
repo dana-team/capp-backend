@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Pluggable authentication** — Four modes: `passthrough`, `jwt`, `static`, and `dex` (Dex OIDC username/password).
+- **Pluggable authentication** — Five modes: `passthrough`, `jwt`, `static`, `dex` (Dex OIDC username/password), and `openshift` (OpenShift OAuth with K8s impersonation).
 - **Multi-cluster support** — Configure any number of clusters; each is health-checked every 30 seconds.
 - **Capp CRUD** — Full create / read / update / delete for `Capp` resources across namespaces.
 - **Namespace listing** — Returns the namespaces visible to each cluster's credentials.
@@ -17,6 +17,7 @@
 - **Go** 1.25 or later (for building from source)
 - One or more Kubernetes/OpenShift clusters with the [`container-app-operator`](https://github.com/dana-team/container-app-operator) installed (provides the `rcs.dana.io/v1alpha1` API group)
 - For `dex` auth mode: a [Dex](https://dexidp.io/) instance with a static client that has `grantTypes: [password]` enabled
+- For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered, and a service account with `impersonate` permissions on each managed cluster
 
 ## Getting Started
 
@@ -57,7 +58,7 @@ server:
     - "http://localhost:3000"
 
 auth:
-  # Mode: passthrough | jwt | static | dex
+  # Mode: passthrough | jwt | static | dex | openshift
   mode: passthrough
 
   jwt:
@@ -78,6 +79,16 @@ auth:
     scopes: [openid, profile, email]
     # Optional: base64-encoded PEM CA bundle for TLS to the Dex server.
     caCert: ""
+
+  openshift:
+    apiServer: "https://api.my-cluster.example.com:6443"  # External OpenShift API URL
+    caCert: ""                # Optional: base64-encoded PEM CA bundle
+    clientId: "capp-backend"  # OAuthClient name registered in OpenShift
+    # Inject via CAPP_AUTH_OPENSHIFT_CLIENTSECRET.
+    clientSecret: ""
+    redirectUri: "https://console.example.com/auth/callback"
+    scopes: ["user:info", "user:check-access"]
+    tokenCacheTTLSeconds: 60  # How long validated tokens are cached
 
   rateLimit:
     enabled: true
@@ -141,6 +152,54 @@ Clients POST a `username` and `password` to `/api/v1/auth/login`. The backend ex
 
 Requires `auth.dex.endpoint`, `auth.dex.clientId`, `auth.dex.clientSecret`, and `auth.jwt.secretKey`. The Dex static client must have `grantTypes: [password]` enabled.
 
+### `openshift`
+
+Authenticates users via the OpenShift OAuth server of the cluster where the backend is deployed. The backend is fully stateless — it never issues its own JWTs. Instead, OpenShift-managed tokens are used directly.
+
+**Browser flow:** The frontend redirects the user to the OpenShift OAuth authorize endpoint. After consent, the frontend receives an authorization code and exchanges it via `POST /api/v1/auth/openshift/callback` for an OpenShift access token and refresh token.
+
+**Programmatic flow:** Any valid OpenShift bearer token can be passed directly in the `Authorization: Bearer <token>` header. The backend validates it via the Kubernetes TokenReview API.
+
+On every authenticated request, the backend extracts the user's identity (username + groups) from the token and **impersonates** that user when making requests to managed clusters. Each managed cluster must have a service account token configured (`credential.inline.token`) with `impersonate` permissions on `users` and `groups` resources.
+
+Requires `auth.openshift.apiServer`, `auth.openshift.clientId`, `auth.openshift.clientSecret`, `auth.openshift.redirectUri`, and an inline token for every configured cluster.
+
+### Adding Clusters (openshift mode)
+
+To add a new managed cluster in `openshift` mode:
+
+1. **Create a ServiceAccount** on the target cluster with impersonation permissions:
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRole
+   metadata:
+     name: capp-backend-impersonator
+   rules:
+     - apiGroups: [""]
+       resources: ["users", "groups"]
+       verbs: ["impersonate"]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRoleBinding
+   metadata:
+     name: capp-backend-impersonator
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: ClusterRole
+     name: capp-backend-impersonator
+   subjects:
+     - kind: ServiceAccount
+       name: capp-backend
+       namespace: capp-system
+   ```
+
+2. **Generate a long-lived token** for the ServiceAccount:
+   ```bash
+   kubectl create token capp-backend -n capp-system --duration=8760h
+   ```
+
+3. **Add the cluster** to `config.clusters` and provide the token via the corresponding `secret.clusterTokens[N]` entry or `CAPP_CLUSTERS_N_CREDENTIAL_INLINE_TOKEN` environment variable.
+
 ## API Reference
 
 The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
@@ -155,7 +214,9 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `POST` | `/api/v1/auth/login` | — | Sign in (jwt / dex / static modes) |
-| `POST` | `/api/v1/auth/refresh` | — | Refresh access token (jwt / dex modes) |
+| `POST` | `/api/v1/auth/refresh` | — | Refresh access token (jwt / dex / openshift modes) |
+| `GET` | `/api/v1/auth/openshift/authorize` | — | Get OpenShift OAuth authorize URL (openshift mode) |
+| `POST` | `/api/v1/auth/openshift/callback` | — | Exchange OAuth code for tokens (openshift mode) |
 | `GET` | `/api/v1/clusters` | ✓ | List configured clusters |
 | `GET` | `/api/v1/clusters/:cluster` | ✓ | Get cluster metadata |
 | `GET` | `/api/v1/clusters/:cluster/namespaces` | ✓ | List namespaces |
@@ -178,7 +239,7 @@ config/             # Default config.yaml
 deploy/             # Dockerfile, Kubernetes manifests, Helm chart skeleton
 internal/
 ├── apierrors/      # Canonical error types and Gin response helpers
-├── auth/           # Auth manager interface + passthrough, jwt, static, dex implementations
+├── auth/           # Auth manager interface + passthrough, jwt, static, dex, openshift implementations
 ├── cluster/        # ClusterManager — multi-cluster routing and health checks
 ├── config/         # Config structs, Viper loading, and validation
 ├── middleware/      # Gin middleware: auth, cluster resolution, CORS, logging, metrics, rate limiting
@@ -203,6 +264,8 @@ CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN=<sa-token>
 ```
 
 > **Note:** In `jwt` and `dex` modes, sessions are stored in-memory. Running more than one replica requires a shared session store (e.g. Redis). For single-replica deployments, the in-memory store is sufficient.
+>
+> **Note:** In `openshift` mode, the backend is fully stateless — no sessions are stored. Multiple replicas work without shared state. Token validation results are cached in-memory per pod.
 
 ## Development
 

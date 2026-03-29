@@ -23,6 +23,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if eq .Values.config.auth.mode "openshift" }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -47,6 +50,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "capp-backend.secretName" $ }}
                   key: clusterToken-{{ $i }}
+            {{- end }}
+            {{- if eq .Values.config.auth.mode "openshift" }}
+            - name: CAPP_AUTH_OPENSHIFT_CLIENTSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" . }}
+                  key: openshiftClientSecret
             {{- end }}
           volumeMounts:
             - name: config

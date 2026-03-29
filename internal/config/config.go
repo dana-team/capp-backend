@@ -83,6 +83,40 @@ type DexConfig struct {
 	CACert string `mapstructure:"caCert"`
 }
 
+// OpenShiftConfig holds settings for the OpenShift OAuth auth mode.
+// This mode authenticates users via the OpenShift OAuth server of the cluster
+// where the backend is deployed and impersonates the user on all managed
+// clusters using per-cluster service-account tokens.
+type OpenShiftConfig struct {
+	// APIServer is the external OpenShift API server URL (e.g.,
+	// "https://api.ocp.example.com:6443"). Used for OAuth discovery and
+	// building the authorize URL that the user's browser navigates to.
+	// This is NOT kubernetes.default.svc — it is the external route.
+	APIServer string `mapstructure:"apiServer"`
+
+	// CACert is a base64-encoded PEM CA bundle for TLS to the OAuth server.
+	// If empty, the system root CAs are used.
+	CACert string `mapstructure:"caCert"`
+
+	// ClientID is the OAuth client ID registered in OpenShift for capp-backend.
+	ClientID string `mapstructure:"clientId"`
+
+	// ClientSecret is the OAuth client secret. Inject via CAPP_AUTH_OPENSHIFT_CLIENTSECRET.
+	ClientSecret string `mapstructure:"clientSecret"`
+
+	// RedirectURI is the frontend callback URL that OpenShift redirects to
+	// after successful authentication.
+	RedirectURI string `mapstructure:"redirectUri"`
+
+	// Scopes is the list of OAuth scopes to request.
+	// Default: ["user:info", "user:check-access"].
+	Scopes []string `mapstructure:"scopes"`
+
+	// TokenCacheTTLSeconds is how long a validated token's identity is cached
+	// in memory to avoid a TokenReview on every request. Default: 60.
+	TokenCacheTTLSeconds int `mapstructure:"tokenCacheTTLSeconds"`
+}
+
 // RateLimitConfig controls per-IP request rate limiting.
 type RateLimitConfig struct {
 	// Enabled toggles rate limiting globally. Default: true.
@@ -105,11 +139,13 @@ type AuthConfig struct {
 	//                 server-side session store.
 	//   static      — a fixed list of API keys (development only).
 	//   dex         — OIDC ROPC login via a Dex instance; backend issues JWTs.
+	//   openshift   — OpenShift OAuth + K8s impersonation; fully stateless.
 	// Default: "passthrough".
 	Mode      string          `mapstructure:"mode"`
 	JWT       JWTConfig       `mapstructure:"jwt"`
 	Static    StaticConfig    `mapstructure:"static"`
 	Dex       DexConfig       `mapstructure:"dex"`
+	OpenShift OpenShiftConfig `mapstructure:"openshift"`
 	RateLimit RateLimitConfig `mapstructure:"rateLimit"`
 }
 
@@ -276,6 +312,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.jwt.tokenTTLMinutes", 60)
 	v.SetDefault("auth.jwt.refreshTTLMinutes", 1440)
 	v.SetDefault("auth.dex.scopes", []string{"openid", "profile", "email"})
+	v.SetDefault("auth.openshift.scopes", []string{"user:info", "user:check-access"})
+	v.SetDefault("auth.openshift.tokenCacheTTLSeconds", 60)
 	v.SetDefault("auth.rateLimit.enabled", true)
 	v.SetDefault("auth.rateLimit.requestsPerSecond", 20.0)
 	v.SetDefault("auth.rateLimit.burst", 40)
