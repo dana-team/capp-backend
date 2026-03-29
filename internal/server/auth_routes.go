@@ -37,10 +37,18 @@ type openshiftAuthorizeResponse struct {
 	AuthorizeURL string `json:"authorizeUrl"`
 }
 
+// authModeResponse is returned by GET /api/v1/auth/mode.
+type authModeResponse struct {
+	Mode string `json:"mode"`
+}
+
 // registerAuthRoutes mounts the auth endpoints onto the provided group.
 // These endpoints do not require the Auth middleware — they ARE the
 // authentication entry points.
 func registerAuthRoutes(rg *gin.RouterGroup, mgr auth.AuthManager, mode string) {
+	rg.GET("/mode", func(c *gin.Context) {
+		c.JSON(200, authModeResponse{Mode: mode})
+	})
 	rg.POST("/login", loginHandler(mgr, mode))
 	rg.POST("/refresh", refreshHandler(mgr))
 
