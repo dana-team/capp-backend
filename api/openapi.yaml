@@ -145,7 +145,40 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NamespaceItem'
+    # ── ConfigMaps ────────────────────────────────────────────────────────────────
+    ConfigMapRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: my-config
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            key1: value1
+            key2: value2
+    ConfigMapUpdateRequest:
+      type: object
+      properties:
+        data:
+          required: true
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            key1: new-value
+            key3: value3
 
+    ConfigMapList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigMapRequest'
     # ── Capps ─────────────────────────────────────────────────────────────────────
     EnvVar:
       type: object
@@ -345,13 +378,13 @@ components:
       description: Kubernetes namespace.
       example: default
 
-    cappNameParam:
+    ObjectNameParam:
       name: name
       in: path
       required: true
       schema:
         type: string
-      description: Capp resource name.
+      description: Object resource name.
       example: my-app
 
   responses:
@@ -518,6 +551,142 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  # ── ConfigMaps ──────────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps:
+    get:
+      tags: [configmaps]
+      summary: List ConfigMaps in a namespace
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: ConfigMap list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [configmaps]
+      summary: Create a ConfigMap
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigMapRequest'
+      responses:
+        "201":
+          description: ConfigMap created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapRequest'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/{name}:
+    get:
+      tags: [configmaps]
+      summary: Get a ConfigMap
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: ConfigMap details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [configmaps]
+      summary: Update a ConfigMap
+      description: |
+        Replaces the ConfigMap spec. The backend fetches the current `resourceVersion`
+        before applying the update to avoid optimistic-concurrency conflicts.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigMapUpdateRequest'
+      responses:
+        "200":
+          description: ConfigMap updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapRequest'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [configmaps]
+      summary: Delete a ConfigMap
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "204":
+          description: ConfigMap deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+
   # ── Capps ──────────────────────────────────────────────────────────────────────
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps:
     get:
@@ -585,7 +754,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/cappNameParam'
+        - $ref: '#/components/parameters/objectNameParam'
       responses:
         "200":
           description: Capp details.
@@ -609,7 +778,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/cappNameParam'
+        - $ref: '#/components/parameters/objectNameParam'
       requestBody:
         required: true
         content:
@@ -642,7 +811,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/cappNameParam'
+        - $ref: '#/components/parameters/objectNameParam'
       responses:
         "204":
           description: Capp deleted.

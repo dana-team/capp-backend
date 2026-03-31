@@ -23,6 +23,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/resources/utils"
 	"github.com/gin-gonic/gin"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -75,19 +76,19 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 func (h *Handler) list(c *gin.Context) {
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
-		apierrors.Respond(c, apierrors.NewInternal(errContextMissing("K8sClientKey")))
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
 		return
 	}
 
 	adminClient, ok := c.MustGet(string(middleware.AdminK8sClientKey)).(client.Client)
 	if !ok {
-		apierrors.Respond(c, apierrors.NewInternal(errContextMissing("AdminK8sClientKey")))
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("AdminK8sClientKey")))
 		return
 	}
 
 	meta, ok := c.MustGet(string(middleware.ClusterMetaKey)).(cluster.ClusterMeta)
 	if !ok {
-		apierrors.Respond(c, apierrors.NewInternal(errContextMissing("ClusterMetaKey")))
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("ClusterMetaKey")))
 		return
 	}
 
@@ -150,16 +151,4 @@ func canCreateCapps(ctx context.Context, userClient client.Client, namespace str
 		return false, err
 	}
 	return sar.Status.Allowed, nil
-}
-
-// errContextMissing is a helper for producing a consistent internal error when
-// a required context value is absent (indicates middleware misconfiguration).
-func errContextMissing(key string) error {
-	return &contextError{key: key}
-}
-
-type contextError struct{ key string }
-
-func (e *contextError) Error() string {
-	return "required context value " + e.key + " not set — check middleware order"
 }

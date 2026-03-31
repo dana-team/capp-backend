@@ -25,8 +25,9 @@ import (
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/resources"
-	capphandler "github.com/dana-team/capp-backend/internal/resources/capps"
-	nshandler "github.com/dana-team/capp-backend/internal/resources/namespaces"
+	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
+	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	cmhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	"github.com/dana-team/capp-backend/internal/server"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	"go.uber.org/zap"
@@ -106,7 +107,7 @@ func main() {
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New())
 	registry.Register(capphandler.New())
-
+	registry.Register(cmhandler.New())
 	// ── 7. Build and start HTTP server ────────────────────────────────────────
 	srv := server.New(cfg, authMgr, clusterMgr, registry, logger)
 
