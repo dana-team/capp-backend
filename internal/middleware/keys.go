@@ -32,4 +32,11 @@ const (
 	// attached by the cluster middleware. Handlers can use it to include the
 	// cluster name in responses.
 	ClusterMetaKey contextKey = "clusterMeta"
+
+	// AdminK8sClientKey is the gin.Context key for the admin-scoped controller-runtime
+	// client.Client attached by the cluster middleware. It uses the cluster's own
+	// service account credentials (no user token override), giving it the cluster-level
+	// permissions the backend SA was granted. Use this for administrative listing
+	// operations (e.g. namespace discovery) where user-scoped RBAC is too restrictive.
+	AdminK8sClientKey contextKey = "adminK8sClient"
 )

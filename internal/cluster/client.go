@@ -50,6 +50,10 @@ type ClusterMeta struct {
 	// restore it. Handlers should return 503 (not 404) for unhealthy clusters.
 	Healthy bool `json:"healthy"`
 
+	// IsOpenShift is true when the cluster exposes the OpenShift API groups.
+	// Set at startup by probing the route.openshift.io API group.
+	IsOpenShift bool `json:"isOpenShift"`
+
 	// AllowedNamespaces is a copy of the config value. If non-empty, only the
 	// listed namespaces are accessible through this cluster entry.
 	AllowedNamespaces []string `json:"-"`

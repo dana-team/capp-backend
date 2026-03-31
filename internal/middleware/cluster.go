@@ -73,7 +73,17 @@ func Cluster(mgr cluster.ClusterManager) gin.HandlerFunc {
 			return
 		}
 
+		// Build an admin client using the cluster's own SA credentials (no user override).
+		// Used for administrative listing endpoints (e.g. namespace discovery) where the
+		// user's credentials may lack cluster-wide list permissions.
+		adminClient, err := mgr.ClientFor(cc, auth.ClusterCredential{})
+		if err != nil {
+			apierrors.Respond(c, apierrors.NewInternal(err))
+			return
+		}
+
 		c.Set(string(K8sClientKey), k8sClient)
+		c.Set(string(AdminK8sClientKey), adminClient)
 		c.Set(string(ClusterMetaKey), cc.Meta)
 		c.Next()
 	}

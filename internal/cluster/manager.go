@@ -9,6 +9,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/pkg/k8s"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -90,6 +91,20 @@ func New(cfgs []config.ClusterConfig, scheme *runtime.Scheme, logger *zap.Logger
 		} else {
 			cc.Meta.Healthy = true
 			logger.Info("cluster connected", zap.String("cluster", cfg.Name))
+		}
+
+		// Detect whether the cluster runs OpenShift by probing the route.openshift.io API group.
+		isOS, err := k8s.IsOpenShift(context.Background(), cc.RestConfig)
+		if err != nil {
+			logger.Warn("could not detect OpenShift platform",
+				zap.String("cluster", cfg.Name),
+				zap.Error(err),
+			)
+		} else {
+			cc.Meta.IsOpenShift = isOS
+			if isOS {
+				logger.Info("OpenShift cluster detected", zap.String("cluster", cfg.Name))
+			}
 		}
 
 		mgr.clusters[cfg.Name] = cc
