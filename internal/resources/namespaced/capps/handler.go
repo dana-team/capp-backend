@@ -1,12 +1,11 @@
 package capps
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -43,7 +42,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 // listAll handles GET /api/v1/clusters/:cluster/capps
 // Lists Capps across all namespaces visible to the caller.
 func (h *Handler) listAll(c *gin.Context) {
-	k8sClient := extractClient(c)
+	k8sClient := namespaced.ExtractClient(c)
 	if k8sClient == nil {
 		return
 	}
@@ -59,7 +58,7 @@ func (h *Handler) listAll(c *gin.Context) {
 
 // list handles GET /api/v1/clusters/:cluster/namespaces/:namespace/capps
 func (h *Handler) list(c *gin.Context) {
-	k8sClient := extractClient(c)
+	k8sClient := namespaced.ExtractClient(c)
 	if k8sClient == nil {
 		return
 	}
@@ -76,7 +75,7 @@ func (h *Handler) list(c *gin.Context) {
 
 // get handles GET /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
 func (h *Handler) get(c *gin.Context) {
-	k8sClient := extractClient(c)
+	k8sClient := namespaced.ExtractClient(c)
 	if k8sClient == nil {
 		return
 	}
@@ -98,7 +97,7 @@ func (h *Handler) get(c *gin.Context) {
 
 // create handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps
 func (h *Handler) create(c *gin.Context) {
-	k8sClient := extractClient(c)
+	k8sClient := namespaced.ExtractClient(c)
 	if k8sClient == nil {
 		return
 	}
@@ -126,7 +125,7 @@ func (h *Handler) create(c *gin.Context) {
 // It performs a full replacement (not a patch). The resource version is read
 // from the live object before writing so we don't clobber concurrent changes.
 func (h *Handler) update(c *gin.Context) {
-	k8sClient := extractClient(c)
+	k8sClient := namespaced.ExtractClient(c)
 	if k8sClient == nil {
 		return
 	}
@@ -167,7 +166,7 @@ func (h *Handler) update(c *gin.Context) {
 
 // delete handles DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
 func (h *Handler) delete(c *gin.Context) {
-	k8sClient := extractClient(c)
+	k8sClient := namespaced.ExtractClient(c)
 	if k8sClient == nil {
 		return
 	}
@@ -192,8 +191,6 @@ func (h *Handler) delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 // respondList converts a CappList into a CappListResponse and writes it.
 func (h *Handler) respondList(c *gin.Context, cappList cappv1alpha1.CappList) {
 	items := make([]CappResponse, 0, len(cappList.Items))
@@ -201,25 +198,4 @@ func (h *Handler) respondList(c *gin.Context, cappList cappv1alpha1.CappList) {
 		items = append(items, FromK8s(&cappList.Items[i]))
 	}
 	c.JSON(http.StatusOK, CappListResponse{Items: items, Total: len(items)})
-}
-
-// extractClient retrieves the scoped K8s client from the Gin context.
-// It responds with an internal error and returns nil if the client is absent
-// (which indicates a middleware configuration error).
-func extractClient(c *gin.Context) client.Client {
-	val, exists := c.Get(string(middleware.K8sClientKey))
-	if !exists {
-		apierrors.Respond(c, apierrors.NewInternal(
-			errors.New("K8sClientKey not set in context — cluster middleware must run before handler"),
-		))
-		return nil
-	}
-	k, ok := val.(client.Client)
-	if !ok {
-		apierrors.Respond(c, apierrors.NewInternal(
-			errors.New("K8sClientKey has unexpected type in context"),
-		))
-		return nil
-	}
-	return k
 }
