@@ -32,7 +32,7 @@ require (
 	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
-	github.com/cert-manager/cert-manager v1.19.2 // indirect
+	github.com/cert-manager/cert-manager v1.19.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cisco-open/operator-tools v0.37.0 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
