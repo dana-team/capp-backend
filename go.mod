@@ -25,7 +25,7 @@ require (
 	emperror.dev/errors v0.8.1 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/antchfx/htmlquery v1.3.4 // indirect
-	github.com/antchfx/xpath v1.3.5 // indirect
+	github.com/antchfx/xpath v1.3.6 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
