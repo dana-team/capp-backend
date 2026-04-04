@@ -43,12 +43,13 @@ type RouteSpec struct {
 	RouteTimeoutSeconds *int64 `json:"routeTimeoutSeconds,omitempty"`
 }
 
-// LogSpec configures Elasticsearch log shipping for a Capp.
+// LogSpec configures log shipping for a Capp.
 type LogSpec struct {
-	// Type is currently always "elastic".
+	// Type is one of "elastic" or "elastic-datastream".
+	// When type is "elastic-datastream", Index is ignored.
 	Type           string `json:"type"`
 	Host           string `json:"host"`
-	Index          string `json:"index"`
+	Index          string `json:"index,omitempty"`
 	User           string `json:"user"`
 	PasswordSecret string `json:"passwordSecret"`
 }

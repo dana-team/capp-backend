@@ -75,7 +75,7 @@ func ToK8s(req CappRequest, namespace string) *cappv1alpha1.Capp {
 	// Log spec.
 	if req.LogSpec != nil {
 		capp.Spec.LogSpec = cappv1alpha1.LogSpec{
-			Type:           req.LogSpec.Type,
+			Type:           cappv1alpha1.LogType(req.LogSpec.Type),
 			Host:           req.LogSpec.Host,
 			Index:          req.LogSpec.Index,
 			User:           req.LogSpec.User,
@@ -165,7 +165,7 @@ func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
 	// Log spec.
 	if ls := capp.Spec.LogSpec; ls.Type != "" {
 		resp.LogSpec = &LogSpec{
-			Type:           ls.Type,
+			Type:           string(ls.Type),
 			Host:           ls.Host,
 			Index:          ls.Index,
 			User:           ls.User,
