@@ -7,13 +7,17 @@ info:
 
     ## Authentication
 
-    The backend supports three auth modes configured server-side:
+    The backend supports five auth modes configured server-side:
 
-    - **passthrough** — supply a Kubernetes `Bearer <token>` on every request.
-    - **jwt** — call `/api/v1/auth/login` once to exchange a cluster token for a
-      short-lived JWT; refresh with `/api/v1/auth/refresh`.
+    - **passthrough** — supply a raw Kubernetes `Bearer <token>` on every request.
+    - **jwt** — call `/api/v1/auth/login` with `cluster` + `token` to exchange a
+      cluster token for a short-lived JWT; refresh with `/api/v1/auth/refresh`.
     - **static** — use a fixed API key configured on the server (dev / CI only).
+    - **dex** — call `/api/v1/auth/login` with `username` + `password`; Dex handles OIDC.
+    - **openshift** — use `/api/v1/auth/openshift/authorize` to get an OAuth URL,
+      then POST the code to `/api/v1/auth/openshift/callback`.
 
+    Use `GET /api/v1/auth/mode` to discover which mode the server is running.
     All resource endpoints require the `Authorization: Bearer <token>` header.
   version: "0.1.0"
   contact:
@@ -44,7 +48,8 @@ components:
       bearerFormat: JWT
       description: |
         In **passthrough** mode supply the raw Kubernetes ServiceAccount token.
-        In **jwt** mode supply the JWT returned by `/api/v1/auth/login`.
+        In **jwt** / **dex** / **openshift** modes supply the JWT returned by the
+        login or callback endpoint.
         In **static** mode supply one of the configured API keys.
 
   schemas:
@@ -67,17 +72,34 @@ components:
 
     # ── Auth ─────────────────────────────────────────────────────────────────────
     LoginRequest:
-      type: object
-      required: [cluster, token]
-      properties:
-        cluster:
-          type: string
-          description: Name of the cluster to authenticate against.
-          example: production
-        token:
-          type: string
-          description: Raw Kubernetes Bearer token (ServiceAccount or OIDC).
-          example: "eyJhbGci..."
+      description: |
+        - **jwt / passthrough / static** mode: provide `cluster` and `token`.
+        - **dex** mode: provide `username` and `password`.
+      oneOf:
+        - title: ClusterTokenLogin
+          type: object
+          required: [cluster, token]
+          properties:
+            cluster:
+              type: string
+              description: Cluster to authenticate against (jwt/passthrough/static mode).
+              example: production
+            token:
+              type: string
+              description: Raw Kubernetes Bearer token (jwt/passthrough/static mode).
+              example: "eyJhbGci..."
+        - title: DexLogin
+          type: object
+          required: [username, password]
+          properties:
+            username:
+              type: string
+              description: Username (dex mode).
+              example: admin
+            password:
+              type: string
+              description: Password (dex mode).
+              example: "s3cr3t"
 
     TokenPair:
       type: object
@@ -100,6 +122,30 @@ components:
         refreshToken:
           type: string
           description: Refresh token obtained from a previous login or refresh.
+
+    AuthModeResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [passthrough, jwt, static, dex, openshift]
+          example: jwt
+
+    OpenShiftAuthorizeResponse:
+      type: object
+      properties:
+        authorizeUrl:
+          type: string
+          description: OAuth authorize URL to redirect the browser to.
+          example: "https://oauth.cluster.example.com/oauth/authorize?..."
+
+    OpenShiftCallbackRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: OAuth authorization code received from the OpenShift OAuth server.
 
     # ── Clusters ──────────────────────────────────────────────────────────────────
     ClusterMeta:
@@ -220,6 +266,7 @@ components:
     # ── Capps ─────────────────────────────────────────────────────────────────────
     EnvVar:
       type: object
+      required: [name]
       properties:
         name:
           type: string
@@ -230,6 +277,7 @@ components:
 
     VolumeMount:
       type: object
+      required: [name, mountPath]
       properties:
         name:
           type: string
@@ -247,22 +295,38 @@ components:
         tlsEnabled:
           type: boolean
           example: true
+        routeTimeoutSeconds:
+          type: integer
+          format: int64
+          description: Maximum request duration in seconds.
+          example: 30
 
     LogSpec:
       type: object
       properties:
         type:
           type: string
+          enum: [elastic, elastic-datastream]
+          description: Log destination type. When "elastic-datastream", the index field is ignored.
           example: elastic
         host:
           type: string
-          example: logs.example.com
+          example: https://elasticsearch.example.com:9200
         index:
           type: string
+          description: Index name to write events to. Ignored when type is "elastic-datastream".
           example: capp-logs
+        user:
+          type: string
+          example: elastic-user
+        passwordSecret:
+          type: string
+          description: Name of the Kubernetes Secret holding the Elasticsearch password.
+          example: elastic-password-secret
 
     NFSVolume:
       type: object
+      required: [name, server, path, capacity]
       properties:
         name:
           type: string
@@ -273,20 +337,50 @@ components:
         path:
           type: string
           example: /exports/data
-        mountPath:
+        capacity:
           type: string
-          example: /mnt/data
+          description: Storage capacity, e.g. "10Gi".
+          example: "10Gi"
+
+    KedaSource:
+      type: object
+      required: [name, scalarType]
+      properties:
+        name:
+          type: string
+          example: my-scaler
+        scalarType:
+          type: string
+          example: prometheus
+        scalarMetadata:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            serverAddress: http://prometheus:9090
+            metricName: http_requests_total
+        minReplicas:
+          type: integer
+          format: int32
+          example: 1
+        maxReplicas:
+          type: integer
+          format: int32
+          example: 10
 
     CappRequest:
       type: object
-      required: [name, image]
+      required: [name, namespace, image]
       properties:
         name:
           type: string
           example: my-app
+        namespace:
+          type: string
+          example: default
         scaleMetric:
           type: string
-          enum: [rps, concurrency, cpu, memory]
+          enum: [rps, concurrency, cpu, memory, external]
           example: rps
         state:
           type: string
@@ -318,10 +412,20 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NFSVolume'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/KedaSource'
 
-    Condition:
+    ConditionResponse:
       type: object
       properties:
+        source:
+          type: string
+          description: |
+            Sub-system that produced this condition.
+            One of: "capp", "knative", "logging", "route.domainmapping".
+          example: knative
         type:
           type: string
           example: Ready
@@ -329,62 +433,118 @@ components:
           type: string
           enum: ["True", "False", Unknown]
           example: "True"
+        lastTransitionTime:
+          type: string
+          format: date-time
         reason:
           type: string
           example: RevisionReady
         message:
           type: string
           example: Revision is ready.
-        lastTransitionTime:
-          type: string
-          format: date-time
 
-    ApplicationLink:
+    ApplicationLinksResponse:
       type: object
       properties:
-        name:
+        site:
           type: string
-          example: url
-        url:
-          type: string
+          description: Public URL of the deployed Capp.
           example: https://my-app.example.com
+        consoleLink:
+          type: string
+          description: Cluster console URL for the Capp resource.
+          example: https://console.cluster.example.com/k8s/ns/default/capps/my-app
 
-    CappStatus:
+    StateStatusResponse:
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [enabled, disabled]
+          example: enabled
+        lastChange:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp of the last state transition.
+
+    CappStatusResponse:
       type: object
       properties:
         conditions:
           type: array
           items:
-            $ref: '#/components/schemas/Condition'
+            $ref: '#/components/schemas/ConditionResponse'
         applicationLinks:
-          type: array
-          items:
-            $ref: '#/components/schemas/ApplicationLink'
+          $ref: '#/components/schemas/ApplicationLinksResponse'
         stateStatus:
-          type: string
-          example: enabled
+          $ref: '#/components/schemas/StateStatusResponse'
 
     CappResponse:
-      allOf:
-        - $ref: '#/components/schemas/CappRequest'
-        - type: object
-          properties:
-            namespace:
-              type: string
-              example: default
-            labels:
-              type: object
-              additionalProperties:
-                type: string
-            annotations:
-              type: object
-              additionalProperties:
-                type: string
-            status:
-              $ref: '#/components/schemas/CappStatus'
-            creationTimestamp:
-              type: string
-              format: date-time
+      type: object
+      properties:
+        name:
+          type: string
+          example: my-app
+        namespace:
+          type: string
+          example: default
+        createdAt:
+          type: string
+          format: date-time
+        uid:
+          type: string
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        resourceVersion:
+          type: string
+          example: "12345"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+          description: kubectl.kubernetes.io/* annotations are filtered out.
+        scaleMetric:
+          type: string
+          enum: [rps, concurrency, cpu, memory, external]
+          example: rps
+        state:
+          type: string
+          enum: [enabled, disabled]
+          example: enabled
+        minReplicas:
+          type: integer
+          example: 1
+        image:
+          type: string
+          example: ghcr.io/example/my-app:v1.2.3
+        containerName:
+          type: string
+          example: my-app
+        env:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        volumeMounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/VolumeMount'
+        routeSpec:
+          $ref: '#/components/schemas/RouteSpec'
+        logSpec:
+          $ref: '#/components/schemas/LogSpec'
+        nfsVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NFSVolume'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/KedaSource'
+        status:
+          $ref: '#/components/schemas/CappStatusResponse'
 
     CappList:
       type: object
@@ -462,15 +622,29 @@ security:
 
 paths:
   # ── Auth ───────────────────────────────────────────────────────────────────────
+  /api/v1/auth/mode:
+    get:
+      tags: [auth]
+      summary: Get the active authentication mode
+      description: Returns the auth mode the server is currently configured with.
+      security: []
+      responses:
+        "200":
+          description: Current auth mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthModeResponse'
+
   /api/v1/auth/login:
     post:
       tags: [auth]
-      summary: Exchange a cluster token for a JWT pair
+      summary: Log in and obtain a token pair
       description: |
-        Validates the supplied token against the target cluster's `/version` endpoint.
-        On success, returns a short-lived access JWT and a long-lived refresh JWT.
+        - **jwt / passthrough / static** mode: provide `cluster` and `token`.
+        - **dex** mode: provide `username` and `password`.
 
-        Only available when `auth.mode` is `jwt`.
+        Returns a short-lived access JWT and a long-lived refresh JWT.
       security: []
       requestBody:
         required: true
@@ -506,9 +680,7 @@ paths:
       summary: Refresh an expired access token
       description: |
         Validates the supplied refresh token, extends the server-side session,
-        and issues a new JWT pair.
-
-        Only available when `auth.mode` is `jwt`.
+        and issues a new JWT pair. Not available in passthrough or static mode.
       security: []
       requestBody:
         required: true
@@ -525,6 +697,57 @@ paths:
                 $ref: '#/components/schemas/TokenPair'
         "401":
           $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/openshift/authorize:
+    get:
+      tags: [auth]
+      summary: Get OpenShift OAuth authorize URL
+      description: |
+        Returns the OpenShift OAuth server's authorize URL. The frontend should
+        redirect the browser to this URL to begin the OAuth flow.
+        Only available when `auth.mode` is `openshift`.
+      security: []
+      responses:
+        "200":
+          description: Authorize URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenShiftAuthorizeResponse'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/openshift/callback:
+    post:
+      tags: [auth]
+      summary: Exchange OpenShift OAuth code for tokens
+      description: |
+        Exchanges the OAuth authorization code (received after the browser redirect)
+        for an access/refresh token pair. Only available when `auth.mode` is `openshift`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenShiftCallbackRequest'
+      responses:
+        "200":
+          description: OAuth exchange successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        "400":
+          description: Missing or malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
 
   # ── Clusters ───────────────────────────────────────────────────────────────────
   /api/v1/clusters:
@@ -566,9 +789,11 @@ paths:
       tags: [namespaces]
       summary: List namespaces in a cluster
       description: |
-        Lists all Kubernetes namespaces the authenticated user can access.
-        If the cluster was configured with `allowedNamespaces`, only those
-        namespaces are returned.
+        Returns Kubernetes namespaces (or OpenShift Projects) the authenticated
+        user has access to. Only namespaces labeled `dana.io/capp-ns=true` are
+        returned. On vanilla Kubernetes each namespace is checked via
+        SelfSubjectAccessReview; on OpenShift the Projects API handles access
+        control natively.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
       responses:
@@ -753,6 +978,33 @@ paths:
 
 
   # ── Capps ──────────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/capps:
+    get:
+      tags: [capps]
+      summary: List all Capps across all namespaces
+      description: |
+        Returns Capps from every namespace the authenticated user can access.
+        Useful for cluster-wide dashboards.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Capp list (all namespaces).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps:
     get:
       tags: [capps]
@@ -771,8 +1023,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "404":
-          $ref: '#/components/responses/NotFound'
         "503":
           description: Cluster is currently unhealthy.
           content:
@@ -839,7 +1089,7 @@ paths:
       summary: Update a Capp
       description: |
         Replaces the Capp spec. The backend fetches the current `resourceVersion`
-        before applying the update to avoid optimistic-concurrency conflicts.
+        before applying the update to satisfy Kubernetes optimistic concurrency control.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -886,34 +1136,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
-
-  # ── Capps — cross-namespace list ───────────────────────────────────────────────
-  /api/v1/clusters/{cluster}/capps:
-    get:
-      tags: [capps]
-      summary: List all Capps across all namespaces
-      description: |
-        Returns Capps from every namespace the authenticated user can access.
-        Useful for cluster-wide dashboards.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-      responses:
-        "200":
-          description: Capp list (all namespaces).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CappList'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "503":
-          description: Cluster is currently unhealthy.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
 
   # ── Observability ──────────────────────────────────────────────────────────────
   /healthz:
