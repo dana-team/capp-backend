@@ -5,6 +5,9 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "capp-backend.labels" . | nindent 4 }}
+    {{- if eq .Values.deployAs "capp" }}
+    dana.io/capp-managed: "true"
+    {{- end }}
 data:
   config.yaml: |
     server:

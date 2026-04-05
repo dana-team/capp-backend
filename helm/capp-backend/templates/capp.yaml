@@ -21,6 +21,9 @@ spec:
   configurationSpec:
     template:
       spec:
+        {{- if .Values.serviceAccount.name }}
+        serviceAccountName: {{ .Values.serviceAccount.name }}
+        {{- end }}
         containers:
           - name: capp-backend
             image: {{ include "capp-backend.image" . }}
