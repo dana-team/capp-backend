@@ -39,6 +39,8 @@ tags:
     description: Capp resource management
   - name: configmaps
     description: ConfigMap resource management
+  - name: secrets
+    description: Secret resource management
 
 components:
   securitySchemes:
@@ -193,6 +195,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NamespaceItem'
+
     # ── ConfigMaps ────────────────────────────────────────────────────────────────
     ConfigMapRequest:
       type: object
@@ -263,6 +266,88 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConfigMapResponse'
+
+    # ── Secrets ───────────────────────────────────────────────────────────────────
+    SecretRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: my-secret
+        type:
+          type: string
+          description: Kubernetes secret type. Defaults to Opaque if omitted.
+          example: Opaque
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          description: Plain-text key-value pairs. The server handles base64 encoding.
+          example:
+            username: admin
+            password: s3cr3t
+
+    SecretUpdateRequest:
+      type: object
+      properties:
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          description: Plain-text key-value pairs to replace the secret's data with.
+          example:
+            username: admin
+            password: new-s3cr3t
+
+    SecretResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          example: my-secret
+        namespace:
+          type: string
+          example: default
+        type:
+          type: string
+          example: Opaque
+        createdAt:
+          type: string
+          format: date-time
+        uid:
+          type: string
+        resourceVersion:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          description: Base64-decoded key-value pairs.
+          example:
+            username: admin
+            password: s3cr3t
+
+    SecretList:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int32
+          example: 2
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretResponse'
+
     # ── Capps ─────────────────────────────────────────────────────────────────────
     EnvVar:
       type: object
@@ -814,7 +899,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  # ── ConfigMaps ──────────────────────────────────────────────────────────────────────
+  # ── ConfigMaps ─────────────────────────────────────────────────────────────────
   /api/v1/clusters/{cluster}/configmaps:
     get:
       tags: [configmaps]
@@ -976,6 +1061,180 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
 
+  # ── Secrets ────────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/secrets:
+    get:
+      tags: [secrets]
+      summary: List all Secrets across all namespaces
+      description: |
+        Returns capp-managed Secrets (labeled `dana.io/capp-managed=true`) from
+        every namespace the authenticated user can access. Useful for cluster-wide views.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Secret list (all namespaces).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets:
+    get:
+      tags: [secrets]
+      summary: List Secrets in a namespace
+      description: |
+        Returns only Secrets labeled `dana.io/capp-managed=true`.
+        Secrets not created through this API are not visible.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Secret list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [secrets]
+      summary: Create a Secret
+      description: |
+        Creates a new Secret labeled `dana.io/capp-managed=true`.
+        Data values are plain strings — the server handles base64 encoding.
+        Type defaults to `Opaque` if omitted.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecretRequest'
+      responses:
+        "201":
+          description: Secret created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets/{name}:
+    get:
+      tags: [secrets]
+      summary: Get a Secret
+      description: |
+        Returns a single Secret. Returns 404 if the secret exists in Kubernetes
+        but was not created through this API (i.e. lacks the managed label).
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Secret details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [secrets]
+      summary: Update a Secret
+      description: |
+        Replaces the Secret's data. The backend fetches the current object first
+        to preserve metadata and satisfy Kubernetes optimistic concurrency control.
+        Returns 404 if the secret lacks the managed label.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecretUpdateRequest'
+      responses:
+        "200":
+          description: Secret updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [secrets]
+      summary: Delete a Secret
+      description: |
+        Deletes a Secret. Returns 404 if the secret lacks the managed label.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "204":
+          description: Secret deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
 
   # ── Capps ──────────────────────────────────────────────────────────────────────
   /api/v1/clusters/{cluster}/capps:

@@ -10,15 +10,12 @@ import (
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-const (
-	managedConfigMapLabelKey = "dana.io/capp-managed"
 )
 
 // Handler implements resources.ResourceHandler for Kubernetes ConfigMaps.
@@ -52,7 +49,7 @@ func (h *Handler) listAll(c *gin.Context) {
 
 	configMapList := &corev1.ConfigMapList{}
 	if err := k8sClient.List(c.Request.Context(), configMapList, client.MatchingLabels{
-		managedConfigMapLabelKey: "true",
+		consts.ManagedLabelKey: "true",
 	}); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -70,7 +67,7 @@ func (h *Handler) list(c *gin.Context) {
 
 	configMapList := &corev1.ConfigMapList{}
 	if err := k8sClient.List(c.Request.Context(), configMapList, client.InNamespace(namespace), client.MatchingLabels{
-		managedConfigMapLabelKey: "true",
+		consts.ManagedLabelKey: "true",
 	}); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -96,7 +93,7 @@ func (h *Handler) create(c *gin.Context) {
 			Name:      req.Name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				managedConfigMapLabelKey: "true",
+				consts.ManagedLabelKey: "true",
 			},
 		},
 		Data: req.Data,
@@ -131,7 +128,7 @@ func (h *Handler) get(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[managedConfigMapLabelKey]; !ok || value != "true" {
+	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
@@ -165,7 +162,7 @@ func (h *Handler) update(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[managedConfigMapLabelKey]; !ok || value != "true" {
+	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
@@ -199,7 +196,7 @@ func (h *Handler) delete(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[managedConfigMapLabelKey]; !ok || value != "true" {
+	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
