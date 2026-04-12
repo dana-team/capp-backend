@@ -149,7 +149,7 @@ clusters:
     displayName: "Local (kind)"
     credential:
       # Option A: path to a kubeconfig file (mounted from a Secret in production).
-      kubeconfigPath: "/home/dvir/.kube/config"
+      kubeconfigPath: "/home/user/.kube/config"
       # Option B: inline credentials.
       inline:
         apiServer: "https://127.0.0.1:45883"
