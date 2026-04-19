@@ -196,6 +196,14 @@ components:
           items:
             $ref: '#/components/schemas/NamespaceItem'
 
+    NamespaceRequest:
+      type: object
+      required: [ name ]
+      properties:
+        name:
+          type: string
+          example: my-namespace
+
     # ── ConfigMaps ────────────────────────────────────────────────────────────────
     ConfigMapRequest:
       type: object
@@ -898,6 +906,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+    post:
+      tags: [ namespaces ]
+      summary: Create a namespace in a cluster
+      description: |
+        Creates a new Kubernetes namespace (or OpenShift Project) in the specified
+        cluster. The namespace is automatically labeled `dana.io/capp-ns=true` so
+        it is visible in the namespace list endpoint.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NamespaceRequest'
+      responses:
+        "201":
+          description: Namespace created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceItem'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "500":
+          $ref: '#/components/responses/InternalError'
 
   # ── ConfigMaps ─────────────────────────────────────────────────────────────────
   /api/v1/clusters/{cluster}/configmaps:
