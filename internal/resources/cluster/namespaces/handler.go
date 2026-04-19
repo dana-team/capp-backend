@@ -23,6 +23,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/utils"
 	"github.com/gin-gonic/gin"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -31,12 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-const (
-	managedNameSpaceLabelKey = "dana.io/capp-ns"
-	cappAPIGroup             = "rcs.dana.io"
-	cappResource             = "capps"
 )
 
 // NamespaceItem is the simplified namespace representation returned to the frontend.
@@ -65,6 +60,7 @@ func (h *Handler) Name() string { return "namespaces" }
 // RegisterRoutes attaches the namespace routes to the cluster router group.
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/namespaces", h.list)
+	rg.POST("/namespaces", h.create)
 }
 
 // list handles GET /api/v1/clusters/:cluster/namespaces.
@@ -92,7 +88,7 @@ func (h *Handler) list(c *gin.Context) {
 		return
 	}
 
-	labelSelector := labels.SelectorFromSet(labels.Set{managedNameSpaceLabelKey: "true"})
+	labelSelector := labels.SelectorFromSet(labels.Set{consts.ManagedNameSpaceLabelKey: "true"})
 	listOpts := &client.ListOptions{LabelSelector: labelSelector}
 
 	var items []NamespaceItem
@@ -142,8 +138,70 @@ func canCreateCapps(ctx context.Context, userClient client.Client, namespace str
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
 				Namespace: namespace,
 				Verb:      "create",
-				Group:     cappAPIGroup,
-				Resource:  cappResource,
+				Group:     consts.CappAPIGroup,
+				Resource:  consts.CappResource,
+			},
+		},
+	}
+	if err := userClient.Create(ctx, sar); err != nil {
+		return false, err
+	}
+	return sar.Status.Allowed, nil
+}
+
+// create handles POST /api/v1/clusters/:cluster/namespaces.
+
+func (h *Handler) create(c *gin.Context) {
+	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
+		return
+	}
+
+	allowed, err := canCreateNamespaces(c.Request.Context(), userClient)
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	if !allowed {
+		apierrors.Respond(c, apierrors.NewForbidden("not allowed to create namespaces"))
+		return
+	}
+	adminClient, ok := c.MustGet(string(middleware.AdminK8sClientKey)).(client.Client)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("AdminK8sClientKey")))
+		return
+	}
+
+	var body struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
+		return
+	}
+
+	ns := &corev1.Namespace{}
+	ns.Name = body.Name
+	ns.Labels = map[string]string{
+		consts.ManagedNameSpaceLabelKey: "true",
+	}
+
+	if err := adminClient.Create(c.Request.Context(), ns); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, NamespaceItem{Name: ns.Name, Status: "Active"})
+}
+
+func canCreateNamespaces(ctx context.Context, userClient client.Client) (bool, error) {
+	sar := &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Verb:     "create",
+				Group:    "",
+				Resource: "namespaces",
 			},
 		},
 	}
