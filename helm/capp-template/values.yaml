@@ -1,0 +1,15 @@
+name: ""
+namespace: ""
+image: ""
+containerName: ""
+scaleMetric: ""
+state: ""
+minReplicas: 0
+labels: {}
+annotations: {}
+env: []
+volumeMounts: []
+routeSpec: {}
+logSpec: {}
+nfsVolumes: []
+sources: []

@@ -187,26 +187,3 @@ func TestFromK8s_NoLogSpec_WhenEmpty(t *testing.T) {
 	assert.Nil(t, resp.LogSpec)
 }
 
-// -- filterAnnotations tests --
-
-func TestFilterAnnotations_StripKubectl(t *testing.T) {
-	annotations := map[string]string{
-		"kubectl.kubernetes.io/last-applied-configuration": "{}",
-		"app.example.com/version":                         "1.0",
-	}
-	result := filterAnnotations(annotations)
-	assert.Len(t, result, 1)
-	assert.Equal(t, "1.0", result["app.example.com/version"])
-}
-
-func TestFilterAnnotations_EmptyInput(t *testing.T) {
-	assert.Nil(t, filterAnnotations(nil))
-	assert.Nil(t, filterAnnotations(map[string]string{}))
-}
-
-func TestFilterAnnotations_AllStripped(t *testing.T) {
-	annotations := map[string]string{
-		"kubectl.kubernetes.io/last-applied-configuration": "{}",
-	}
-	assert.Nil(t, filterAnnotations(annotations))
-}

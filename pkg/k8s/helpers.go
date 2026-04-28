@@ -80,3 +80,23 @@ func IsOpenShift(ctx context.Context, restCfg *rest.Config) (bool, error) {
 // CoreV1GroupVersion is a convenience reference to the core/v1 group version
 // used when building ObjectLists that target core resources.
 var CoreV1GroupVersion = corev1.SchemeGroupVersion
+
+// FilterAnnotations returns a copy of the annotation map with internal
+// Kubernetes annotations (kubectl.kubernetes.io/*) removed. Returns nil
+// when the input is empty or all entries are filtered out.
+func FilterAnnotations(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if len(k) >= 20 && k[:20] == "kubectl.kubernetes.i" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}

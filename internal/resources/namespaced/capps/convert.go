@@ -5,6 +5,7 @@ package capps
 // is contained here — changing the K8s schema only requires updating this file.
 
 import (
+	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -125,7 +126,7 @@ func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
 		UID:             string(capp.UID),
 		ResourceVersion: capp.ResourceVersion,
 		Labels:          capp.Labels,
-		Annotations:     filterAnnotations(capp.Annotations),
+		Annotations:     k8s.FilterAnnotations(capp.Annotations),
 
 		ScaleMetric: capp.Spec.ScaleMetric,
 		State:       capp.Spec.State,
@@ -273,21 +274,3 @@ func buildStatus(capp *cappv1alpha1.Capp) CappStatusResponse {
 	}
 }
 
-// filterAnnotations removes internal Kubernetes annotations (kubectl.kubernetes.io/*)
-// from the response to avoid leaking operational metadata to the frontend.
-func filterAnnotations(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		// Keep only non-internal annotations.
-		if len(k) < 20 || k[:20] != "kubectl.kubernetes.i" {
-			out[k] = v
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}

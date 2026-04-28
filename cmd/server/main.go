@@ -24,6 +24,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/gitops"
 	"github.com/dana-team/capp-backend/internal/resources"
 	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
@@ -101,13 +102,22 @@ func main() {
 	}
 
 	// ── 6. Build resource registry ────────────────────────────────────────────
+	var gitopsClient *gitops.Client
+	if cfg.GitOps.Enabled {
+		gitopsClient, err = gitops.NewClient(cfg.GitOps)
+		if err != nil {
+			logger.Fatal("failed to initialise gitops client", zap.Error(err))
+		}
+		logger.Info("gitops publishing enabled", zap.String("repo", cfg.GitOps.RepoURL))
+	}
+
 	enabledResources := map[string]bool{
 		"namespaces": cfg.Resources.Namespaces.Enabled,
 		"capps":      cfg.Resources.Capps.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New())
-	registry.Register(capphandler.New())
+	registry.Register(capphandler.New(gitopsClient))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
 	// ── 7. Build and start HTTP server ────────────────────────────────────────
