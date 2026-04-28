@@ -249,6 +249,31 @@ type ResourcesConfig struct {
 	Capps      ResourceToggle `mapstructure:"capps"`
 }
 
+// GitOpsConfig controls Helm chart generation and git push for ArgoCD sync.
+type GitOpsConfig struct {
+	// Enabled toggles the /publish endpoint on Capps. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// RepoURL is the git repository where charts are pushed.
+	// Supports both HTTPS (https://github.com/org/repo.git) and SSH (git@github.com:org/repo.git).
+	RepoURL string `mapstructure:"repoURL"`
+
+	// Branch is the target branch in the git repository. Default: "main".
+	Branch string `mapstructure:"branch"`
+
+	// AuthMethod selects how the backend authenticates to the git repo.
+	// One of: "token" (HTTPS personal/deploy token) or "ssh" (SSH key file).
+	// Default: "token".
+	AuthMethod string `mapstructure:"authMethod"`
+
+	// Token is the HTTPS bearer/personal-access token. Required when authMethod is "token".
+	// Inject via CAPP_GITOPS_TOKEN.
+	Token string `mapstructure:"token"`
+
+	// SSHKeyPath is the path to an SSH private key file. Required when authMethod is "ssh".
+	SSHKeyPath string `mapstructure:"sshKeyPath"`
+}
+
 // Config is the root configuration object for the capp-backend server.
 // It is populated once at startup by Load and then treated as read-only.
 type Config struct {
@@ -259,6 +284,7 @@ type Config struct {
 	Tracing   TracingConfig   `mapstructure:"tracing"`
 	Clusters  []ClusterConfig `mapstructure:"clusters"`
 	Resources ResourcesConfig `mapstructure:"resources"`
+	GitOps    GitOpsConfig    `mapstructure:"gitops"`
 }
 
 // Load reads configuration from the file at path (if non-empty) and from
@@ -335,4 +361,9 @@ func setDefaults(v *viper.Viper) {
 	// Resources — all enabled by default
 	v.SetDefault("resources.namespaces.enabled", true)
 	v.SetDefault("resources.capps.enabled", true)
+
+	// GitOps — disabled by default
+	v.SetDefault("gitops.enabled", false)
+	v.SetDefault("gitops.branch", "main")
+	v.SetDefault("gitops.authMethod", "token")
 }

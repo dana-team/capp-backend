@@ -1,0 +1,4 @@
+apiVersion: v2
+name: capp-template
+version: "1.0.0"
+description: Template Helm chart for deploying Capp resources via ArgoCD

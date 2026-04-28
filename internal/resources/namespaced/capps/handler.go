@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/gitops"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
@@ -15,10 +16,17 @@ import (
 // Handler implements resources.ResourceHandler for the rcs.dana.io/v1alpha1
 // Capp custom resource. It provides full CRUD over Capps through the
 // per-request scoped Kubernetes client injected by the cluster middleware.
-type Handler struct{}
+// When a gitops Client is provided, it also exposes a /publish endpoint
+// that generates a values.yaml and pushes it to a git repository.
+type Handler struct {
+	gitopsClient *gitops.Client
+}
 
-// New returns a ready-to-use Capp Handler.
-func New() *Handler { return &Handler{} }
+// New returns a ready-to-use Capp Handler. If gitopsClient is non-nil,
+// the publish endpoint is functional; otherwise it returns 501.
+func New(gitopsClient *gitops.Client) *Handler {
+	return &Handler{gitopsClient: gitopsClient}
+}
 
 // Name returns the handler's identifier, matching the resources.capps config key.
 func (h *Handler) Name() string { return "capps" }
@@ -35,6 +43,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.GET("/:name", h.get)
 	ns.PUT("/:name", h.update)
 	ns.DELETE("/:name", h.delete)
+	ns.POST("/:name/publish", h.publish)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -198,4 +207,58 @@ func (h *Handler) respondList(c *gin.Context, cappList cappv1alpha1.CappList) {
 		items = append(items, FromK8s(&cappList.Items[i]))
 	}
 	c.JSON(http.StatusOK, CappListResponse{Items: items, Total: len(items)})
+}
+
+// publishResponse is the body returned by POST .../capps/:name/publish.
+type publishResponse struct {
+	Message   string `json:"message"`
+	CommitSHA string `json:"commitSHA"`
+	Path      string `json:"path"`
+}
+
+// publish handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/publish
+// It fetches the live Capp from K8s, generates a values.yaml, and pushes it
+// to the configured git repository for ArgoCD consumption.
+func (h *Handler) publish(c *gin.Context) {
+	if h.gitopsClient == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{
+			"error": "GitOps publishing is not enabled; set gitops.enabled=true in config",
+		})
+		return
+	}
+
+	k8sClient := namespaced.ExtractClient(c)
+	if k8sClient == nil {
+		return
+	}
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	var capp cappv1alpha1.Capp
+	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &capp); err != nil {
+		if k8serrors.IsNotFound(err) {
+			apierrors.Respond(c, apierrors.NewNotFound("Capp", name))
+			return
+		}
+		apierrors.Respond(c, err)
+		return
+	}
+
+	valuesYAML, err := gitops.GenerateValues(&capp)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
+
+	commitSHA, err := h.gitopsClient.PublishValues(c.Request.Context(), namespace, name, valuesYAML)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, publishResponse{
+		Message:   "published",
+		CommitSHA: commitSHA,
+		Path:      "overrides/" + namespace + "/" + name + "/values.yaml",
+	})
 }

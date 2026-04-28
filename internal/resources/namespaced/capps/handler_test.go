@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/gitops"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
@@ -21,7 +23,7 @@ func makeCapp(name, namespace string) *cappv1alpha1.Capp {
 }
 
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New())
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(nil))
 }
 
 // -- ListAll tests --
@@ -143,4 +145,31 @@ func TestRespondList_CorrectTotalAndMapping(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, 2, resp.Total)
 	assert.Len(t, resp.Items, 2)
+}
+
+// -- Publish tests --
+
+func TestPublish_GitOpsDisabled(t *testing.T) {
+	h := testutil.NewEngineHelper(t, testutil.FakeClient(t, makeCapp("app1", "ns1")), New(nil))
+	w := h.Post("/namespaces/ns1/capps/app1/publish", nil)
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+func testGitOpsClient(t *testing.T) *gitops.Client {
+	t.Helper()
+	gc, err := gitops.NewClient(config.GitOpsConfig{
+		RepoURL:    "https://example.com/repo.git",
+		Branch:     "main",
+		AuthMethod: "token",
+		Token:      "test-token",
+	})
+	require.NoError(t, err)
+	return gc
+}
+
+func TestPublish_NotFound(t *testing.T) {
+	gc := testGitOpsClient(t)
+	h := testutil.NewEngineHelper(t, testutil.FakeClient(t), New(gc))
+	w := h.Post("/namespaces/ns1/capps/missing/publish", nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }

@@ -1,0 +1,54 @@
+apiVersion: rcs.dana.io/v1alpha1
+kind: Capp
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+  {{- with .Values.labels }}
+  labels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.scaleMetric }}
+  scaleMetric: {{ . }}
+  {{- end }}
+  {{- with .Values.state }}
+  state: {{ . }}
+  {{- end }}
+  {{- if .Values.minReplicas }}
+  minReplicas: {{ .Values.minReplicas }}
+  {{- end }}
+  configurationSpec:
+    template:
+      spec:
+        containers:
+          - name: {{ .Values.containerName | default .Values.name }}
+            image: {{ .Values.image }}
+            {{- with .Values.env }}
+            env:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- with .Values.volumeMounts }}
+            volumeMounts:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+  {{- with .Values.routeSpec }}
+  routeSpec:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.logSpec }}
+  logSpec:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.nfsVolumes }}
+  volumesSpec:
+    nfsVolumes:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+  {{- with .Values.sources }}
+  sources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}

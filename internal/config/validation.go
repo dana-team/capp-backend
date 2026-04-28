@@ -18,11 +18,18 @@ var validAuthModes = map[string]struct{}{
 // expressed as Viper defaults (e.g. required fields, cross-field constraints).
 // All validation errors are collected and returned together so the operator
 // can fix them all at once without repeated restarts.
+// validGitOpsAuthMethods is the set of accepted values for GitOpsConfig.AuthMethod.
+var validGitOpsAuthMethods = map[string]struct{}{
+	"token": {},
+	"ssh":   {},
+}
+
 func Validate(cfg *Config) error {
 	var errs []error
 
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
+	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 
 	// In openshift mode every cluster must have an inline token (SA token)
 	// because the backend uses impersonation instead of forwarding user tokens.
@@ -93,6 +100,48 @@ func validateCredential(prefix string, cred *CredentialConfig) []error {
 		// Token may be empty during development when the cluster does not
 		// enforce authentication, so we do not require it here. The cluster
 		// loader will produce an unauthenticated rest.Config in that case.
+	}
+
+	return errs
+}
+
+// validateGitOps checks that gitops configuration is complete when enabled.
+func validateGitOps(g *GitOpsConfig) []error {
+	if !g.Enabled {
+		return nil
+	}
+
+	var errs []error
+
+	if g.RepoURL == "" {
+		errs = append(errs, errors.New(
+			"config: gitops.repoURL is required when gitops.enabled is true",
+		))
+	}
+
+	if _, ok := validGitOpsAuthMethods[g.AuthMethod]; !ok {
+		errs = append(errs, fmt.Errorf(
+			"config: gitops.authMethod %q is not valid; must be one of: token, ssh",
+			g.AuthMethod,
+		))
+		return errs
+	}
+
+	switch g.AuthMethod {
+	case "token":
+		if g.Token == "" {
+			errs = append(errs, errors.New(
+				"config: gitops.token is required when gitops.authMethod is 'token'; "+
+					"set via CAPP_GITOPS_TOKEN environment variable",
+			))
+		}
+	case "ssh":
+		if g.SSHKeyPath == "" {
+			errs = append(errs, errors.New(
+				"config: gitops.sshKeyPath is required when gitops.authMethod is 'ssh'; "+
+					"set via CAPP_GITOPS_SSHKEYPATH environment variable",
+			))
+		}
 	}
 
 	return errs

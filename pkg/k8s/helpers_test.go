@@ -80,3 +80,27 @@ func TestIsOpenShift_HTTPClientError(t *testing.T) {
 	_, err := IsOpenShift(context.Background(), cfg)
 	assert.Error(t, err)
 }
+
+// -- FilterAnnotations tests --
+
+func TestFilterAnnotations_StripKubectl(t *testing.T) {
+	annotations := map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": "{}",
+		"app.example.com/version":                         "1.0",
+	}
+	result := FilterAnnotations(annotations)
+	assert.Len(t, result, 1)
+	assert.Equal(t, "1.0", result["app.example.com/version"])
+}
+
+func TestFilterAnnotations_EmptyInput(t *testing.T) {
+	assert.Nil(t, FilterAnnotations(nil))
+	assert.Nil(t, FilterAnnotations(map[string]string{}))
+}
+
+func TestFilterAnnotations_AllStripped(t *testing.T) {
+	annotations := map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": "{}",
+	}
+	assert.Nil(t, FilterAnnotations(annotations))
+}
