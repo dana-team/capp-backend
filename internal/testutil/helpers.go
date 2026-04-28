@@ -1,7 +1,10 @@
 package testutil
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,8 +14,10 @@ import (
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func init() {
@@ -50,6 +55,109 @@ func TestScheme(t *testing.T) *runtime.Scheme {
 		t.Fatalf("building scheme: %v", err)
 	}
 	return s
+}
+
+// FakeClient creates a controller-runtime fake client pre-loaded with the test
+// scheme and optional seed objects.
+func FakeClient(t *testing.T, objects ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().WithScheme(TestScheme(t)).WithObjects(objects...).Build()
+}
+
+// JSONBody marshals v to JSON and returns it as an *bytes.Buffer suitable for
+// use as an HTTP request body.
+func JSONBody(t *testing.T, v any) *bytes.Buffer {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return bytes.NewBuffer(b)
+}
+
+// ServeHTTP sends an HTTP request to the engine and returns the response recorder.
+func ServeHTTP(engine *gin.Engine, method, path string, body io.Reader) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, body)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	engine.ServeHTTP(w, req)
+	return w
+}
+
+// RouteRegistrar is any type that can register routes on a gin.RouterGroup.
+type RouteRegistrar interface {
+	RegisterRoutes(rg *gin.RouterGroup)
+}
+
+// EngineWithClient creates a Gin test engine that injects k8sClient into the
+// context via middleware, then registers the handler's routes.
+func EngineWithClient(t *testing.T, k8sClient client.Client, handler RouteRegistrar) *gin.Engine {
+	t.Helper()
+	_, engine := gin.CreateTestContext(httptest.NewRecorder())
+	engine.Use(func(c *gin.Context) {
+		c.Set(string(middleware.K8sClientKey), k8sClient)
+		c.Next()
+	})
+	handler.RegisterRoutes(engine.Group(""))
+	return engine
+}
+
+// EngineWithAdminClient creates a Gin test engine that injects both a user
+// client, an admin client, and cluster metadata into the context.
+func EngineWithAdminClient(t *testing.T, userClient, adminClient client.Client, meta cluster.ClusterMeta, handler RouteRegistrar) *gin.Engine {
+	t.Helper()
+	_, engine := gin.CreateTestContext(httptest.NewRecorder())
+	engine.Use(func(c *gin.Context) {
+		c.Set(string(middleware.K8sClientKey), userClient)
+		c.Set(string(middleware.AdminK8sClientKey), adminClient)
+		c.Set(string(middleware.ClusterMetaKey), meta)
+		c.Next()
+	})
+	handler.RegisterRoutes(engine.Group(""))
+	return engine
+}
+
+// EngineHelper wraps a gin.Engine with convenience methods that reduce
+// boilerplate in handler tests.
+type EngineHelper struct {
+	t      *testing.T
+	Engine *gin.Engine
+}
+
+// NewEngineHelper creates an EngineHelper backed by EngineWithClient.
+func NewEngineHelper(t *testing.T, k8sClient client.Client, handler RouteRegistrar) *EngineHelper {
+	t.Helper()
+	return &EngineHelper{t: t, Engine: EngineWithClient(t, k8sClient, handler)}
+}
+
+// NewEngineHelperWithAdmin creates an EngineHelper backed by EngineWithAdminClient.
+func NewEngineHelperWithAdmin(t *testing.T, userClient, adminClient client.Client, meta cluster.ClusterMeta, handler RouteRegistrar) *EngineHelper {
+	t.Helper()
+	return &EngineHelper{t: t, Engine: EngineWithAdminClient(t, userClient, adminClient, meta, handler)}
+}
+
+func (h *EngineHelper) Get(path string) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodGet, path, nil)
+}
+
+func (h *EngineHelper) Post(path string, body io.Reader) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodPost, path, body)
+}
+
+func (h *EngineHelper) PostJSON(path string, v any) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodPost, path, JSONBody(h.t, v))
+}
+
+func (h *EngineHelper) Put(path string, body io.Reader) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodPut, path, body)
+}
+
+func (h *EngineHelper) PutJSON(path string, v any) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodPut, path, JSONBody(h.t, v))
+}
+
+func (h *EngineHelper) Delete(path string) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodDelete, path, nil)
 }
 
 // -- Mock AuthManager --
