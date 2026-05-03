@@ -352,6 +352,33 @@ func TestClusterManager_StartHealthChecks(t *testing.T) {
 	assert.True(t, mgr.IsAnyHealthy())
 }
 
+// ── BuildClusterClient SiteName tests ─────────────────────────────────────────
+
+func TestBuildClusterClient_SiteNameExplicit(t *testing.T) {
+	cfg := config.ClusterConfig{
+		Name:     "default",
+		SiteName: "nova",
+		Credential: config.CredentialConfig{
+			Inline: &config.InlineCredential{APIServer: "https://api.example.com"},
+		},
+	}
+	cc, err := BuildClusterClient(cfg, testScheme(t))
+	require.NoError(t, err)
+	assert.Equal(t, "nova", cc.Meta.SiteName)
+}
+
+func TestBuildClusterClient_SiteNameFallbackToName(t *testing.T) {
+	cfg := config.ClusterConfig{
+		Name: "production",
+		Credential: config.CredentialConfig{
+			Inline: &config.InlineCredential{APIServer: "https://api.example.com"},
+		},
+	}
+	cc, err := BuildClusterClient(cfg, testScheme(t))
+	require.NoError(t, err)
+	assert.Equal(t, "production", cc.Meta.SiteName)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func mustBuildRestConfig(t *testing.T, cfg config.ClusterConfig) *rest.Config {

@@ -232,6 +232,12 @@ type ClusterConfig struct {
 	// AllowedNamespaces restricts which namespaces are accessible via this
 	// cluster entry. An empty list permits all namespaces.
 	AllowedNamespaces []string `mapstructure:"allowedNamespaces"`
+
+	// SiteName is the directory name used in the GitOps repository path:
+	// sites/<siteName>/<namespace>/<cappName>.yaml
+	// Defaults to Name if unset. Must be a valid filesystem path segment
+	// (no slashes or spaces).
+	SiteName string `mapstructure:"siteName"`
 }
 
 // ResourceToggle is a simple feature flag for a resource handler.
@@ -272,6 +278,11 @@ type GitOpsConfig struct {
 
 	// SSHKeyPath is the path to an SSH private key file. Required when authMethod is "ssh".
 	SSHKeyPath string `mapstructure:"sshKeyPath"`
+
+	// PathPrefix is the directory prefix for per-capp values files in the git
+	// repository: <pathPrefix>/<siteName>/<namespace>/<cappName>.yaml
+	// Default: "sites".
+	PathPrefix string `mapstructure:"pathPrefix"`
 }
 
 // Config is the root configuration object for the capp-backend server.
@@ -312,10 +323,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// If DisplayName was not set, fall back to Name.
 	for i := range cfg.Clusters {
 		if cfg.Clusters[i].DisplayName == "" {
 			cfg.Clusters[i].DisplayName = cfg.Clusters[i].Name
+		}
+		if cfg.Clusters[i].SiteName == "" {
+			cfg.Clusters[i].SiteName = cfg.Clusters[i].Name
 		}
 	}
 
@@ -366,4 +379,5 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gitops.enabled", false)
 	v.SetDefault("gitops.branch", "main")
 	v.SetDefault("gitops.authMethod", "token")
+	v.SetDefault("gitops.pathPrefix", "sites")
 }

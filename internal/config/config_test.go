@@ -312,3 +312,133 @@ func TestValidate_MultipleErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "'name' is required")
 	assert.Contains(t, err.Error(), "auth.mode")
 }
+
+// ── SiteName tests ───────────────────────────────────────────────────────────
+
+func TestLoad_SiteNameFallback(t *testing.T) {
+	yaml := `
+clusters:
+  - name: production
+    credential:
+      inline:
+        apiServer: "https://prod.example.com:6443"
+        token: "tok"
+`
+	path := writeTempConfig(t, yaml)
+	defer func() { _ = os.Remove(path) }()
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "production", cfg.Clusters[0].SiteName)
+}
+
+func TestLoad_SiteNameExplicit(t *testing.T) {
+	yaml := `
+clusters:
+  - name: default
+    siteName: nova
+    credential:
+      inline:
+        apiServer: "https://prod.example.com:6443"
+        token: "tok"
+`
+	path := writeTempConfig(t, yaml)
+	defer func() { _ = os.Remove(path) }()
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "nova", cfg.Clusters[0].SiteName)
+}
+
+func TestLoad_PathPrefixDefault(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, "sites", cfg.GitOps.PathPrefix)
+}
+
+func TestValidate_SiteNameWithSlash_Rejected(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{Mode: "passthrough"},
+		GitOps: GitOpsConfig{
+			Enabled:    true,
+			RepoURL:    "https://github.com/org/repo.git",
+			AuthMethod: "token",
+			Token:      "tok",
+		},
+		Clusters: []ClusterConfig{
+			{
+				Name:     "prod",
+				SiteName: "bad/name",
+				Credential: CredentialConfig{
+					Inline: &InlineCredential{APIServer: "https://api.example.com"},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain slashes or spaces")
+}
+
+func TestValidate_SiteNameWithSpace_Rejected(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{Mode: "passthrough"},
+		GitOps: GitOpsConfig{
+			Enabled:    true,
+			RepoURL:    "https://github.com/org/repo.git",
+			AuthMethod: "token",
+			Token:      "tok",
+		},
+		Clusters: []ClusterConfig{
+			{
+				Name:     "prod",
+				SiteName: "bad name",
+				Credential: CredentialConfig{
+					Inline: &InlineCredential{APIServer: "https://api.example.com"},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain slashes or spaces")
+}
+
+func TestValidate_SiteNameValid_GitOpsEnabled(t *testing.T) {
+	cfg := &Config{
+		Auth: AuthConfig{Mode: "passthrough"},
+		GitOps: GitOpsConfig{
+			Enabled:    true,
+			RepoURL:    "https://github.com/org/repo.git",
+			AuthMethod: "token",
+			Token:      "tok",
+		},
+		Clusters: []ClusterConfig{
+			{
+				Name:     "prod",
+				SiteName: "nova",
+				Credential: CredentialConfig{
+					Inline: &InlineCredential{APIServer: "https://api.example.com"},
+				},
+			},
+		},
+	}
+	assert.NoError(t, Validate(cfg))
+}
+
+func TestValidate_SiteNameSkipped_GitOpsDisabled(t *testing.T) {
+	cfg := &Config{
+		Auth:   AuthConfig{Mode: "passthrough"},
+		GitOps: GitOpsConfig{Enabled: false},
+		Clusters: []ClusterConfig{
+			{
+				Name:     "prod",
+				SiteName: "bad/name",
+				Credential: CredentialConfig{
+					Inline: &InlineCredential{APIServer: "https://api.example.com"},
+				},
+			},
+		},
+	}
+	assert.NoError(t, Validate(cfg))
+}

@@ -186,4 +186,3 @@ func TestFromK8s_NoLogSpec_WhenEmpty(t *testing.T) {
 	resp := FromK8s(capp)
 	assert.Nil(t, resp.LogSpec)
 }
-

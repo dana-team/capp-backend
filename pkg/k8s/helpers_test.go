@@ -86,7 +86,7 @@ func TestIsOpenShift_HTTPClientError(t *testing.T) {
 func TestFilterAnnotations_StripKubectl(t *testing.T) {
 	annotations := map[string]string{
 		"kubectl.kubernetes.io/last-applied-configuration": "{}",
-		"app.example.com/version":                         "1.0",
+		"app.example.com/version":                          "1.0",
 	}
 	result := FilterAnnotations(annotations)
 	assert.Len(t, result, 1)

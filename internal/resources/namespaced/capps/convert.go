@@ -273,4 +273,3 @@ func buildStatus(capp *cappv1alpha1.Capp) CappStatusResponse {
 		StateStatus: stateStatus,
 	}
 }
-

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
@@ -30,6 +31,10 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
+
+	if cfg.GitOps.Enabled {
+		errs = append(errs, validateSiteNames(cfg.Clusters)...)
+	}
 
 	// In openshift mode every cluster must have an inline token (SA token)
 	// because the backend uses impersonation instead of forwarding user tokens.
@@ -223,5 +228,24 @@ func validateAuth(auth *AuthConfig) []error {
 		}
 	}
 
+	return errs
+}
+
+// validateSiteNames checks that every cluster's SiteName (after fallback) is a
+// valid filesystem path segment. Called only when gitops.enabled is true.
+func validateSiteNames(clusters []ClusterConfig) []error {
+	var errs []error
+	for i, c := range clusters {
+		site := c.SiteName
+		if site == "" {
+			site = c.Name
+		}
+		if strings.ContainsAny(site, "/ ") {
+			errs = append(errs, fmt.Errorf(
+				"config: clusters[%d] (%q): siteName %q must not contain slashes or spaces",
+				i, c.Name, site,
+			))
+		}
+	}
 	return errs
 }

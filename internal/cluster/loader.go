@@ -81,10 +81,16 @@ func BuildClusterClient(cfg config.ClusterConfig, scheme *runtime.Scheme) (*Clus
 		displayName = cfg.Name
 	}
 
+	siteName := cfg.SiteName
+	if siteName == "" {
+		siteName = cfg.Name
+	}
+
 	return &ClusterClient{
 		Meta: ClusterMeta{
 			Name:              cfg.Name,
 			DisplayName:       displayName,
+			SiteName:          siteName,
 			Healthy:           false, // updated by the first health check
 			AllowedNamespaces: cfg.AllowedNamespaces,
 		},

@@ -173,4 +173,3 @@ func convertVolumeMounts(mounts []corev1.VolumeMount) []map[string]string {
 	}
 	return out
 }
-
