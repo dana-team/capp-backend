@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
@@ -14,6 +15,12 @@ var validAuthModes = map[string]struct{}{
 	"openshift":   {},
 }
 
+// validGitOpsAuthMethods is the set of accepted values for GitOpsConfig.AuthMethod.
+var validGitOpsAuthMethods = map[string]struct{}{
+	"token": {},
+	"ssh":   {},
+}
+
 // Validate checks the fully-loaded Config for semantic errors that cannot be
 // expressed as Viper defaults (e.g. required fields, cross-field constraints).
 // All validation errors are collected and returned together so the operator
@@ -23,6 +30,11 @@ func Validate(cfg *Config) error {
 
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
+	errs = append(errs, validateGitOps(&cfg.GitOps)...)
+
+	if cfg.GitOps.Enabled {
+		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
+	}
 
 	// In openshift mode every cluster must have an inline token (SA token)
 	// because the backend uses impersonation instead of forwarding user tokens.
@@ -174,5 +186,66 @@ func validateAuth(auth *AuthConfig) []error {
 		}
 	}
 
+	return errs
+}
+
+// validateGitOps checks that gitops configuration is complete when enabled.
+func validateGitOps(g *GitOpsConfig) []error {
+	if !g.Enabled {
+		return nil
+	}
+
+	var errs []error
+
+	if g.RepoURL == "" {
+		errs = append(errs, errors.New(
+			"config: gitops.repoURL is required when gitops.enabled is true",
+		))
+	}
+
+	if _, ok := validGitOpsAuthMethods[g.AuthMethod]; !ok {
+		errs = append(errs, fmt.Errorf(
+			"config: gitops.authMethod %q is not valid; must be one of: token, ssh",
+			g.AuthMethod,
+		))
+		return errs
+	}
+
+	switch g.AuthMethod {
+	case "token":
+		if g.Token == "" {
+			errs = append(errs, errors.New(
+				"config: gitops.token is required when gitops.authMethod is 'token'; "+
+					"set via CAPP_GITOPS_TOKEN environment variable",
+			))
+		}
+	case "ssh":
+		if g.SSHKeyPath == "" {
+			errs = append(errs, errors.New(
+				"config: gitops.sshKeyPath is required when gitops.authMethod is 'ssh'; "+
+					"set via CAPP_GITOPS_SSHKEYPATH environment variable",
+			))
+		}
+	}
+
+	return errs
+}
+
+// validateGitOpsPaths checks that every cluster's GitOpsPath (after fallback)
+// is a valid filesystem path segment. Called only when gitops.enabled is true.
+func validateGitOpsPaths(clusters []ClusterConfig) []error {
+	var errs []error
+	for i, c := range clusters {
+		p := c.GitOpsPath
+		if p == "" {
+			p = c.Name
+		}
+		if strings.ContainsAny(p, "/ ") {
+			errs = append(errs, fmt.Errorf(
+				"config: clusters[%d] (%q): gitOpsPath %q must not contain slashes or spaces",
+				i, c.Name, p,
+			))
+		}
+	}
 	return errs
 }

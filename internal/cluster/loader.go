@@ -81,10 +81,16 @@ func BuildClusterClient(cfg config.ClusterConfig, scheme *runtime.Scheme) (*Clus
 		displayName = cfg.Name
 	}
 
+	gitOpsPath := cfg.GitOpsPath
+	if gitOpsPath == "" {
+		gitOpsPath = cfg.Name
+	}
+
 	return &ClusterClient{
 		Meta: ClusterMeta{
 			Name:              cfg.Name,
 			DisplayName:       displayName,
+			GitOpsPath:        gitOpsPath,
 			Healthy:           false, // updated by the first health check
 			AllowedNamespaces: cfg.AllowedNamespaces,
 		},

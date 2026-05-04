@@ -36,29 +36,52 @@ func testLogger() *zap.Logger {
 	return l
 }
 
+func inlineClusterConfig(name, apiServer string) config.ClusterConfig {
+	return config.ClusterConfig{
+		Name: name,
+		Credential: config.CredentialConfig{
+			Inline: &config.InlineCredential{APIServer: apiServer},
+		},
+	}
+}
+
+func inlineClusterConfigWithToken(name, apiServer, token string) config.ClusterConfig {
+	return config.ClusterConfig{
+		Name: name,
+		Credential: config.CredentialConfig{
+			Inline: &config.InlineCredential{APIServer: apiServer, Token: token},
+		},
+	}
+}
+
+// testClusterClient creates a ClusterClient backed by the given test server.
+func testClusterClient(t *testing.T, srv *httptest.Server, token string) *ClusterClient {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	return &ClusterClient{
+		Meta:       ClusterMeta{Name: "test"},
+		RestConfig: mustBuildRestConfig(t, inlineClusterConfigWithToken("test", srv.URL, token)),
+		Scheme:     scheme,
+	}
+}
+
+func testManager(clients map[string]*ClusterClient) *defaultClusterManager {
+	return &defaultClusterManager{clusters: clients, logger: testLogger()}
+}
+
 // ── BuildRestConfig tests ─────────────────────────────────────────────────────
 
 func TestBuildRestConfig_Inline_NoCA(t *testing.T) {
-	cfg := config.ClusterConfig{
-		Name: "dev",
-		Credential: config.CredentialConfig{
-			Inline: &config.InlineCredential{
-				APIServer: "https://localhost:6443",
-				Token:     "tok",
-			},
-		},
-	}
-	restCfg, err := BuildRestConfig(cfg)
+	restCfg, err := BuildRestConfig(inlineClusterConfigWithToken("dev", "https://localhost:6443", "tok"))
 	require.NoError(t, err)
 	assert.Equal(t, "https://localhost:6443", restCfg.Host)
 	assert.Equal(t, "tok", restCfg.BearerToken)
-	// No CA → insecure mode
 	assert.True(t, restCfg.Insecure)
 	assert.Equal(t, userAgent, restCfg.UserAgent)
 }
 
 func TestBuildRestConfig_Inline_WithCA(t *testing.T) {
-	// A minimal valid base64-encoded string (not a real PEM, but enough to test decoding)
 	encoded := "dGVzdC1jYS1kYXRh" // base64("test-ca-data")
 	cfg := config.ClusterConfig{
 		Name: "prod",
@@ -77,8 +100,7 @@ func TestBuildRestConfig_Inline_WithCA(t *testing.T) {
 }
 
 func TestBuildRestConfig_NoCredential(t *testing.T) {
-	cfg := config.ClusterConfig{Name: "empty", Credential: config.CredentialConfig{}}
-	_, err := BuildRestConfig(cfg)
+	_, err := BuildRestConfig(config.ClusterConfig{Name: "empty", Credential: config.CredentialConfig{}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no credential configured")
 }
@@ -117,34 +139,25 @@ func TestIsNamespaceAllowed_Listed(t *testing.T) {
 // ── ClusterManager tests ──────────────────────────────────────────────────────
 
 func TestClusterManager_Get_NotFound(t *testing.T) {
-	mgr := &defaultClusterManager{
-		clusters: map[string]*ClusterClient{},
-		logger:   testLogger(),
-	}
+	mgr := testManager(map[string]*ClusterClient{})
 	_, err := mgr.Get("nonexistent")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrClusterNotFound)
 }
 
 func TestClusterManager_List(t *testing.T) {
-	mgr := &defaultClusterManager{
-		clusters: map[string]*ClusterClient{
-			"a": {Meta: ClusterMeta{Name: "a", Healthy: true}},
-			"b": {Meta: ClusterMeta{Name: "b", Healthy: false}},
-		},
-		logger: testLogger(),
-	}
-	metas := mgr.List()
-	assert.Len(t, metas, 2)
+	mgr := testManager(map[string]*ClusterClient{
+		"a": {Meta: ClusterMeta{Name: "a", Healthy: true}},
+		"b": {Meta: ClusterMeta{Name: "b", Healthy: false}},
+	})
+	assert.Len(t, mgr.List(), 2)
 }
 
 func TestClusterManager_IsAnyHealthy(t *testing.T) {
-	mgr := &defaultClusterManager{
-		clusters: map[string]*ClusterClient{
-			"a": {Meta: ClusterMeta{Healthy: false}},
-			"b": {Meta: ClusterMeta{Healthy: true}},
-		},
-	}
+	mgr := testManager(map[string]*ClusterClient{
+		"a": {Meta: ClusterMeta{Healthy: false}},
+		"b": {Meta: ClusterMeta{Healthy: true}},
+	})
 	assert.True(t, mgr.IsAnyHealthy())
 
 	mgr.clusters["b"].Meta.Healthy = false
@@ -152,20 +165,10 @@ func TestClusterManager_IsAnyHealthy(t *testing.T) {
 }
 
 func TestClusterManager_New_UnreachableClusterNotFatal(t *testing.T) {
-	scheme := testScheme(t)
 	cfgs := []config.ClusterConfig{
-		{
-			Name: "unreachable",
-			Credential: config.CredentialConfig{
-				Inline: &config.InlineCredential{
-					APIServer: "https://192.0.2.1:6443", // TEST-NET — unreachable
-				},
-			},
-		},
+		inlineClusterConfig("unreachable", "https://192.0.2.1:6443"),
 	}
-	// New should succeed even when the cluster is unreachable — the cluster
-	// is registered as unhealthy, not fatal.
-	mgr, err := New(cfgs, scheme, testLogger())
+	mgr, err := New(cfgs, testScheme(t), testLogger())
 	require.NoError(t, err)
 	cc, err := mgr.Get("unreachable")
 	require.NoError(t, err)
@@ -176,30 +179,12 @@ func TestClientFor_OverridesBearerToken(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
+	cc := testClusterClient(t, srv, "base-token")
+	mgr := testManager(map[string]*ClusterClient{"test": cc})
 
-	cc := &ClusterClient{
-		Meta: ClusterMeta{Name: "test"},
-		RestConfig: mustBuildRestConfig(t, config.ClusterConfig{
-			Name: "test",
-			Credential: config.CredentialConfig{
-				Inline: &config.InlineCredential{
-					APIServer: srv.URL,
-					Token:     "base-token",
-				},
-			},
-		}),
-		Scheme: scheme,
-	}
-
-	mgr := &defaultClusterManager{clusters: map[string]*ClusterClient{"test": cc}, logger: testLogger()}
-	cred := auth.ClusterCredential{BearerToken: "request-specific-token"}
-
-	k8sClient, err := mgr.ClientFor(cc, cred)
+	k8sClient, err := mgr.ClientFor(cc, auth.ClusterCredential{BearerToken: "request-specific-token"})
 	require.NoError(t, err)
 	assert.NotNil(t, k8sClient)
-	// The base RestConfig must not have been mutated.
 	assert.Equal(t, "base-token", cc.RestConfig.BearerToken)
 }
 
@@ -207,25 +192,9 @@ func TestClientFor_EmptyCredentialUsesBaseToken(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
+	cc := testClusterClient(t, srv, "service-account-token")
+	mgr := testManager(map[string]*ClusterClient{"test": cc})
 
-	cc := &ClusterClient{
-		Meta: ClusterMeta{Name: "test"},
-		RestConfig: mustBuildRestConfig(t, config.ClusterConfig{
-			Name: "test",
-			Credential: config.CredentialConfig{
-				Inline: &config.InlineCredential{
-					APIServer: srv.URL,
-					Token:     "service-account-token",
-				},
-			},
-		}),
-		Scheme: scheme,
-	}
-
-	mgr := &defaultClusterManager{clusters: map[string]*ClusterClient{"test": cc}, logger: testLogger()}
-	// Empty credential — base token should be used.
 	_, err := mgr.ClientFor(cc, auth.ClusterCredential{})
 	require.NoError(t, err)
 	assert.Equal(t, "service-account-token", cc.RestConfig.BearerToken)
@@ -235,24 +204,8 @@ func TestClientFor_Impersonation(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	cc := &ClusterClient{
-		Meta: ClusterMeta{Name: "test"},
-		RestConfig: mustBuildRestConfig(t, config.ClusterConfig{
-			Name: "test",
-			Credential: config.CredentialConfig{
-				Inline: &config.InlineCredential{
-					APIServer: srv.URL,
-					Token:     "sa-token",
-				},
-			},
-		}),
-		Scheme: scheme,
-	}
-
-	mgr := &defaultClusterManager{clusters: map[string]*ClusterClient{"test": cc}, logger: testLogger()}
+	cc := testClusterClient(t, srv, "sa-token")
+	mgr := testManager(map[string]*ClusterClient{"test": cc})
 	cred := auth.ClusterCredential{
 		ImpersonateUser:   "jane",
 		ImpersonateGroups: []string{"developers", "system:authenticated"},
@@ -261,7 +214,6 @@ func TestClientFor_Impersonation(t *testing.T) {
 	k8sClient, err := mgr.ClientFor(cc, cred)
 	require.NoError(t, err)
 	assert.NotNil(t, k8sClient)
-	// Base RestConfig must not be mutated.
 	assert.Equal(t, "sa-token", cc.RestConfig.BearerToken)
 	assert.Empty(t, cc.RestConfig.Impersonate.UserName)
 }
@@ -270,28 +222,10 @@ func TestClientFor_NoImpersonation_BackwardCompat(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
+	cc := testClusterClient(t, srv, "sa-token")
+	mgr := testManager(map[string]*ClusterClient{"test": cc})
 
-	cc := &ClusterClient{
-		Meta: ClusterMeta{Name: "test"},
-		RestConfig: mustBuildRestConfig(t, config.ClusterConfig{
-			Name: "test",
-			Credential: config.CredentialConfig{
-				Inline: &config.InlineCredential{
-					APIServer: srv.URL,
-					Token:     "sa-token",
-				},
-			},
-		}),
-		Scheme: scheme,
-	}
-
-	mgr := &defaultClusterManager{clusters: map[string]*ClusterClient{"test": cc}, logger: testLogger()}
-	// Empty impersonation fields — should not set Impersonate on rest.Config.
-	cred := auth.ClusterCredential{BearerToken: "user-token"}
-
-	_, err := mgr.ClientFor(cc, cred)
+	_, err := mgr.ClientFor(cc, auth.ClusterCredential{BearerToken: "user-token"})
 	require.NoError(t, err)
 	assert.Empty(t, cc.RestConfig.Impersonate.UserName)
 }
@@ -300,56 +234,67 @@ func TestHealthCheck(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()
 
-	restCfg := mustBuildRestConfig(t, config.ClusterConfig{
-		Name: "ok",
-		Credential: config.CredentialConfig{
-			Inline: &config.InlineCredential{APIServer: srv.URL},
-		},
-	})
-	err := checkHealth(restCfg)
-	assert.NoError(t, err)
+	restCfg := mustBuildRestConfig(t, inlineClusterConfig("ok", srv.URL))
+	assert.NoError(t, checkHealth(restCfg))
 }
 
 func TestHealthCheck_Unhealthy(t *testing.T) {
-	// Server returns 500
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	restCfg := mustBuildRestConfig(t, config.ClusterConfig{
-		Name: "bad",
-		Credential: config.CredentialConfig{
-			Inline: &config.InlineCredential{APIServer: srv.URL},
-		},
-	})
-	err := checkHealth(restCfg)
-	assert.Error(t, err)
+	restCfg := mustBuildRestConfig(t, inlineClusterConfig("bad", srv.URL))
+	assert.Error(t, checkHealth(restCfg))
 }
 
 func TestClusterManager_StartHealthChecks(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()
 
-	scheme := testScheme(t)
-	cfgs := []config.ClusterConfig{
-		{
-			Name:        "healthy",
-			DisplayName: "Healthy",
-			Credential: config.CredentialConfig{
-				Inline: &config.InlineCredential{APIServer: srv.URL},
-			},
-		},
-	}
+	cfg := inlineClusterConfig("healthy", srv.URL)
+	cfg.DisplayName = "Healthy"
 
-	mgr, err := New(cfgs, scheme, testLogger())
+	mgr, err := New([]config.ClusterConfig{cfg}, testScheme(t), testLogger())
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately so StartHealthChecks exits quickly
+	cancel()
 	mgr.StartHealthChecks(ctx, 1)
 
 	assert.True(t, mgr.IsAnyHealthy())
+}
+
+// ── BuildClusterClient GitOpsPath tests ───────────────────────────────────────
+
+func TestBuildClusterClient_GitOpsPath(t *testing.T) {
+	tests := []struct {
+		name           string
+		clusterName    string
+		gitOpsPath     string
+		wantGitOpsPath string
+	}{
+		{
+			name:           "explicit GitOpsPath used",
+			clusterName:    "default",
+			gitOpsPath:     "nova",
+			wantGitOpsPath: "nova",
+		},
+		{
+			name:           "fallback to cluster Name",
+			clusterName:    "production",
+			wantGitOpsPath: "production",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := inlineClusterConfig(tt.clusterName, "https://api.example.com")
+			cfg.GitOpsPath = tt.gitOpsPath
+			cc, err := BuildClusterClient(cfg, testScheme(t))
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantGitOpsPath, cc.Meta.GitOpsPath)
+		})
+	}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
