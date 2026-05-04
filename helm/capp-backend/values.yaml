@@ -94,6 +94,7 @@ config:
   clusters:
     - name: "default"
       displayName: "Default Cluster"
+      gitOpsPath: ""      # defaults to cluster name if empty
       credential:
         inline:
           apiServer: "https://kubernetes.default.svc"
@@ -106,6 +107,16 @@ config:
       enabled: true
     capps:
       enabled: true
+
+  # GitOps — push Capp values to a git repository for ArgoCD sync.
+  # Disabled by default. Enable and provide credentials to activate.
+  gitops:
+    enabled: false
+    repoURL: ""           # e.g. "https://github.com/org/capps-gitops.git"
+    branch: "main"
+    authMethod: "token"   # "token" or "ssh"
+    sshKeyPath: ""        # path to SSH key file when authMethod is "ssh"
+    pathPrefix: "sites"   # directory prefix: <pathPrefix>/<gitOpsPath>/<ns>/<capp>.yaml
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # These values are placed in a Kubernetes Secret and injected as environment
@@ -123,6 +134,10 @@ secret:
   # OpenShift OAuth client secret. Required when config.auth.mode is "openshift".
   # Override: --set secret.openshiftClientSecret="<client-secret>"
   openshiftClientSecret: ""
+
+  # GitOps token. Required when config.gitops.authMethod is "token".
+  # Override: --set secret.gitopsToken="<personal-access-token>"
+  gitopsToken: ""
 
 # ── Service Account (openshift mode) ──────────────────────────────────────────
 # Created when auth.mode is "openshift". The SA needs impersonation permissions.

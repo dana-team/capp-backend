@@ -232,6 +232,12 @@ type ClusterConfig struct {
 	// AllowedNamespaces restricts which namespaces are accessible via this
 	// cluster entry. An empty list permits all namespaces.
 	AllowedNamespaces []string `mapstructure:"allowedNamespaces"`
+
+	// GitOpsPath is the directory name used in the GitOps repository path:
+	// <pathPrefix>/<gitOpsPath>/<namespace>/<cappName>.yaml
+	// Defaults to Name if unset. Must be a valid filesystem path segment
+	// (no slashes or spaces).
+	GitOpsPath string `mapstructure:"gitOpsPath"`
 }
 
 // ResourceToggle is a simple feature flag for a resource handler.
@@ -249,6 +255,36 @@ type ResourcesConfig struct {
 	Capps      ResourceToggle `mapstructure:"capps"`
 }
 
+// GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
+type GitOpsConfig struct {
+	// Enabled toggles the /publish endpoint on Capps. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// RepoURL is the git repository where values files are pushed.
+	// Supports both HTTPS (https://github.com/org/repo.git) and SSH (git@github.com:org/repo.git).
+	RepoURL string `mapstructure:"repoURL"`
+
+	// Branch is the target branch in the git repository. Default: "main".
+	Branch string `mapstructure:"branch"`
+
+	// AuthMethod selects how the backend authenticates to the git repo.
+	// One of: "token" (HTTPS personal/deploy token) or "ssh" (SSH key file).
+	// Default: "token".
+	AuthMethod string `mapstructure:"authMethod"`
+
+	// Token is the HTTPS bearer/personal-access token. Required when authMethod is "token".
+	// Inject via CAPP_GITOPS_TOKEN.
+	Token string `mapstructure:"token"`
+
+	// SSHKeyPath is the path to an SSH private key file. Required when authMethod is "ssh".
+	SSHKeyPath string `mapstructure:"sshKeyPath"`
+
+	// PathPrefix is the directory prefix for per-capp values files in the git
+	// repository: <pathPrefix>/<siteName>/<namespace>/<cappName>.yaml
+	// Default: "sites".
+	PathPrefix string `mapstructure:"pathPrefix"`
+}
+
 // Config is the root configuration object for the capp-backend server.
 // It is populated once at startup by Load and then treated as read-only.
 type Config struct {
@@ -259,6 +295,7 @@ type Config struct {
 	Tracing   TracingConfig   `mapstructure:"tracing"`
 	Clusters  []ClusterConfig `mapstructure:"clusters"`
 	Resources ResourcesConfig `mapstructure:"resources"`
+	GitOps    GitOpsConfig    `mapstructure:"gitops"`
 }
 
 // Load reads configuration from the file at path (if non-empty) and from
@@ -286,10 +323,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// If DisplayName was not set, fall back to Name.
 	for i := range cfg.Clusters {
 		if cfg.Clusters[i].DisplayName == "" {
 			cfg.Clusters[i].DisplayName = cfg.Clusters[i].Name
+		}
+		if cfg.Clusters[i].GitOpsPath == "" {
+			cfg.Clusters[i].GitOpsPath = cfg.Clusters[i].Name
 		}
 	}
 
@@ -335,4 +374,10 @@ func setDefaults(v *viper.Viper) {
 	// Resources — all enabled by default
 	v.SetDefault("resources.namespaces.enabled", true)
 	v.SetDefault("resources.capps.enabled", true)
+
+	// GitOps — disabled by default
+	v.SetDefault("gitops.enabled", false)
+	v.SetDefault("gitops.branch", "main")
+	v.SetDefault("gitops.authMethod", "token")
+	v.SetDefault("gitops.pathPrefix", "sites")
 }

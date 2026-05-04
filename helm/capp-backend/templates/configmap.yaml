@@ -61,6 +61,9 @@ data:
       {{- range $i, $cluster := .Values.config.clusters }}
       - name: {{ $cluster.name | quote }}
         displayName: {{ $cluster.displayName | quote }}
+        {{- if $cluster.gitOpsPath }}
+        gitOpsPath: {{ $cluster.gitOpsPath | quote }}
+        {{- end }}
         credential:
           {{- if $cluster.credential.kubeconfigPath }}
           kubeconfigPath: {{ $cluster.credential.kubeconfigPath | quote }}
@@ -81,3 +84,15 @@ data:
         enabled: {{ .Values.config.resources.namespaces.enabled }}
       capps:
         enabled: {{ .Values.config.resources.capps.enabled }}
+
+    {{- if .Values.config.gitops.enabled }}
+    gitops:
+      enabled: true
+      repoURL: {{ .Values.config.gitops.repoURL | quote }}
+      branch: {{ .Values.config.gitops.branch | quote }}
+      authMethod: {{ .Values.config.gitops.authMethod | quote }}
+      {{- if .Values.config.gitops.sshKeyPath }}
+      sshKeyPath: {{ .Values.config.gitops.sshKeyPath | quote }}
+      {{- end }}
+      pathPrefix: {{ .Values.config.gitops.pathPrefix | quote }}
+    {{- end }}

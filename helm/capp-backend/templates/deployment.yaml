@@ -58,6 +58,13 @@ spec:
                   name: {{ include "capp-backend.secretName" . }}
                   key: openshiftClientSecret
             {{- end }}
+            {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "token") }}
+            - name: CAPP_GITOPS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" . }}
+                  key: gitopsToken
+            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /etc/capp
