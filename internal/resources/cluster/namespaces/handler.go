@@ -45,7 +45,8 @@ type NamespaceItem struct {
 
 // NamespaceListResponse is the response envelope for the list endpoint.
 type NamespaceListResponse struct {
-	Items []NamespaceItem `json:"items"`
+	Items     []NamespaceItem `json:"items"`
+	CanCreate bool            `json:"canCreate"`
 }
 
 // Handler implements resources.ResourceHandler for Kubernetes Namespaces.
@@ -159,14 +160,11 @@ func (h *Handler) create(c *gin.Context) {
 	}
 
 	allowed, err := canCreateNamespaces(c.Request.Context(), userClient)
-	if err != nil {
-		apierrors.Respond(c, err)
-		return
-	}
-	if !allowed {
+	if err != nil || !allowed {
 		apierrors.Respond(c, apierrors.NewForbidden("not allowed to create namespaces"))
 		return
 	}
+
 	adminClient, ok := c.MustGet(string(middleware.AdminK8sClientKey)).(client.Client)
 	if !ok {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("AdminK8sClientKey")))
@@ -183,9 +181,7 @@ func (h *Handler) create(c *gin.Context) {
 
 	ns := &corev1.Namespace{}
 	ns.Name = body.Name
-	ns.Labels = map[string]string{
-		consts.ManagedNameSpaceLabelKey: "true",
-	}
+	ns.Labels = map[string]string{consts.ManagedNameSpaceLabelKey: "true"}
 
 	if err := adminClient.Create(c.Request.Context(), ns); err != nil {
 		apierrors.Respond(c, err)
