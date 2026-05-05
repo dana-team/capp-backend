@@ -1,0 +1,85 @@
+apiVersion: rcs.dana.io/v1alpha1
+kind: Capp
+metadata:
+  name: {{ .Values.name | quote }}
+  namespace: {{ .Values.namespace | quote }}
+spec:
+  {{- if .Values.scaleMetric }}
+  scaleMetric: {{ .Values.scaleMetric | quote }}
+  {{- end }}
+  {{- if .Values.state }}
+  state: {{ .Values.state | quote }}
+  {{- end }}
+  minReplicas: {{ .Values.minReplicas }}
+  configurationSpec:
+    template:
+      spec:
+        containers:
+          - {{- if .Values.containerName }}
+            name: {{ .Values.containerName | quote }}
+            {{- end }}
+            image: {{ .Values.image | quote }}
+            {{- if .Values.env }}
+            env:
+              {{- range .Values.env }}
+              - name: {{ .name | quote }}
+                value: {{ .value | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.volumeMounts }}
+            volumeMounts:
+              {{- range .Values.volumeMounts }}
+              - name: {{ .name | quote }}
+                mountPath: {{ .mountPath | quote }}
+              {{- end }}
+            {{- end }}
+  {{- if and .Values.routeSpec (or .Values.routeSpec.hostname .Values.routeSpec.tlsEnabled .Values.routeSpec.routeTimeoutSeconds) }}
+  routeSpec:
+    {{- if .Values.routeSpec.hostname }}
+    hostname: {{ .Values.routeSpec.hostname | quote }}
+    {{- end }}
+    tlsEnabled: {{ .Values.routeSpec.tlsEnabled }}
+    {{- if .Values.routeSpec.routeTimeoutSeconds }}
+    routeTimeoutSeconds: {{ .Values.routeSpec.routeTimeoutSeconds }}
+    {{- end }}
+  {{- end }}
+  {{- if and .Values.logSpec .Values.logSpec.type }}
+  logSpec:
+    type: {{ .Values.logSpec.type | quote }}
+    host: {{ .Values.logSpec.host | quote }}
+    {{- if .Values.logSpec.index }}
+    index: {{ .Values.logSpec.index | quote }}
+    {{- end }}
+    user: {{ .Values.logSpec.user | quote }}
+    passwordSecret: {{ .Values.logSpec.passwordSecret | quote }}
+  {{- end }}
+  {{- if .Values.nfsVolumes }}
+  volumesSpec:
+    nfsVolumes:
+      {{- range .Values.nfsVolumes }}
+      - name: {{ .name | quote }}
+        server: {{ .server | quote }}
+        path: {{ .path | quote }}
+        capacity:
+          storage: {{ .capacity | quote }}
+      {{- end }}
+  {{- end }}
+  {{- if .Values.sources }}
+  sources:
+    {{- range .Values.sources }}
+    - name: {{ .name | quote }}
+      scalarType: {{ .scalarType | quote }}
+      {{- if .scalarMetadata }}
+      scalarMetadata:
+        {{- range $key, $val := .scalarMetadata }}
+        {{ $key }}: {{ $val | quote }}
+        {{- end }}
+      {{- end }}
+      {{- if .minReplicas }}
+      minReplicas: {{ .minReplicas }}
+      {{- end }}
+      {{- if .maxReplicas }}
+      maxReplicas: {{ .maxReplicas }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
