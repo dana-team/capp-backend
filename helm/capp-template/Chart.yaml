@@ -1,0 +1,18 @@
+apiVersion: v2
+name: capp
+description: |
+  Generic Helm chart that renders a rcs.dana.io/v1alpha1 Capp resource from
+  values. Operators copy this chart into the target GitOps repository at
+  chart/ during initial environment setup. The capp-backend publish endpoint
+  writes per-capp values files that override this chart's defaults.
+type: application
+version: 0.1.0
+keywords:
+  - capp
+  - dana-team
+  - gitops
+home: https://github.com/dana-team/capp-backend
+sources:
+  - https://github.com/dana-team/capp-backend
+maintainers:
+  - name: dana-team
