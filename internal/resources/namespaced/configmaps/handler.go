@@ -49,7 +49,7 @@ func (h *Handler) listAll(c *gin.Context) {
 
 	configMapList := &corev1.ConfigMapList{}
 	if err := k8sClient.List(c.Request.Context(), configMapList, client.MatchingLabels{
-		consts.ManagedLabelKey: "true",
+		consts.ManagedLabelKey: consts.ManagedLabelValue,
 	}); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -67,7 +67,7 @@ func (h *Handler) list(c *gin.Context) {
 
 	configMapList := &corev1.ConfigMapList{}
 	if err := k8sClient.List(c.Request.Context(), configMapList, client.InNamespace(namespace), client.MatchingLabels{
-		consts.ManagedLabelKey: "true",
+		consts.ManagedLabelKey: consts.ManagedLabelValue,
 	}); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -93,7 +93,7 @@ func (h *Handler) create(c *gin.Context) {
 			Name:      req.Name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				consts.ManagedLabelKey: "true",
+				consts.ManagedLabelKey: consts.ManagedLabelValue,
 			},
 		},
 		Data: req.Data,
@@ -128,7 +128,7 @@ func (h *Handler) get(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
+	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
@@ -162,7 +162,7 @@ func (h *Handler) update(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
+	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
@@ -196,7 +196,7 @@ func (h *Handler) delete(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
+	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}

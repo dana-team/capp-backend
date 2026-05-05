@@ -49,7 +49,7 @@ func (h *Handler) listAll(c *gin.Context) {
 
 	secretList := &corev1.SecretList{}
 	if err := k8sClient.List(c.Request.Context(), secretList, client.MatchingLabels{
-		consts.ManagedLabelKey: "true",
+		consts.ManagedLabelKey: consts.ManagedLabelValue,
 	}); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -69,7 +69,7 @@ func (h *Handler) list(c *gin.Context) {
 
 	secretList := &corev1.SecretList{}
 	if err := k8sClient.List(c.Request.Context(), secretList, client.InNamespace(namespace), client.MatchingLabels{
-		consts.ManagedLabelKey: "true",
+		consts.ManagedLabelKey: consts.ManagedLabelValue,
 	}); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -107,7 +107,7 @@ func (h *Handler) create(c *gin.Context) {
 			Name:      req.Name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				consts.ManagedLabelKey: "true",
+				consts.ManagedLabelKey: consts.ManagedLabelValue,
 			},
 		},
 		Type: secretType,
@@ -147,7 +147,7 @@ func (h *Handler) get(c *gin.Context) {
 		return
 	}
 
-	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
+	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
 		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
 		return
 	}
@@ -186,7 +186,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
+	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
 		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
 		return
 	}
@@ -230,7 +230,7 @@ func (h *Handler) delete(c *gin.Context) {
 		return
 	}
 
-	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != "true" {
+	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
 		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
 		return
 	}

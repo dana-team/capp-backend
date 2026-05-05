@@ -192,7 +192,7 @@ func TestFromK8s_NoLogSpec_WhenEmpty(t *testing.T) {
 func TestFilterAnnotations_StripKubectl(t *testing.T) {
 	annotations := map[string]string{
 		"kubectl.kubernetes.io/last-applied-configuration": "{}",
-		"app.example.com/version":                         "1.0",
+		"app.example.com/version":                          "1.0",
 	}
 	result := filterAnnotations(annotations)
 	assert.Len(t, result, 1)

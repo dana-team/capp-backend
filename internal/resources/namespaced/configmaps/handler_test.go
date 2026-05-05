@@ -20,15 +20,15 @@ func managedCM(name, namespace string) *corev1.ConfigMap {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels:    map[string]string{consts.ManagedLabelKey: "true"},
+			Labels:    map[string]string{consts.ManagedLabelKey: consts.ManagedLabelValue},
 		},
 		Data: map[string]string{"key": "value"},
 	}
 }
 
-func unmanagedCM(name, namespace string) *corev1.ConfigMap {
+func unmanagedCM(name string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns1"},
 		Data:       map[string]string{"key": "value"},
 	}
 }
@@ -40,7 +40,7 @@ func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
 // -- ListAll tests --
 
 func TestListAll_Success(t *testing.T) {
-	w := engine(t, managedCM("cm1", "ns1"), unmanagedCM("cm2", "ns1")).
+	w := engine(t, managedCM("cm1", "ns1"), unmanagedCM("cm2")).
 		Get("/configmaps")
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -78,7 +78,7 @@ func TestGet_NotFound(t *testing.T) {
 }
 
 func TestGet_MissingManagedLabel(t *testing.T) {
-	w := engine(t, unmanagedCM("cm1", "ns1")).Get("/namespaces/ns1/configmaps/cm1")
+	w := engine(t, unmanagedCM("cm1")).Get("/namespaces/ns1/configmaps/cm1")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -92,7 +92,7 @@ func TestCreate_Success(t *testing.T) {
 	var resp ConfigMapResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "new-cm", resp.Name)
-	assert.Equal(t, "true", resp.Labels[consts.ManagedLabelKey])
+	assert.Equal(t, consts.ManagedLabelValue, resp.Labels[consts.ManagedLabelKey])
 }
 
 func TestCreate_BadJSON(t *testing.T) {
@@ -115,7 +115,7 @@ func TestUpdate_NotFound(t *testing.T) {
 }
 
 func TestUpdate_MissingLabel(t *testing.T) {
-	w := engine(t, unmanagedCM("cm1", "ns1")).PutJSON("/namespaces/ns1/configmaps/cm1",
+	w := engine(t, unmanagedCM("cm1")).PutJSON("/namespaces/ns1/configmaps/cm1",
 		ConfigMapUpdateRequest{Data: map[string]string{"k": "v"}})
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -139,6 +139,6 @@ func TestDelete_NotFound(t *testing.T) {
 }
 
 func TestDelete_MissingLabel(t *testing.T) {
-	w := engine(t, unmanagedCM("cm1", "ns1")).Delete("/namespaces/ns1/configmaps/cm1")
+	w := engine(t, unmanagedCM("cm1")).Delete("/namespaces/ns1/configmaps/cm1")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

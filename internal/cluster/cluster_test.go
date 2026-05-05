@@ -2,6 +2,10 @@ package cluster
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/stretchr/testify/assert"
@@ -11,9 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"net/http"
-	"net/http/httptest"
-	"testing"
 )
 
 // alwaysOKServer returns a test server that responds 200 to all requests.

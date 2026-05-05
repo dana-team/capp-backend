@@ -11,6 +11,7 @@
 - **Interactive API docs** — Embedded [Scalar](https://scalar.com/) UI served at `/docs` alongside a raw OpenAPI 3.1 spec at `/openapi.yaml`. Both work in air-gapped environments (assets are compiled into the binary).
 - **Observability** — Structured JSON logging (zap), Prometheus metrics (`/metrics`), and optional OTLP tracing.
 - **Rate limiting** — Token-bucket rate limiter on all endpoints (configurable; on by default).
+- **cappctl CLI** — Command-line client for the API. Supports all five auth modes, named contexts, token refresh, and `table`/`wide`/`json`/`yaml` output. See [docs/cappctl.md](docs/cappctl.md).
 
 ## Prerequisites
 
@@ -230,16 +231,68 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `GET` | `/readyz` | — | Readiness probe (healthy when ≥1 cluster is reachable) |
 | `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
 
+## cappctl CLI
+
+`cappctl` is the official CLI for the capp-backend API.
+
+### Build
+
+```bash
+make build-cli          # produces bin/cappctl
+# or
+go build -o bin/cappctl ./cmd/cappctl/
+```
+
+### Quick start
+
+```bash
+# Log in and save a named context
+cappctl login --server https://capp.example.com --context prod --cluster my-cluster --token <token>
+
+# List Capps
+cappctl get capps --cluster my-cluster --namespace my-ns
+
+# Create a Capp
+cappctl create capps --name my-app --image nginx:latest --cluster my-cluster --namespace my-ns
+
+# Switch context
+cappctl context use staging
+```
+
+### Auth modes
+
+| Mode | Login command |
+|---|---|
+| `passthrough` / `static` | `--token <raw-token>` |
+| `jwt` | `--token <k8s-token> --cluster <name>` |
+| `dex` | `--username <u>` (password prompted) |
+| `openshift` | browser flow (URL opened automatically on Linux/Windows) |
+
+> Auth mode is auto-detected from the server if `--auth-mode` is omitted.
+
+See [docs/cappctl.md](docs/cappctl.md) for the full reference.
+
 ## Project Structure
 
 ```
-cmd/server/         # Entry point — wires config, auth, clusters, and HTTP server
+cmd/
+├── server/         # Server entry point — wires config, auth, clusters, and HTTP server
+└── cappctl/        # CLI entry point
 api/                # OpenAPI 3.1 spec (embedded in binary via go:embed)
 config/             # Default config.yaml
 deploy/             # Dockerfile, Kubernetes manifests, Helm chart skeleton
+docs/               # Documentation (cappctl.md, openshift-auth.md)
 internal/
 ├── apierrors/      # Canonical error types and Gin response helpers
 ├── auth/           # Auth manager interface + passthrough, jwt, static, dex, openshift implementations
+├── cli/            # cappctl CLI packages (no Gin/K8s imports)
+│   ├── auth/       # login, logout, context commands
+│   ├── capps/      # Capp CRUD commands
+│   ├── client/     # HTTP client with token auth and TLS options
+│   ├── config/     # ~/.config/cappctl/config.yaml read/write
+│   ├── output/     # table/wide/json/yaml renderer
+│   ├── resource/   # ResourceCommand interface + registry
+│   └── root/       # Root Cobra command, PersistentPreRunE, token refresh
 ├── cluster/        # ClusterManager — multi-cluster routing and health checks
 ├── config/         # Config structs, Viper loading, and validation
 ├── middleware/      # Gin middleware: auth, cluster resolution, CORS, logging, metrics, rate limiting

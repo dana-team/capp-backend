@@ -46,4 +46,3 @@ func TestRegister_MissingFromMap_StillAdded(t *testing.T) {
 	r.Register(&mockHandler{name: "namespaces"})
 	assert.Len(t, r.handlers, 1)
 }
-
