@@ -24,6 +24,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/gitops"
 	"github.com/dana-team/capp-backend/internal/resources"
 	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
@@ -100,17 +101,31 @@ func main() {
 		go cs.StartCleanup(rootCtx)
 	}
 
-	// ── 6. Build resource registry ────────────────────────────────────────────
+	// ── 6. Build GitOps client (optional) ─────────────────────────────────────
+	var gitopsClient *gitops.Client
+	if cfg.GitOps.Enabled {
+		var err error
+		gitopsClient, err = gitops.NewClient(cfg.GitOps, logger, "")
+		if err != nil {
+			logger.Fatal("failed to initialise gitops client", zap.Error(err))
+		}
+		logger.Info("gitops client initialised",
+			zap.String("repo", cfg.GitOps.RepoURL),
+			zap.String("branch", cfg.GitOps.Branch),
+		)
+	}
+
+	// ── 7. Build resource registry ────────────────────────────────────────────
 	enabledResources := map[string]bool{
 		"namespaces": cfg.Resources.Namespaces.Enabled,
 		"capps":      cfg.Resources.Capps.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New())
-	registry.Register(capphandler.New())
+	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
-	// ── 7. Build and start HTTP server ────────────────────────────────────────
+	// ── 8. Build and start HTTP server ────────────────────────────────────────
 	srv := server.New(cfg, authMgr, clusterMgr, registry, logger)
 
 	// Run in a goroutine so we can listen for signals concurrently.
@@ -119,7 +134,7 @@ func main() {
 		serverErr <- srv.Start()
 	}()
 
-	// ── 8. Wait for shutdown signal ───────────────────────────────────────────
+	// ── 9. Wait for shutdown signal ───────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -132,7 +147,7 @@ func main() {
 		}
 	}
 
-	// ── 9. Graceful shutdown ──────────────────────────────────────────────────
+	// ── 10. Graceful shutdown ─────────────────────────────────────────────────
 	rootCancel() // stop health checks and JWT cleanup
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)

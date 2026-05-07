@@ -1,24 +1,41 @@
 package capps
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
+	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// GitOpsPublisher is the subset of the gitops.Client interface that the
+// publish handler needs. Using an interface allows unit testing with fakes.
+type GitOpsPublisher interface {
+	PublishValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error)
+	BuildRelPath(gitOpsPath, namespace, cappName string) string
+}
+
 // Handler implements resources.ResourceHandler for the rcs.dana.io/v1alpha1
 // Capp custom resource. It provides full CRUD over Capps through the
 // per-request scoped Kubernetes client injected by the cluster middleware.
-type Handler struct{}
+type Handler struct {
+	gitopsEnabled bool
+	gitops        GitOpsPublisher
+}
 
-// New returns a ready-to-use Capp Handler.
-func New() *Handler { return &Handler{} }
+// New returns a ready-to-use Capp Handler. When gitops is disabled, pass nil
+// for the publisher — the publish endpoint will return 501.
+func New(gitopsEnabled bool, gitops GitOpsPublisher) *Handler {
+	return &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops}
+}
 
 // Name returns the handler's identifier, matching the resources.capps config key.
 func (h *Handler) Name() string { return "capps" }
@@ -35,6 +52,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.GET("/:name", h.get)
 	ns.PUT("/:name", h.update)
 	ns.DELETE("/:name", h.delete)
+	ns.POST("/:name/publish", h.publish)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -189,6 +207,99 @@ func (h *Handler) delete(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// publishResponse is the JSON body returned by the publish endpoint.
+type publishResponse struct {
+	CommitSHA      string `json:"commitSha,omitempty"`
+	Path           string `json:"path,omitempty"`
+	AlreadyBackedUp bool  `json:"alreadyBackedUp"`
+}
+
+// publish handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/publish
+//
+// Flow:
+//  1. Verify gitops is enabled.
+//  2. Fetch the live Capp — 404 if it does not exist.
+//  3. If the Capp already has the backup label, return 200 (idempotent).
+//  4. Generate a Helm values YAML from the live Capp.
+//  5. Push it to the GitOps repository.
+//  6. Patch the Capp to add the backup label.
+//  7. Return 200 with the commit SHA and file path.
+func (h *Handler) publish(c *gin.Context) {
+	if !h.gitopsEnabled || h.gitops == nil {
+		apierrors.Respond(c, apierrors.NewNotSupported("publish"))
+		return
+	}
+
+	k8sClient := namespaced.ExtractClient(c)
+	if k8sClient == nil {
+		return
+	}
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	var capp cappv1alpha1.Capp
+	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &capp); err != nil {
+		if k8serrors.IsNotFound(err) {
+			apierrors.Respond(c, apierrors.NewNotFound("Capp", name))
+			return
+		}
+		apierrors.Respond(c, err)
+		return
+	}
+
+	if k8s.HasBackupLabel(capp.Labels) {
+		c.JSON(http.StatusOK, publishResponse{AlreadyBackedUp: true})
+		return
+	}
+
+	meta, err := extractClusterMeta(c)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
+
+	valuesYAML, err := GenerateValues(&capp)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("generate values: %w", err)))
+		return
+	}
+
+	commitSHA, err := h.gitops.PublishValues(c.Request.Context(), meta.GitOpsPath, namespace, capp.Name, valuesYAML)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("publish to git: %w", err)))
+		return
+	}
+
+	patch := client.MergeFrom(capp.DeepCopy())
+	if capp.Labels == nil {
+		capp.Labels = map[string]string{}
+	}
+	capp.Labels[k8s.LabelBackupToGit] = "true"
+	if err := k8sClient.Patch(c.Request.Context(), &capp, patch); err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("patch backup label: %w", err)))
+		return
+	}
+
+	relPath := h.gitops.BuildRelPath(meta.GitOpsPath, namespace, capp.Name)
+	c.JSON(http.StatusOK, publishResponse{
+		CommitSHA: commitSHA,
+		Path:      relPath,
+	})
+}
+
+// extractClusterMeta retrieves the ClusterMeta from the Gin context.
+func extractClusterMeta(c *gin.Context) (cluster.ClusterMeta, error) {
+	val, exists := c.Get(string(middleware.ClusterMetaKey))
+	if !exists {
+		return cluster.ClusterMeta{}, fmt.Errorf("ClusterMeta not found in context")
+	}
+	meta, ok := val.(cluster.ClusterMeta)
+	if !ok {
+		return cluster.ClusterMeta{}, fmt.Errorf("ClusterMeta has unexpected type in context")
+	}
+	return meta, nil
 }
 
 // respondList converts a CappList into a CappListResponse and writes it.
