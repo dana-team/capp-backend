@@ -257,7 +257,7 @@ type ResourcesConfig struct {
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
 type GitOpsConfig struct {
-	// Enabled toggles the /publish endpoint on Capps. Default: false.
+	// Enabled toggles the /sync endpoint on Capps. Default: false.
 	Enabled bool `mapstructure:"enabled"`
 
 	// RepoURL is the git repository where values files are pushed.

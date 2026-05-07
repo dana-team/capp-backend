@@ -104,12 +104,12 @@ func TestBuildRelPath_CustomPrefix(t *testing.T) {
 	assert.Equal(t, "overrides/nova/ns/app.yaml", got)
 }
 
-func TestPublishValues(t *testing.T) {
+func TestSyncValues(t *testing.T) {
 	c, cloneDir := initBareRepo(t)
 	ctx := context.Background()
 
 	valuesYAML := []byte("image: nginx:1.25\nname: my-capp\n")
-	sha, err := c.PublishValues(ctx, "nova", "production", "my-capp", valuesYAML)
+	sha, err := c.SyncValues(ctx, "nova", "production", "my-capp", valuesYAML)
 	require.NoError(t, err)
 	assert.Len(t, sha, 40)
 
@@ -118,16 +118,16 @@ func TestPublishValues(t *testing.T) {
 	assert.Equal(t, valuesYAML, written)
 }
 
-func TestPublishValues_Overwrite(t *testing.T) {
+func TestSyncValues_Overwrite(t *testing.T) {
 	c, cloneDir := initBareRepo(t)
 	ctx := context.Background()
 
 	v1 := []byte("image: nginx:1.24\n")
-	_, err := c.PublishValues(ctx, "nova", "ns", "app", v1)
+	_, err := c.SyncValues(ctx, "nova", "ns", "app", v1)
 	require.NoError(t, err)
 
 	v2 := []byte("image: nginx:1.25\n")
-	sha, err := c.PublishValues(ctx, "nova", "ns", "app", v2)
+	sha, err := c.SyncValues(ctx, "nova", "ns", "app", v2)
 	require.NoError(t, err)
 	assert.Len(t, sha, 40)
 
@@ -141,12 +141,12 @@ func TestDeleteValues(t *testing.T) {
 	ctx := context.Background()
 
 	valuesYAML := []byte("image: nginx:1.25\n")
-	_, err := c.PublishValues(ctx, "nova", "ns", "my-capp", valuesYAML)
+	_, err := c.SyncValues(ctx, "nova", "ns", "my-capp", valuesYAML)
 	require.NoError(t, err)
 
 	filePath := filepath.Join(cloneDir, "sites", "nova", "ns", "my-capp.yaml")
 	_, err = os.Stat(filePath)
-	require.NoError(t, err, "file should exist after publish")
+	require.NoError(t, err, "file should exist after sync")
 
 	sha, err := c.DeleteValues(ctx, "nova", "ns", "my-capp")
 	require.NoError(t, err)
@@ -165,13 +165,13 @@ func TestDeleteValues_NonExistent(t *testing.T) {
 	assert.Empty(t, sha, "no-op should return empty SHA")
 }
 
-func TestPublishValues_CommitHistory(t *testing.T) {
+func TestSyncValues_CommitHistory(t *testing.T) {
 	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
-	_, err := c.PublishValues(ctx, "nova", "ns", "app1", []byte("v1"))
+	_, err := c.SyncValues(ctx, "nova", "ns", "app1", []byte("v1"))
 	require.NoError(t, err)
-	_, err = c.PublishValues(ctx, "nova", "ns", "app2", []byte("v2"))
+	_, err = c.SyncValues(ctx, "nova", "ns", "app2", []byte("v2"))
 	require.NoError(t, err)
 
 	ref, err := c.repo.Head()
@@ -179,14 +179,14 @@ func TestPublishValues_CommitHistory(t *testing.T) {
 
 	commit, err := c.repo.CommitObject(ref.Hash())
 	require.NoError(t, err)
-	assert.Contains(t, commit.Message, "publish nova/ns/app2.yaml")
+	assert.Contains(t, commit.Message, "sync nova/ns/app2.yaml")
 }
 
 func TestDeleteValues_CommitMessage(t *testing.T) {
 	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
-	_, err := c.PublishValues(ctx, "five", "prod", "web", []byte("v1"))
+	_, err := c.SyncValues(ctx, "five", "prod", "web", []byte("v1"))
 	require.NoError(t, err)
 
 	_, err = c.DeleteValues(ctx, "five", "prod", "web")

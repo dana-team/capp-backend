@@ -1,8 +1,8 @@
 package k8s
 
 // LabelBackupToGit is set on a Capp that has been backed up to the GitOps
-// repository. Its presence tells the publish endpoint that the Capp is
-// already saved and allows filtering backed-up Capps via label selectors.
+// repository. It marks the Capp as participating in GitOps sync and allows
+// filtering backed-up Capps via label selectors.
 const LabelBackupToGit = "rcs.dana.io/backup-to-git"
 
 // HasBackupLabel reports whether the given label map contains the

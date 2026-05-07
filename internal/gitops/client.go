@@ -23,7 +23,7 @@ import (
 )
 
 // Client manages a local clone of the GitOps repository and provides
-// thread-safe operations for publishing and deleting per-capp values files.
+// thread-safe operations for syncing and deleting per-capp values files.
 type Client struct {
 	mu         sync.Mutex
 	repo       *git.Repository
@@ -89,9 +89,9 @@ func (c *Client) BuildRelPath(gitOpsPath, namespace, cappName string) string {
 	return filepath.Join(c.pathPrefix, gitOpsPath, namespace, cappName+".yaml")
 }
 
-// PublishValues writes a per-capp values file to the GitOps repository,
+// SyncValues writes a per-capp values file to the GitOps repository,
 // commits it, and pushes to the remote. Returns the commit SHA on success.
-func (c *Client) PublishValues(_ context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
+func (c *Client) SyncValues(_ context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -119,7 +119,7 @@ func (c *Client) PublishValues(_ context.Context, gitOpsPath, namespace, cappNam
 		return "", fmt.Errorf("stage %s: %w", relPath, err)
 	}
 
-	msg := fmt.Sprintf("publish %s/%s/%s.yaml", gitOpsPath, namespace, cappName)
+	msg := fmt.Sprintf("sync %s/%s/%s.yaml", gitOpsPath, namespace, cappName)
 	hash, err := wt.Commit(msg, &git.CommitOptions{
 		Author: commitAuthor(),
 	})
@@ -132,7 +132,7 @@ func (c *Client) PublishValues(_ context.Context, gitOpsPath, namespace, cappNam
 		return "", fmt.Errorf("push: %w", err)
 	}
 
-	c.logger.Info("published values",
+	c.logger.Info("synced values",
 		zap.String("path", relPath),
 		zap.String("commit", hash.String()),
 	)
