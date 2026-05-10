@@ -1,19 +1,46 @@
-# CI: Test workflow
-# Runs on every push and pull request. Performs static analysis, unit tests,
-# and Helm chart linting. No cluster is required.
-name: Test
+# CI: Server test workflow
+# Runs on server/shared code changes. Lint, unit tests, Helm lint, Docker build check.
+name: Test (server)
 
 on:
   push:
     branches: ["main", "master"]
     paths:
-      - "**.go"
+      - "cmd/server/**"
+      - "internal/auth/**"
+      - "internal/apierrors/**"
+      - "internal/cluster/**"
+      - "internal/config/**"
+      - "internal/gitops/**"
+      - "internal/middleware/**"
+      - "internal/resources/**"
+      - "internal/server/**"
+      - "pkg/**"
+      - "api/**"
+      - "helm/**"
+      - "deploy/**"
       - "go.mod"
       - "go.sum"
-      - "helm/**"
       - ".github/workflows/test.yaml"
   pull_request:
     branches: ["main", "master"]
+    paths:
+      - "cmd/server/**"
+      - "internal/auth/**"
+      - "internal/apierrors/**"
+      - "internal/cluster/**"
+      - "internal/config/**"
+      - "internal/gitops/**"
+      - "internal/middleware/**"
+      - "internal/resources/**"
+      - "internal/server/**"
+      - "pkg/**"
+      - "api/**"
+      - "helm/**"
+      - "deploy/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/test.yaml"
   workflow_call:
 
 permissions:
@@ -43,16 +70,18 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: go vet
-        run: go vet ./...
+        run: go vet $(go list ./... | grep -v 'internal/cli\|cmd/cappctl')
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.4
-          args: --timeout=5m
+          args: --timeout=5m --skip-dirs=internal/cli
 
       - name: Unit tests (with race detector)
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: |
+          go test -v -race -coverprofile=coverage.out \
+            $(go list ./... | grep -v 'internal/cli\|cmd/cappctl')
 
       - name: Coverage report
         run: go tool cover -func=coverage.out
@@ -67,7 +96,7 @@ jobs:
 
   # ── Go: build check ──────────────────────────────────────────────────────────
   build:
-    name: Build binary
+    name: Build server binary
     runs-on: ubuntu-latest
     needs: go
     steps:

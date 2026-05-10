@@ -1,3 +1,4 @@
+
 # OpenShift Authentication
 
 This guide covers deploying `capp-backend` with OpenShift OAuth authentication. It is intended for cluster administrators deploying the CAPP platform into an OpenShift cluster.

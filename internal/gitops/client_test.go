@@ -18,7 +18,7 @@ import (
 
 // initBareRepo creates a bare "remote" repo, seeds it with an initial commit,
 // clones it to a working directory, and returns a Client wired to the clone.
-func initBareRepo(t *testing.T, pathPrefix string) (*Client, string) {
+func initBareRepo(t *testing.T) (*Client, string) {
 	t.Helper()
 
 	// Create and seed the bare "remote" via a temporary init repo.
@@ -59,7 +59,7 @@ func initBareRepo(t *testing.T, pathPrefix string) (*Client, string) {
 	require.NoError(t, err)
 
 	logger, _ := zap.NewDevelopment()
-	c := NewClientFromRepo(clone, nil, "master", pathPrefix, logger)
+	c := NewClientFromRepo(clone, nil, "master", "sites", logger)
 
 	return c, cloneDir
 }
@@ -105,7 +105,7 @@ func TestBuildRelPath_CustomPrefix(t *testing.T) {
 }
 
 func TestPublishValues(t *testing.T) {
-	c, cloneDir := initBareRepo(t, "sites")
+	c, cloneDir := initBareRepo(t)
 	ctx := context.Background()
 
 	valuesYAML := []byte("image: nginx:1.25\nname: my-capp\n")
@@ -119,7 +119,7 @@ func TestPublishValues(t *testing.T) {
 }
 
 func TestPublishValues_Overwrite(t *testing.T) {
-	c, cloneDir := initBareRepo(t, "sites")
+	c, cloneDir := initBareRepo(t)
 	ctx := context.Background()
 
 	v1 := []byte("image: nginx:1.24\n")
@@ -137,7 +137,7 @@ func TestPublishValues_Overwrite(t *testing.T) {
 }
 
 func TestDeleteValues(t *testing.T) {
-	c, cloneDir := initBareRepo(t, "sites")
+	c, cloneDir := initBareRepo(t)
 	ctx := context.Background()
 
 	valuesYAML := []byte("image: nginx:1.25\n")
@@ -157,7 +157,7 @@ func TestDeleteValues(t *testing.T) {
 }
 
 func TestDeleteValues_NonExistent(t *testing.T) {
-	c, _ := initBareRepo(t, "sites")
+	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
 	sha, err := c.DeleteValues(ctx, "nova", "ns", "does-not-exist")
@@ -166,7 +166,7 @@ func TestDeleteValues_NonExistent(t *testing.T) {
 }
 
 func TestPublishValues_CommitHistory(t *testing.T) {
-	c, _ := initBareRepo(t, "sites")
+	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
 	_, err := c.PublishValues(ctx, "nova", "ns", "app1", []byte("v1"))
@@ -183,7 +183,7 @@ func TestPublishValues_CommitHistory(t *testing.T) {
 }
 
 func TestDeleteValues_CommitMessage(t *testing.T) {
-	c, _ := initBareRepo(t, "sites")
+	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
 	_, err := c.PublishValues(ctx, "five", "prod", "web", []byte("v1"))

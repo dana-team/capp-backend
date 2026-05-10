@@ -37,6 +37,10 @@ fetch-ui: ## Download the Scalar API reference JS bundle for disconnected (air-g
 build: fmt vet ## Build the server binary
 	go build -o bin/server ./cmd/server/...
 
+.PHONY: build-cli
+build-cli: fmt vet ## Build the cappctl CLI binary
+	go build -o bin/cappctl ./cmd/cappctl/...
+
 .PHONY: run
 run: fmt vet ## Run the server locally using the default config file
 	go run ./cmd/server/... --config=config/config.yaml

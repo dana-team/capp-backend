@@ -1,0 +1,87 @@
+# CI: CLI test workflow
+# Runs on cappctl CLI code changes. Lint, unit tests, binary build check.
+name: Test (cli)
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "cmd/cappctl/**"
+      - "internal/cli/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/test-cli.yaml"
+  pull_request:
+    branches: ["main", "master"]
+    paths:
+      - "cmd/cappctl/**"
+      - "internal/cli/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/test-cli.yaml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Go: lint + test ──────────────────────────────────────────────────────────
+  go:
+    name: Go lint & test (cli)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./internal/cli/... ./cmd/cappctl/...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.4
+          args: --timeout=5m ./internal/cli/... ./cmd/cappctl/...
+
+      - name: Unit tests (with race detector)
+        run: go test -v -race -coverprofile=coverage.out ./internal/cli/... ./cmd/cappctl/...
+
+      - name: Coverage report
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── CLI: build check ─────────────────────────────────────────────────────────
+  build:
+    name: Build cappctl binary
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build (linux/amd64)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /dev/null ./cmd/cappctl/...
+
+      - name: Build (windows/amd64)
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o /dev/null ./cmd/cappctl/...

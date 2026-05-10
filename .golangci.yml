@@ -1,0 +1,51 @@
+version: "2"
+run:
+  allow-parallel-runners: true
+linters:
+  default: none
+  enable:
+    - copyloopvar
+    - dupl
+    - errcheck
+    - goconst
+    - gocyclo
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - staticcheck
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    revive:
+      rules:
+        - name: comment-spacings
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - staticcheck
+        path: test/e2e/*
+      - linters:
+          - dupl
+        path: internal/*
+      - linters:
+            - dupl
+        path: test/*
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

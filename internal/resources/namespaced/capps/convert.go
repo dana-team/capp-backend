@@ -208,7 +208,7 @@ func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
 // list that the frontend's Conditions table can render without traversing
 // nested objects.
 func buildStatus(capp *cappv1alpha1.Capp) CappStatusResponse {
-	var conditions []ConditionResponse
+	conditions := make([]ConditionResponse, 0, len(capp.Status.Conditions)+len(capp.Status.KnativeObjectStatus.Conditions)+len(capp.Status.LoggingStatus.Conditions)+len(capp.Status.RouteStatus.DomainMappingObjectStatus.Conditions))
 
 	// Top-level conditions (from the Capp controller).
 	for _, c := range capp.Status.Conditions {

@@ -20,16 +20,16 @@ func managedSecret(name, namespace string) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels:    map[string]string{consts.ManagedLabelKey: "true"},
+			Labels:    map[string]string{consts.ManagedLabelKey: consts.ManagedLabelValue},
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{"key": []byte("value")},
 	}
 }
 
-func unmanagedSecret(name, namespace string) *corev1.Secret {
+func unmanagedSecret(name string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns1"},
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{"key": []byte("value")},
 	}
@@ -42,7 +42,7 @@ func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
 // -- ListAll tests --
 
 func TestListAll_Success(t *testing.T) {
-	w := engine(t, managedSecret("s1", "ns1"), unmanagedSecret("s2", "ns1")).
+	w := engine(t, managedSecret("s1", "ns1"), unmanagedSecret("s2")).
 		Get("/secrets")
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -81,7 +81,7 @@ func TestGet_NotFound(t *testing.T) {
 }
 
 func TestGet_MissingManagedLabel(t *testing.T) {
-	w := engine(t, unmanagedSecret("s1", "ns1")).Get("/namespaces/ns1/secrets/s1")
+	w := engine(t, unmanagedSecret("s1")).Get("/namespaces/ns1/secrets/s1")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -95,7 +95,7 @@ func TestCreate_Success(t *testing.T) {
 	var resp SecretResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "new-secret", resp.Name)
-	assert.Equal(t, "true", resp.Labels[consts.ManagedLabelKey])
+	assert.Equal(t, consts.ManagedLabelValue, resp.Labels[consts.ManagedLabelKey])
 }
 
 func TestCreate_DefaultOpaqueType(t *testing.T) {
@@ -137,7 +137,7 @@ func TestUpdate_NotFound(t *testing.T) {
 }
 
 func TestUpdate_MissingLabel(t *testing.T) {
-	w := engine(t, unmanagedSecret("s1", "ns1")).PutJSON("/namespaces/ns1/secrets/s1",
+	w := engine(t, unmanagedSecret("s1")).PutJSON("/namespaces/ns1/secrets/s1",
 		SecretUpdateRequest{Data: map[string]string{"k": "v"}})
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -161,7 +161,7 @@ func TestDelete_NotFound(t *testing.T) {
 }
 
 func TestDelete_MissingLabel(t *testing.T) {
-	w := engine(t, unmanagedSecret("s1", "ns1")).Delete("/namespaces/ns1/secrets/s1")
+	w := engine(t, unmanagedSecret("s1")).Delete("/namespaces/ns1/secrets/s1")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 

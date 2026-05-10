@@ -218,7 +218,7 @@ func TestValidate_OpenShift_Valid(t *testing.T) {
 		},
 	})
 	cfg.Auth = AuthConfig{
-		Mode: "openshift",
+		Mode:      "openshift",
 		OpenShift: validOpenShiftConfig(),
 	}
 	assert.NoError(t, Validate(cfg))
@@ -253,7 +253,7 @@ func TestValidate_OpenShift_ClusterMissingToken(t *testing.T) {
 		},
 	})
 	cfg.Auth = AuthConfig{
-		Mode: "openshift",
+		Mode:      "openshift",
 		OpenShift: validOpenShiftConfig(),
 	}
 	err := Validate(cfg)
