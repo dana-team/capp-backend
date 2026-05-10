@@ -277,6 +277,49 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 	parent.AddCommand(cmd)
 }
 
+// syncResult is the response returned by the sync endpoint.
+type syncResult struct {
+	CommitSHA string `json:"commitSha,omitempty"`
+	Path      string `json:"path,omitempty"`
+}
+
+func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
+	cmd := &cobra.Command{
+		Use:     "capps <name>",
+		Aliases: []string{"capp", "ca"},
+		Short:   "Sync a Capp to the GitOps repository",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cluster := h.state.Cluster
+			ns := h.state.Namespace
+			if cluster == "" {
+				return fmt.Errorf("--cluster is required")
+			}
+			if ns == "" {
+				return fmt.Errorf("--namespace is required")
+			}
+			cappName := args[0]
+
+			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", cluster, ns, cappName)
+			var result syncResult
+			if err := h.state.Client.Post(cmd.Context(), path, nil, &result); err != nil {
+				return err
+			}
+
+			switch h.state.OutputFmt {
+			case "json":
+				return output.PrintJSON(cmd.OutOrStdout(), result)
+			case "yaml":
+				return output.PrintYAML(cmd.OutOrStdout(), result)
+			default:
+				fmt.Fprintf(cmd.OutOrStdout(), "Synced %q to git (commit: %s, path: %s)\n", cappName, result.CommitSHA, result.Path) //nolint:errcheck
+			}
+			return nil
+		},
+	}
+	parent.AddCommand(cmd)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func (h *handler) render(w io.Writer, items []apitypes.CappResponse, raw any) error {
