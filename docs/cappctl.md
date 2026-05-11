@@ -424,6 +424,47 @@ cappctl get capps --cluster local --insecure
 The flag must be passed to every command (it is not saved to the context). For persistent insecure access, set it in a shell alias or wrapper script.
 
 ---
+## Shell Completion
+
+`cappctl` supports tab completion for bash, zsh, fish, and PowerShell.
+
+### Bash
+```bash
+# Current session only
+source <(cappctl completion bash)
+
+# Permanent (Linux)
+cappctl completion bash > /etc/bash_completion.d/cappctl
+
+# Permanent (macOS)
+cappctl completion bash > $(brew --prefix)/etc/bash_completion.d/cappctl
+```
+
+### Zsh
+```bash
+# Current session only
+source <(cappctl completion zsh)
+
+# Permanent — add to ~/.zshrc if not already there:
+mkdir -p ~/.zsh/completions
+cappctl completion zsh > ~/.zsh/completions/_cappctl
+echo 'fpath=(~/.zsh/completions $fpath)' >> ~/.zshrc
+echo 'autoload -U compinit && compinit' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Fish
+```bash
+cappctl completion fish > ~/.config/fish/completions/cappctl.fish
+```
+
+### PowerShell
+```powershell
+cappctl completion powershell | Out-String | Invoke-Expression
+# To persist, add the above line to your PowerShell profile ($PROFILE)
+```
+
+---
 
 ## Quick Start
 

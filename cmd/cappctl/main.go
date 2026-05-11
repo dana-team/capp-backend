@@ -5,6 +5,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/cli/auth"
 	"github.com/dana-team/capp-backend/internal/cli/capps"
+	"github.com/dana-team/capp-backend/internal/cli/completion"
 	"github.com/dana-team/capp-backend/internal/cli/resource"
 	"github.com/dana-team/capp-backend/internal/cli/root"
 )
@@ -24,6 +25,7 @@ func main() {
 		auth.NewLoginCommand(state),
 		auth.NewLogoutCommand(state),
 		auth.NewContextCommand(state),
+		completion.NewCompletionCommand(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
