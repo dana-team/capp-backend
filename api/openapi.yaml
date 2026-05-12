@@ -435,31 +435,21 @@ components:
           description: Storage capacity, e.g. "10Gi".
           example: "10Gi"
 
-    KedaSource:
+    ScaleSpec:
       type: object
-      required: [name, scalarType]
       properties:
-        name:
+        metric:
           type: string
-          example: my-scaler
-        scalarType:
-          type: string
-          example: prometheus
-        scalarMetadata:
-          type: object
-          additionalProperties:
-            type: string
-          example:
-            serverAddress: http://prometheus:9090
-            metricName: http_requests_total
+          enum: [rps, concurrency, cpu, memory]
+          example: concurrency
         minReplicas:
           type: integer
-          format: int32
+          minimum: 0
           example: 1
-        maxReplicas:
+        scaleDelaySeconds:
           type: integer
-          format: int32
-          example: 10
+          minimum: 0
+          example: 30
 
     CappRequest:
       type: object
@@ -471,18 +461,12 @@ components:
         namespace:
           type: string
           example: default
-        scaleMetric:
-          type: string
-          enum: [rps, concurrency, cpu, memory, external]
-          example: rps
+        scaleSpec:
+          $ref: '#/components/schemas/ScaleSpec'
         state:
           type: string
           enum: [enabled, disabled]
           example: enabled
-        minReplicas:
-          type: integer
-          minimum: 0
-          example: 1
         image:
           type: string
           example: ghcr.io/example/my-app:v1.2.3
@@ -505,10 +489,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NFSVolume'
-        sources:
-          type: array
-          items:
-            $ref: '#/components/schemas/KedaSource'
 
     ConditionResponse:
       type: object
@@ -599,17 +579,12 @@ components:
           additionalProperties:
             type: string
           description: kubectl.kubernetes.io/* annotations are filtered out.
-        scaleMetric:
-          type: string
-          enum: [rps, concurrency, cpu, memory, external]
-          example: rps
+        scaleSpec:
+          $ref: '#/components/schemas/ScaleSpec'
         state:
           type: string
           enum: [enabled, disabled]
           example: enabled
-        minReplicas:
-          type: integer
-          example: 1
         image:
           type: string
           example: ghcr.io/example/my-app:v1.2.3
@@ -632,10 +607,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NFSVolume'
-        sources:
-          type: array
-          items:
-            $ref: '#/components/schemas/KedaSource'
         status:
           $ref: '#/components/schemas/CappStatusResponse'
 

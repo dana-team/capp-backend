@@ -77,14 +77,13 @@ func TestToK8s_WithNFSVolumes(t *testing.T) {
 	assert.Equal(t, "data", capp.Spec.VolumesSpec.NFSVolumes[0].Name)
 }
 
-func TestToK8s_WithSources(t *testing.T) {
-	min := int32(1)
-	max := int32(10)
+func TestToK8s_WithScaleSpec(t *testing.T) {
 	req := minimalRequest()
-	req.Sources = []KedaSource{{Name: "src", ScalarType: "kafka", MinReplicas: &min, MaxReplicas: &max}}
+	req.ScaleSpec = ScaleSpec{Metric: "cpu", MinReplicas: 2, ScaleDelaySeconds: 30}
 	capp := ToK8s(req, "ns1")
-	require.Len(t, capp.Spec.Sources, 1)
-	assert.Equal(t, "kafka", capp.Spec.Sources[0].ScalarType)
+	assert.Equal(t, "cpu", capp.Spec.ScaleSpec.Metric)
+	assert.Equal(t, 2, capp.Spec.ScaleSpec.MinReplicas)
+	assert.Equal(t, 30, capp.Spec.ScaleSpec.ScaleDelaySeconds)
 }
 
 func TestToK8s_WithEnvVars(t *testing.T) {
@@ -158,13 +157,13 @@ func TestFromK8s_WithNFSVolumes(t *testing.T) {
 	assert.Equal(t, "10Gi", resp.NFSVolumes[0].Capacity)
 }
 
-func TestFromK8s_WithSources(t *testing.T) {
+func TestFromK8s_WithScaleSpec(t *testing.T) {
 	capp := minimalCapp()
-	min := int32(1)
-	capp.Spec.Sources = []cappv1alpha1.KedaSource{{Name: "src", ScalarType: "kafka", MinReplicas: &min}}
+	capp.Spec.ScaleSpec = cappv1alpha1.ScaleSpec{Metric: "cpu", MinReplicas: 3, ScaleDelaySeconds: 60}
 	resp := FromK8s(capp)
-	require.Len(t, resp.Sources, 1)
-	assert.Equal(t, "kafka", resp.Sources[0].ScalarType)
+	assert.Equal(t, "cpu", resp.ScaleSpec.Metric)
+	assert.Equal(t, 3, resp.ScaleSpec.MinReplicas)
+	assert.Equal(t, 60, resp.ScaleSpec.ScaleDelaySeconds)
 }
 
 func TestFromK8s_CreationTimestamp_Formatted(t *testing.T) {
