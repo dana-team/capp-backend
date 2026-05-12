@@ -73,7 +73,11 @@ data:
             {{- if $cluster.credential.inline.caCert }}
             caCert: {{ $cluster.credential.inline.caCert | quote }}
             {{- end }}
+            {{- if (eq $cluster.credential.inline.apiServer "https://kubernetes.default.svc") }}
+            token: {{ $cluster.credential.inline.token  | quote }}
+            {{- else }}
             token: ""
+            {{- end }}
           {{- end }}
         allowedNamespaces:
           {{- toYaml $cluster.allowedNamespaces | nindent 10 }}
