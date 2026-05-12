@@ -20,7 +20,7 @@ var tableCols = []output.Column[apitypes.CappResponse]{
 	{Header: "NAMESPACE", Value: func(c apitypes.CappResponse) string { return c.Namespace }},
 	{Header: "IMAGE", Value: func(c apitypes.CappResponse) string { return c.Image }},
 	{Header: "STATE", Value: func(c apitypes.CappResponse) string { return c.State }},
-	{Header: "SCALE-METRIC", Value: func(c apitypes.CappResponse) string { return c.ScaleMetric }},
+	{Header: "METRIC", Value: func(c apitypes.CappResponse) string { return c.ScaleSpec.Metric }},
 	{Header: "AGE", Value: func(c apitypes.CappResponse) string { return age(c.CreatedAt) }},
 	{Header: "UID", Value: func(c apitypes.CappResponse) string { return c.UID }, Wide: true},
 }
@@ -82,13 +82,14 @@ func (h *handler) RegisterGetCommand(parent *cobra.Command) {
 
 func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	var (
-		name          string
-		image         string
-		scaleMetric   string
-		cappState     string
-		minReplicas   int
-		containerName string
-		envPairs      []string
+		name              string
+		image             string
+		metric            string
+		cappState         string
+		minReplicas       int
+		scaleDelaySeconds int
+		containerName     string
+		envPairs          []string
 	)
 
 	cmd := &cobra.Command{
@@ -116,12 +117,15 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 				return err
 			}
 			req := apitypes.CappRequest{
-				Name:          name,
-				Namespace:     ns,
-				Image:         image,
-				ScaleMetric:   scaleMetric,
+				Name:      name,
+				Namespace: ns,
+				Image:     image,
+				ScaleSpec: apitypes.ScaleSpec{
+					Metric:            metric,
+					MinReplicas:       minReplicas,
+					ScaleDelaySeconds: scaleDelaySeconds,
+				},
 				State:         cappState,
-				MinReplicas:   minReplicas,
 				ContainerName: containerName,
 				Env:           envVars,
 			}
@@ -137,9 +141,10 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 
 	cmd.Flags().StringVar(&name, "name", "", "Capp name (required)")
 	cmd.Flags().StringVar(&image, "image", "", "container image (required)")
-	cmd.Flags().StringVar(&scaleMetric, "scale-metric", "", "scale metric: concurrency|cpu|memory|rps|external")
+	cmd.Flags().StringVar(&metric, "metric", "", "scale metric: concurrency|cpu|memory|rps")
 	cmd.Flags().StringVar(&cappState, "state", "", "state: enabled|disabled")
 	cmd.Flags().IntVar(&minReplicas, "min-replicas", 0, "minimum replica count")
+	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (repeatable)")
 	parent.AddCommand(cmd)
@@ -147,12 +152,13 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 
 func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	var (
-		image         string
-		scaleMetric   string
-		cappState     string
-		minReplicas   int
-		containerName string
-		envPairs      []string
+		image             string
+		metric            string
+		cappState         string
+		minReplicas       int
+		scaleDelaySeconds int
+		containerName     string
+		envPairs          []string
 	)
 
 	cmd := &cobra.Command{
@@ -182,29 +188,30 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				Name:          cappName,
 				Namespace:     ns,
 				Image:         current.Image,
-				ScaleMetric:   current.ScaleMetric,
+				ScaleSpec:     current.ScaleSpec,
 				State:         current.State,
-				MinReplicas:   current.MinReplicas,
 				ContainerName: current.ContainerName,
 				Env:           current.Env,
 				VolumeMounts:  current.VolumeMounts,
 				RouteSpec:     current.RouteSpec,
 				LogSpec:       current.LogSpec,
 				NFSVolumes:    current.NFSVolumes,
-				Sources:       current.Sources,
 			}
 
 			if cmd.Flags().Changed("image") {
 				req.Image = image
 			}
-			if cmd.Flags().Changed("scale-metric") {
-				req.ScaleMetric = scaleMetric
+			if cmd.Flags().Changed("metric") {
+				req.ScaleSpec.Metric = metric
 			}
 			if cmd.Flags().Changed("state") {
 				req.State = cappState
 			}
 			if cmd.Flags().Changed("min-replicas") {
-				req.MinReplicas = minReplicas
+				req.ScaleSpec.MinReplicas = minReplicas
+			}
+			if cmd.Flags().Changed("scale-delay-seconds") {
+				req.ScaleSpec.ScaleDelaySeconds = scaleDelaySeconds
 			}
 			if cmd.Flags().Changed("container-name") {
 				req.ContainerName = containerName
@@ -227,9 +234,10 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	}
 
 	cmd.Flags().StringVar(&image, "image", "", "container image")
-	cmd.Flags().StringVar(&scaleMetric, "scale-metric", "", "scale metric: concurrency|cpu|memory|rps|external")
+	cmd.Flags().StringVar(&metric, "metric", "", "scale metric: concurrency|cpu|memory|rps")
 	cmd.Flags().StringVar(&cappState, "state", "", "state: enabled|disabled")
 	cmd.Flags().IntVar(&minReplicas, "min-replicas", 0, "minimum replica count")
+	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (replaces all env vars)")
 	parent.AddCommand(cmd)

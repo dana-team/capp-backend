@@ -17,8 +17,8 @@ func TestGenerateValues_MinimalCapp(t *testing.T) {
 	capp := &cappv1alpha1.Capp{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "default"},
 		Spec: cappv1alpha1.CappSpec{
-			ScaleMetric: "concurrency",
-			State:       "enabled",
+			ScaleSpec: cappv1alpha1.ScaleSpec{Metric: "concurrency"},
+			State:     "enabled",
 			ConfigurationSpec: knativev1.ConfigurationSpec{
 				Template: knativev1.RevisionTemplateSpec{
 					Spec: knativev1.RevisionSpec{
@@ -41,7 +41,7 @@ func TestGenerateValues_MinimalCapp(t *testing.T) {
 
 	assert.Equal(t, "my-app", vals.Name)
 	assert.Equal(t, "default", vals.Namespace)
-	assert.Equal(t, "concurrency", vals.Spec.ScaleMetric)
+	assert.Equal(t, "concurrency", vals.Spec.ScaleSpec.Metric)
 	assert.Equal(t, "enabled", vals.Spec.State)
 	require.Len(t, vals.Spec.ConfigurationSpec.Template.Spec.Containers, 1)
 	assert.Equal(t, "nginx:latest", vals.Spec.ConfigurationSpec.Template.Spec.Containers[0].Image)
@@ -55,9 +55,8 @@ func TestGenerateValues_FullCapp(t *testing.T) {
 	capp := &cappv1alpha1.Capp{
 		ObjectMeta: metav1.ObjectMeta{Name: "full-app", Namespace: "prod"},
 		Spec: cappv1alpha1.CappSpec{
-			ScaleMetric: "cpu",
-			State:       "enabled",
-			MinReplicas: 2,
+			ScaleSpec: cappv1alpha1.ScaleSpec{Metric: "cpu", MinReplicas: 2},
+			State:     "enabled",
 			ConfigurationSpec: knativev1.ConfigurationSpec{
 				Template: knativev1.RevisionTemplateSpec{
 					Spec: knativev1.RevisionSpec{
@@ -111,8 +110,8 @@ func TestGenerateValues_FullCapp(t *testing.T) {
 
 	assert.Equal(t, "full-app", vals.Name)
 	assert.Equal(t, "prod", vals.Namespace)
-	assert.Equal(t, "cpu", vals.Spec.ScaleMetric)
-	assert.Equal(t, 2, vals.Spec.MinReplicas)
+	assert.Equal(t, "cpu", vals.Spec.ScaleSpec.Metric)
+	assert.Equal(t, 2, vals.Spec.ScaleSpec.MinReplicas)
 
 	require.Len(t, vals.Spec.ConfigurationSpec.Template.Spec.Containers, 1)
 	c := vals.Spec.ConfigurationSpec.Template.Spec.Containers[0]

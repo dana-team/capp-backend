@@ -328,7 +328,7 @@ cappctl get capps my-app --cluster prod --namespace my-team
 cappctl get capps --cluster prod -A -o json
 ```
 
-Table columns: `NAME`, `NAMESPACE`, `IMAGE`, `STATE`, `SCALE-METRIC`, `AGE`
+Table columns: `NAME`, `NAMESPACE`, `IMAGE`, `STATE`, `METRIC`, `AGE`
 Wide adds: `UID`
 
 ### Create
@@ -343,11 +343,12 @@ cappctl create capps [flags]
 
 | Flag              | Description                                             |
 |-------------------|---------------------------------------------------------|
-| `--scale-metric`  | Scale metric: `concurrency`, `cpu`, `memory`, `rps`, `external` |
-| `--state`         | Initial state: `enabled` or `disabled`                  |
-| `--min-replicas`  | Minimum replica count                                   |
-| `--container-name`| Container name                                          |
-| `--env`           | Environment variable `KEY=VALUE` (repeatable)           |
+| `--metric`              | Scale metric: `concurrency`, `cpu`, `memory`, `rps`    |
+| `--state`               | Initial state: `enabled` or `disabled`                  |
+| `--min-replicas`        | Minimum replica count                                   |
+| `--scale-delay-seconds` | Delay before scaling down to zero                       |
+| `--container-name`      | Container name                                          |
+| `--env`                 | Environment variable `KEY=VALUE` (repeatable)           |
 
 **Example:**
 
@@ -357,7 +358,7 @@ cappctl create capps \
   --namespace my-team \
   --name my-app \
   --image ghcr.io/myorg/my-app:v1.2.3 \
-  --scale-metric cpu \
+  --metric cpu \
   --state enabled \
   --min-replicas 1 \
   --env DB_HOST=postgres \

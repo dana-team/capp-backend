@@ -17,7 +17,7 @@ import (
 //
 // Design notes:
 //   - Fields that the frontend did not populate are omitted from the spec so
-//     the Kubernetes API server can apply CRD defaulting (e.g. scaleMetric
+//     the Kubernetes API server can apply CRD defaulting (e.g. scaleSpec.metric
 //     defaults to "concurrency", state defaults to "enabled").
 //   - resourceVersion is NOT set here; the update handler reads it from the
 //     live object and sets it before calling Update.
@@ -32,9 +32,12 @@ func ToK8s(req CappRequest, namespace string) *cappv1alpha1.Capp {
 			Namespace: namespace,
 		},
 		Spec: cappv1alpha1.CappSpec{
-			ScaleMetric: req.ScaleMetric,
-			State:       req.State,
-			MinReplicas: req.MinReplicas,
+			State: req.State,
+			ScaleSpec: cappv1alpha1.ScaleSpec{
+				Metric:            req.ScaleSpec.Metric,
+				MinReplicas:       req.ScaleSpec.MinReplicas,
+				ScaleDelaySeconds: req.ScaleSpec.ScaleDelaySeconds,
+			},
 		},
 	}
 
@@ -98,21 +101,6 @@ func ToK8s(req CappRequest, namespace string) *cappv1alpha1.Capp {
 		capp.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{NFSVolumes: nfsVols}
 	}
 
-	// KEDA sources.
-	if len(req.Sources) > 0 {
-		sources := make([]cappv1alpha1.KedaSource, 0, len(req.Sources))
-		for _, s := range req.Sources {
-			sources = append(sources, cappv1alpha1.KedaSource{
-				Name:           s.Name,
-				ScalarType:     s.ScalarType,
-				ScalarMetadata: s.ScalarMetadata,
-				MinReplicas:    s.MinReplicas,
-				MaxReplicas:    s.MaxReplicas,
-			})
-		}
-		capp.Spec.Sources = sources
-	}
-
 	return capp
 }
 
@@ -127,9 +115,12 @@ func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
 		Labels:          capp.Labels,
 		Annotations:     filterAnnotations(capp.Annotations),
 
-		ScaleMetric: capp.Spec.ScaleMetric,
-		State:       capp.Spec.State,
-		MinReplicas: capp.Spec.MinReplicas,
+		ScaleSpec: ScaleSpec{
+			Metric:            capp.Spec.ScaleSpec.Metric,
+			MinReplicas:       capp.Spec.ScaleSpec.MinReplicas,
+			ScaleDelaySeconds: capp.Spec.ScaleSpec.ScaleDelaySeconds,
+		},
+		State: capp.Spec.State,
 	}
 
 	if !capp.CreationTimestamp.IsZero() {
@@ -184,17 +175,6 @@ func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
 			Server:   v.Server,
 			Path:     v.Path,
 			Capacity: capacity,
-		})
-	}
-
-	// KEDA sources.
-	for _, s := range capp.Spec.Sources {
-		resp.Sources = append(resp.Sources, KedaSource{
-			Name:           s.Name,
-			ScalarType:     s.ScalarType,
-			ScalarMetadata: s.ScalarMetadata,
-			MinReplicas:    s.MinReplicas,
-			MaxReplicas:    s.MaxReplicas,
 		})
 	}
 

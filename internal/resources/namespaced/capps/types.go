@@ -62,13 +62,17 @@ type NFSVolume struct {
 	Capacity string `json:"capacity" binding:"required"` // e.g. "10Gi"
 }
 
-// KedaSource describes a KEDA external scaler trigger source.
-type KedaSource struct {
-	Name           string            `json:"name"           binding:"required"`
-	ScalarType     string            `json:"scalarType"     binding:"required"`
-	ScalarMetadata map[string]string `json:"scalarMetadata,omitempty"`
-	MinReplicas    *int32            `json:"minReplicas,omitempty"`
-	MaxReplicas    *int32            `json:"maxReplicas,omitempty"`
+// ScaleSpec configures autoscaling for a Capp.
+type ScaleSpec struct {
+	// Metric defines which metric type is watched by the Autoscaler.
+	// One of: concurrency, cpu, memory, rps. Default: concurrency.
+	Metric string `json:"metric,omitempty"`
+
+	// MinReplicas sets the minimum replica count. Default: 0.
+	MinReplicas int `json:"minReplicas,omitempty"`
+
+	// ScaleDelaySeconds is the delay before the Autoscaler scales down to zero.
+	ScaleDelaySeconds int `json:"scaleDelaySeconds,omitempty"`
 }
 
 // CappRequest is the request body accepted by POST (create) and PUT (update).
@@ -79,15 +83,11 @@ type CappRequest struct {
 	Name      string `json:"name"      binding:"required"`
 	Namespace string `json:"namespace" binding:"required"`
 
-	// ScaleMetric defines the autoscaling metric.
-	// One of: concurrency, cpu, memory, rps, external. Default: concurrency.
-	ScaleMetric string `json:"scaleMetric,omitempty"`
+	// ScaleSpec configures autoscaling. Optional.
+	ScaleSpec ScaleSpec `json:"scaleSpec,omitempty"`
 
 	// State is enabled or disabled. Default: enabled.
 	State string `json:"state,omitempty"`
-
-	// MinReplicas sets the minimum replica count. Default: 0.
-	MinReplicas int `json:"minReplicas,omitempty"`
 
 	// Image is the container image reference. Required.
 	Image string `json:"image" binding:"required"`
@@ -109,9 +109,6 @@ type CappRequest struct {
 
 	// NFSVolumes lists NFS volumes to provision. Optional.
 	NFSVolumes []NFSVolume `json:"nfsVolumes,omitempty"`
-
-	// Sources lists KEDA trigger sources. Optional.
-	Sources []KedaSource `json:"sources,omitempty"`
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -159,18 +156,16 @@ type CappResponse struct {
 	Labels          map[string]string `json:"labels,omitempty"`
 	Annotations     map[string]string `json:"annotations,omitempty"`
 
-	ScaleMetric   string `json:"scaleMetric,omitempty"`
-	State         string `json:"state,omitempty"`
-	MinReplicas   int    `json:"minReplicas"`
-	Image         string `json:"image,omitempty"`
-	ContainerName string `json:"containerName,omitempty"`
+	ScaleSpec     ScaleSpec `json:"scaleSpec,omitempty"`
+	State         string    `json:"state,omitempty"`
+	Image         string    `json:"image,omitempty"`
+	ContainerName string    `json:"containerName,omitempty"`
 
 	Env          []EnvVar      `json:"env,omitempty"`
 	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 	RouteSpec    *RouteSpec    `json:"routeSpec,omitempty"`
 	LogSpec      *LogSpec      `json:"logSpec,omitempty"`
 	NFSVolumes   []NFSVolume   `json:"nfsVolumes,omitempty"`
-	Sources      []KedaSource  `json:"sources,omitempty"`
 
 	Status CappStatusResponse `json:"status"`
 }
