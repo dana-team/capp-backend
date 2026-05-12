@@ -270,6 +270,10 @@ cappctl context use staging
 
 > Auth mode is auto-detected from the server if `--auth-mode` is omitted.
 
+### Shell completion
+
+`cappctl` supports tab completion for bash, zsh, fish, and PowerShell. See [docs/cappctl.md](docs/cappctl.md#shell-completion) for setup instructions.
+
 See [docs/cappctl.md](docs/cappctl.md) for the full reference.
 
 ## Project Structure
