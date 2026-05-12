@@ -195,6 +195,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NamespaceItem'
+        canCreate:
+          type: boolean
+          description: Whether the authenticated user has permission to create new namespaces in this cluster.
 
     NamespaceRequest:
       type: object
@@ -620,6 +623,18 @@ components:
         total:
           type: integer
           example: 3
+
+    SyncResponse:
+      type: object
+      properties:
+        commitSha:
+          type: string
+          description: Git commit SHA of the pushed values file.
+          example: "a1b2c3d4e5f6"
+        path:
+          type: string
+          description: Relative path of the values file in the GitOps repository.
+          example: "namespaces/default/my-app/values.yaml"
 
   parameters:
     clusterParam:
@@ -1410,6 +1425,49 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/sync:
+    post:
+      tags: [capps]
+      summary: Sync a Capp to the GitOps repository
+      description: |
+        Generates a Helm values file from the live Capp spec and pushes it to the
+        configured GitOps repository. Also patches the `rcs.dana.io/backup-to-git=true`
+        label onto the Capp (idempotent on re-calls).
+
+        Returns `501 Not Implemented` when the backend is not configured with a
+        GitOps integration (`gitops.enabled: false`).
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Capp values pushed to GitOps repository.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: GitOps integration is not enabled on this backend.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ── Observability ──────────────────────────────────────────────────────────────
   /healthz:
