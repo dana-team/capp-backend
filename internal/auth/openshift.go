@@ -235,9 +235,19 @@ func (m *openShiftManager) Login(_ context.Context, _, _ string) (TokenPair, err
 	return TokenPair{}, ErrNotSupported
 }
 
-// PasswordLogin is not supported in openshift mode.
-func (m *openShiftManager) PasswordLogin(_ context.Context, _, _ string) (TokenPair, error) {
-	return TokenPair{}, ErrNotSupported
+// PasswordLogin authenticates a user with username and password against the
+// OpenShift OAuth server using the Resource Owner Password Credentials grant.
+// Works with identity providers that support ROPC (HTPasswd, LDAP, etc.).
+func (m *openShiftManager) PasswordLogin(ctx context.Context, username, password string) (TokenPair, error) {
+	form := url.Values{
+		"grant_type":    {"password"},
+		"username":      {username},
+		"password":      {password},
+		"client_id":     {m.cfg.ClientID},
+		"client_secret": {m.cfg.ClientSecret},
+		"scope":         {strings.Join(m.cfg.Scopes, " ")},
+	}
+	return m.oauthTokenRequest(ctx, form)
 }
 
 // Refresh exchanges an OpenShift refresh token for a new access token at the
@@ -255,27 +265,35 @@ func (m *openShiftManager) Refresh(ctx context.Context, refreshToken string) (To
 
 // ── OAuthAuthorizer implementation ──────────────────────────────────────────
 
-// GetAuthorizeURL builds the OAuth authorize URL for the frontend to redirect
-// the user's browser to.
-func (m *openShiftManager) GetAuthorizeURL() (string, error) {
+// GetAuthorizeURL builds the OAuth authorize URL. redirectURI overrides the
+// server-configured redirect URI when non-empty; callers must validate it
+// before passing it here (e.g. localhost-only check in the route handler).
+func (m *openShiftManager) GetAuthorizeURL(redirectURI string) (string, error) {
+	if redirectURI == "" {
+		redirectURI = m.cfg.RedirectURI
+	}
 	params := url.Values{
 		"client_id":     {m.cfg.ClientID},
-		"redirect_uri":  {m.cfg.RedirectURI},
+		"redirect_uri":  {redirectURI},
 		"response_type": {"code"},
 		"scope":         {strings.Join(m.cfg.Scopes, " ")},
 	}
 	return m.oauthMeta.AuthorizationEndpoint + "?" + params.Encode(), nil
 }
 
-// OAuthExchange exchanges an OAuth authorization code for tokens.
-// The redirect URI is always sourced from the server config, not from the
-// caller, to prevent the backend from being used as a generic code exchanger
-// for an attacker-controlled redirect URI.
-func (m *openShiftManager) OAuthExchange(ctx context.Context, code string) (TokenPair, error) {
+// OAuthExchange exchanges an OAuth authorization code for tokens. redirectURI
+// overrides the server-configured redirect URI when non-empty; callers must
+// validate it before passing it here (e.g. localhost-only check in the route
+// handler). The redirect URI sent here must exactly match the one used when
+// building the authorize URL.
+func (m *openShiftManager) OAuthExchange(ctx context.Context, code, redirectURI string) (TokenPair, error) {
+	if redirectURI == "" {
+		redirectURI = m.cfg.RedirectURI
+	}
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
-		"redirect_uri":  {m.cfg.RedirectURI},
+		"redirect_uri":  {redirectURI},
 		"client_id":     {m.cfg.ClientID},
 		"client_secret": {m.cfg.ClientSecret},
 	}

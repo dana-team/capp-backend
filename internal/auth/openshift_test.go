@@ -17,6 +17,11 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
+const (
+	oAuthTokenURLSuffix     = "/oauth/token"
+	oAuthAuthorizeURLSuffix = "/oauth/authorize"
+)
+
 // tokenReviewReactor returns a reactor that responds to TokenReview create
 // calls with the given authentication result.
 func tokenReviewReactor(authenticated bool, username string, groups []string) k8stesting.ReactionFunc {
@@ -55,8 +60,8 @@ func newTestOpenShiftManager(t *testing.T, oauthServer *httptest.Server, reactor
 		httpClient: oauthServer.Client(),
 		k8sClient:  fakeClient,
 		oauthMeta: &oauthServerMeta{
-			AuthorizationEndpoint: oauthServer.URL + "/oauth/authorize",
-			TokenEndpoint:         oauthServer.URL + "/oauth/token",
+			AuthorizationEndpoint: oauthServer.URL + oAuthAuthorizeURLSuffix,
+			TokenEndpoint:         oauthServer.URL + oAuthTokenURLSuffix,
 		},
 		cacheTTL: 60 * time.Second,
 	}
@@ -171,7 +176,7 @@ func TestOpenShift_Authenticate_CacheExpired(t *testing.T) {
 
 func TestOpenShift_OAuthExchange_ValidCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/oauth/token" {
+		if r.URL.Path == oAuthTokenURLSuffix {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(oauthTokenResponse{
 				AccessToken:  "access-tok",
@@ -186,7 +191,7 @@ func TestOpenShift_OAuthExchange_ValidCode(t *testing.T) {
 	defer srv.Close()
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
-	pair, err := mgr.OAuthExchange(context.Background(), "auth-code")
+	pair, err := mgr.OAuthExchange(context.Background(), "auth-code", "")
 	require.NoError(t, err)
 	assert.Equal(t, "access-tok", pair.AccessToken)
 	assert.Equal(t, "refresh-tok", pair.RefreshToken)
@@ -201,14 +206,14 @@ func TestOpenShift_OAuthExchange_InvalidCode(t *testing.T) {
 	defer srv.Close()
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
-	_, err := mgr.OAuthExchange(context.Background(), "bad-code")
+	_, err := mgr.OAuthExchange(context.Background(), "bad-code", "")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
 func TestOpenShift_Refresh_ValidToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/oauth/token" {
+		if r.URL.Path == oAuthTokenURLSuffix {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(oauthTokenResponse{
 				AccessToken:  "new-access",
@@ -237,13 +242,42 @@ func TestOpenShift_Login_NotSupported(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotSupported)
 }
 
-func TestOpenShift_PasswordLogin_NotSupported(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
+func TestOpenShift_PasswordLogin_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == oAuthTokenURLSuffix {
+			require.NoError(t, r.ParseForm())
+			assert.Equal(t, "password", r.FormValue("grant_type"))
+			assert.Equal(t, "user", r.FormValue("username"))
+			assert.Equal(t, "pass", r.FormValue("password"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(oauthTokenResponse{
+				AccessToken:  "access-tok",
+				RefreshToken: "refresh-tok",
+				ExpiresIn:    3600,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
 	defer srv.Close()
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
-	_, err := mgr.PasswordLogin(context.Background(), "user", "pass")
-	assert.ErrorIs(t, err, ErrNotSupported)
+	pair, err := mgr.PasswordLogin(context.Background(), "user", "pass")
+	require.NoError(t, err)
+	assert.Equal(t, "access-tok", pair.AccessToken)
+	assert.Equal(t, "refresh-tok", pair.RefreshToken)
+}
+
+func TestOpenShift_PasswordLogin_BadCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+	}))
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	_, err := mgr.PasswordLogin(context.Background(), "user", "wrongpass")
+	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
 func TestOpenShift_GetAuthorizeURL(t *testing.T) {
@@ -251,9 +285,9 @@ func TestOpenShift_GetAuthorizeURL(t *testing.T) {
 	defer srv.Close()
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
-	authURL, err := mgr.GetAuthorizeURL()
+	authURL, err := mgr.GetAuthorizeURL("")
 	require.NoError(t, err)
-	assert.Contains(t, authURL, "/oauth/authorize")
+	assert.Contains(t, authURL, oAuthAuthorizeURLSuffix)
 	assert.Contains(t, authURL, "client_id=test-client")
 	assert.Contains(t, authURL, "response_type=code")
 	assert.Contains(t, authURL, "redirect_uri=")

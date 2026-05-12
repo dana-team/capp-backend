@@ -1,16 +1,11 @@
 package auth
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
 	"runtime"
-	"strings"
-
-	"golang.org/x/term"
 
 	"github.com/spf13/cobra"
 
@@ -74,8 +69,8 @@ func NewLoginCommand(state *root.State) *cobra.Command {
 
 	// Only flags not already defined as root persistent flags.
 	cmd.Flags().StringVar(&authMode, "auth-mode", "", "auth mode: jwt|dex|openshift|static|passthrough (auto-detected if omitted)")
-	cmd.Flags().StringVar(&username, "username", "", "username (dex mode)")
-	cmd.Flags().StringVar(&password, "password", "", "password (dex mode)")
+	cmd.Flags().StringVar(&username, "username", "", "username (dex or openshift mode)")
+	cmd.Flags().StringVar(&password, "password", "", "password (dex or openshift mode)")
 	cmd.Flags().MarkHidden("password") //nolint:errcheck
 
 	return cmd
@@ -128,33 +123,15 @@ func login(cmd *cobra.Command, server, authMode, cluster, token, username, passw
 		return ctx, nil
 
 	case "dex":
-		if username == "" {
-			fmt.Fprint(cmd.OutOrStdout(), "Username: ") //nolint:errcheck
-			scanner := bufio.NewScanner(cmd.InOrStdin())
-			if !scanner.Scan() {
-				if err := scanner.Err(); err != nil {
-					return ctx, fmt.Errorf("reading input: %w", err)
-				}
-				return ctx, fmt.Errorf("unexpected EOF reading input")
-			}
-			username = strings.TrimSpace(scanner.Text())
-		}
-		if password == "" {
-			fmt.Fprint(cmd.OutOrStdout(), "Password: ") //nolint:errcheck
-			pw, err := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(cmd.OutOrStdout()) //nolint:errcheck
-			if err != nil {
-				return ctx, fmt.Errorf("reading password: %w", err)
-			}
-			password = string(pw)
+		var err error
+		username, password, err = promptCredentials(cmd, username, password)
+		if err != nil {
+			return ctx, err
 		}
 		c := client.New(server, "", insecure)
-		var pair client.TokenPair
-		if err := c.Post(cmd.Context(), "/api/v1/auth/login", map[string]string{
-			"username": username,
-			"password": password,
-		}, &pair); err != nil {
-			return ctx, fmt.Errorf("login failed: %w", err)
+		pair, err := loginWithPassword(cmd.Context(), c, username, password)
+		if err != nil {
+			return ctx, err
 		}
 		ctx.Token = pair.AccessToken
 		ctx.RefreshToken = pair.RefreshToken
@@ -162,45 +139,63 @@ func login(cmd *cobra.Command, server, authMode, cluster, token, username, passw
 		return ctx, nil
 
 	case "openshift":
-		return loginOpenShift(cmd, server, insecure, ctx)
+		return loginOpenShift(cmd, server, insecure, ctx, username, password)
 
 	default:
 		return ctx, fmt.Errorf("unsupported auth mode %q", authMode)
 	}
 }
 
-func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config.Context) (config.Context, error) {
+func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config.Context, username, password string) (config.Context, error) {
 	c := client.New(server, "", insecure)
+
+	// Password path: skip the browser flow entirely.
+	if username != "" || password != "" {
+		var err error
+		username, password, err = promptCredentials(cmd, username, password)
+		if err != nil {
+			return ctx, err
+		}
+		pair, err := loginWithPassword(cmd.Context(), c, username, password)
+		if err != nil {
+			return ctx, err
+		}
+		ctx.Token = pair.AccessToken
+		ctx.RefreshToken = pair.RefreshToken
+		ctx.TokenExpiresAt = pair.ExpiresAt
+		return ctx, nil
+	}
+
+	// OAuth browser flow with local callback server.
+	codeCh, errCh, redirectURI, stop, err := startCallbackServer()
+	if err != nil {
+		return ctx, err
+	}
+	defer stop()
+
 	var authResp struct {
 		AuthorizeURL string `json:"authorizeUrl"`
 	}
-	if err := c.Get(cmd.Context(), "/api/v1/auth/openshift/authorize", &authResp); err != nil {
+	authorizeEndpoint := "/api/v1/auth/openshift/authorize?redirect_uri=" + url.QueryEscape(redirectURI)
+	if err := c.Get(cmd.Context(), authorizeEndpoint, &authResp); err != nil {
 		return ctx, fmt.Errorf("getting authorize URL: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Open this URL in your browser to authenticate:\n\n  %s\n\n", authResp.AuthorizeURL) //nolint:errcheck
-
-	if openBrowser(authResp.AuthorizeURL) {
-		fmt.Fprintln(cmd.OutOrStdout(), "Browser opened. After authenticating, copy the authorization code from the redirect URL.") //nolint:errcheck
-	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "Copy the URL into your browser. After authenticating, copy the authorization code from the redirect URL.") //nolint:errcheck
+	fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for authentication...\n") //nolint:errcheck
+	if !openBrowser(authResp.AuthorizeURL) {
+		fmt.Fprintf(cmd.OutOrStdout(), "Could not open browser. Visit this URL manually:\n\n  %s\n\n", authResp.AuthorizeURL) //nolint:errcheck
 	}
 
-	fmt.Fprint(cmd.OutOrStdout(), "Authorization code: ") //nolint:errcheck
-	scanner := bufio.NewScanner(cmd.InOrStdin())
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return ctx, fmt.Errorf("reading input: %w", err)
-		}
-		return ctx, fmt.Errorf("unexpected EOF reading input")
-	}
-	code := strings.TrimSpace(scanner.Text())
-	if code == "" {
-		return ctx, fmt.Errorf("authorization code is required")
+	code, err := awaitOAuthCode(cmd.Context(), codeCh, errCh)
+	if err != nil {
+		return ctx, err
 	}
 
 	var pair client.TokenPair
-	if err := c.Post(cmd.Context(), "/api/v1/auth/openshift/callback", map[string]string{"code": code}, &pair); err != nil {
+	if err := c.Post(cmd.Context(), "/api/v1/auth/openshift/callback", map[string]string{
+		"code":        code,
+		"redirectUri": redirectURI,
+	}, &pair); err != nil {
 		return ctx, fmt.Errorf("exchanging code: %w", err)
 	}
 	ctx.Token = pair.AccessToken
