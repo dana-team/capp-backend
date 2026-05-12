@@ -148,7 +148,7 @@ serviceAccount:
 # ── Capp-mode specific settings ───────────────────────────────────────────────
 # These settings are only used when deployAs: capp.
 capp:
-  # scaleMetric used by the CAPP operator for autoscaling.
+  # spec.scaleSpec.metric: concurrency|rps|cpu|memory (Knative/KPA via CAPP operator).
   scaleMetric: "concurrency"
 
   # state: enabled | disabled
