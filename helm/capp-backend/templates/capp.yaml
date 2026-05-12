@@ -39,6 +39,13 @@ spec:
                   secretKeyRef:
                     name: {{ include "capp-backend.secretName" . }}
                     key: jwtSecretKey
+              {{- if eq .Values.config.auth.mode "openshift" }}
+              - name: CAPP_AUTH_OPENSHIFT_CLIENTSECRET
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" . }}
+                    key: openshiftClientSecret
+              {{- end }}
               {{- range $i, $_ := .Values.secret.clusterTokens }}
               - name: CAPP_CLUSTERS_{{ $i }}_CREDENTIAL_INLINE_TOKEN
                 valueFrom:
