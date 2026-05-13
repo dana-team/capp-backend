@@ -167,8 +167,8 @@ type MockAuthManager struct {
 	LoginFn           func(ctx context.Context, clusterName string, token string) (auth.TokenPair, error)
 	PasswordLoginFn   func(ctx context.Context, username, password string) (auth.TokenPair, error)
 	RefreshFn         func(ctx context.Context, refreshToken string) (auth.TokenPair, error)
-	GetAuthorizeURLFn func() (string, error)
-	OAuthExchangeFn   func(ctx context.Context, code string) (auth.TokenPair, error)
+	GetAuthorizeURLFn func(redirectURI string) (string, error)
+	OAuthExchangeFn   func(ctx context.Context, code, redirectURI string) (auth.TokenPair, error)
 }
 
 func (m *MockAuthManager) Authenticate(ctx context.Context, clusterName string, r *http.Request) (auth.ClusterCredential, error) {
@@ -199,16 +199,16 @@ func (m *MockAuthManager) Refresh(ctx context.Context, refreshToken string) (aut
 	return auth.TokenPair{}, auth.ErrNotSupported
 }
 
-func (m *MockAuthManager) GetAuthorizeURL() (string, error) {
+func (m *MockAuthManager) GetAuthorizeURL(redirectURI string) (string, error) {
 	if m.GetAuthorizeURLFn != nil {
-		return m.GetAuthorizeURLFn()
+		return m.GetAuthorizeURLFn(redirectURI)
 	}
 	return "", nil
 }
 
-func (m *MockAuthManager) OAuthExchange(ctx context.Context, code string) (auth.TokenPair, error) {
+func (m *MockAuthManager) OAuthExchange(ctx context.Context, code, redirectURI string) (auth.TokenPair, error) {
 	if m.OAuthExchangeFn != nil {
-		return m.OAuthExchangeFn(ctx, code)
+		return m.OAuthExchangeFn(ctx, code, redirectURI)
 	}
 	return auth.TokenPair{}, nil
 }

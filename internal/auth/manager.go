@@ -137,14 +137,14 @@ type AuthManager interface {
 // implements it. Route handlers type-assert to this interface to expose the
 // /openshift/authorize and /openshift/callback endpoints.
 type OAuthAuthorizer interface {
-	// GetAuthorizeURL returns the OAuth authorization URL that the frontend
-	// should redirect the user's browser to.
-	GetAuthorizeURL() (string, error)
+	// GetAuthorizeURL returns the OAuth authorization URL. redirectURI overrides
+	// the server-configured redirect URI when non-empty (localhost URIs only).
+	GetAuthorizeURL(redirectURI string) (string, error)
 
 	// OAuthExchange exchanges an OAuth authorization code for an access token
-	// and refresh token from the identity provider. The redirect URI is
-	// sourced from the server's config, not from the caller.
-	OAuthExchange(ctx context.Context, code string) (TokenPair, error)
+	// and refresh token from the identity provider. redirectURI overrides the
+	// server-configured redirect URI when non-empty (localhost URIs only).
+	OAuthExchange(ctx context.Context, code, redirectURI string) (TokenPair, error)
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────

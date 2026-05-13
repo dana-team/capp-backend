@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
@@ -27,9 +28,11 @@ type refreshRequest struct {
 // openshiftCallbackRequest is the body for POST /api/v1/auth/openshift/callback.
 type openshiftCallbackRequest struct {
 	Code string `json:"code" binding:"required"`
-	// RedirectURI is intentionally not accepted from the client. The server
-	// uses its configured auth.openshift.redirectUri to prevent the backend
-	// from being used as a generic code-to-token exchanger.
+	// RedirectURI may be provided by the CLI to complete its local-server OAuth
+	// flow. It is validated to be a localhost URI before use, preventing the
+	// backend from acting as a generic code exchanger for arbitrary redirect URIs.
+	// If empty, the server's configured auth.openshift.redirectUri is used.
+	RedirectURI string `json:"redirectUri"`
 }
 
 // openshiftAuthorizeResponse is returned by GET /api/v1/auth/openshift/authorize.
@@ -68,7 +71,8 @@ func loginHandler(mgr auth.AuthManager, mode string) gin.HandlerFunc {
 			return
 		}
 
-		if mode == "dex" {
+		// dex and openshift both support username/password login.
+		if mode == "dex" || (mode == "openshift" && req.Username != "" && req.Password != "") {
 			if req.Username == "" || req.Password == "" {
 				apierrors.Respond(c, apierrors.NewBadRequest("username and password are required"))
 				return
@@ -142,7 +146,9 @@ func refreshHandler(mgr auth.AuthManager) gin.HandlerFunc {
 }
 
 // openshiftAuthorizeHandler handles GET /api/v1/auth/openshift/authorize.
-// Returns the OAuth authorize URL for the frontend to redirect the browser to.
+// Returns the OAuth authorize URL for the frontend or CLI to redirect the browser to.
+// An optional ?redirect_uri= query param may be provided by the CLI; it must be a
+// localhost URI (validated here) so the browser callback lands on the CLI's local server.
 func openshiftAuthorizeHandler(mgr auth.AuthManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		osMgr, ok := mgr.(auth.OAuthAuthorizer)
@@ -151,7 +157,13 @@ func openshiftAuthorizeHandler(mgr auth.AuthManager) gin.HandlerFunc {
 			return
 		}
 
-		authorizeURL, err := osMgr.GetAuthorizeURL()
+		redirectURI := c.Query("redirect_uri")
+		if redirectURI != "" && !isLocalhostURI(redirectURI) {
+			apierrors.Respond(c, apierrors.NewBadRequest("redirect_uri must be a localhost URI"))
+			return
+		}
+
+		authorizeURL, err := osMgr.GetAuthorizeURL(redirectURI)
 		if err != nil {
 			apierrors.Respond(c, apierrors.NewInternal(err))
 			return
@@ -163,11 +175,18 @@ func openshiftAuthorizeHandler(mgr auth.AuthManager) gin.HandlerFunc {
 
 // openshiftCallbackHandler handles POST /api/v1/auth/openshift/callback.
 // Exchanges an OAuth authorization code for tokens from the OpenShift OAuth server.
+// An optional redirectUri body field may be provided by the CLI; it must be a
+// localhost URI and must match the one used to build the authorize URL.
 func openshiftCallbackHandler(mgr auth.AuthManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req openshiftCallbackRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
+			return
+		}
+
+		if req.RedirectURI != "" && !isLocalhostURI(req.RedirectURI) {
+			apierrors.Respond(c, apierrors.NewBadRequest("redirectUri must be a localhost URI"))
 			return
 		}
 
@@ -177,7 +196,7 @@ func openshiftCallbackHandler(mgr auth.AuthManager) gin.HandlerFunc {
 			return
 		}
 
-		pair, err := osMgr.OAuthExchange(c.Request.Context(), req.Code)
+		pair, err := osMgr.OAuthExchange(c.Request.Context(), req.Code, req.RedirectURI)
 		if err != nil {
 			if errors.Is(err, auth.ErrBadCredentials) {
 				apierrors.Respond(c, apierrors.NewUnauthorized("OAuth authentication failed"))
@@ -189,4 +208,19 @@ func openshiftCallbackHandler(mgr auth.AuthManager) gin.HandlerFunc {
 
 		c.JSON(http.StatusOK, pair)
 	}
+}
+
+// isLocalhostURI reports whether s is a valid http://localhost (or 127.0.0.1/::1) URI.
+// Used to validate client-supplied redirect URIs so the backend cannot be used as a
+// generic OAuth code exchanger for arbitrary redirect targets.
+func isLocalhostURI(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
