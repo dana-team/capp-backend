@@ -31,6 +31,9 @@ Request → Recovery → Logging → Metrics → CORS → RateLimit → Auth →
 3. **Resource handler** performs the CRUD operation using the scoped client
 
 ### API Routes
+
+> **Rule:** Every route change or addition must also update `api/openapi.yaml`. Use the `gin-openapi-sync` skill to regenerate it.
+
 ```
 /healthz, /readyz, /metrics, /docs, /openapi.yaml     (no auth)
 
@@ -46,6 +49,7 @@ POST   /api/v1/clusters/:cluster/namespaces            (auth + cluster) — crea
 
 GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list all capps across namespaces
        /api/v1/clusters/:cluster/namespaces/:namespace/capps[/:name]         (CRUD)
+POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — trigger Capp sync; returns 501 if syncer not configured
        /api/v1/clusters/:cluster/namespaces/:namespace/configmaps[/:name]    (CRUD)
        /api/v1/clusters/:cluster/namespaces/:namespace/secrets[/:name]       (CRUD)
 GET    /api/v1/clusters/:cluster/configmaps            (auth + cluster) — list all configmaps across namespaces (dana.io/capp-managed=true only)
