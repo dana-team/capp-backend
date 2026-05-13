@@ -20,6 +20,11 @@ on:
       - "go.sum"
       - ".github/workflows/test-cli.yaml"
   workflow_call:
+    inputs:
+      skip_build_checks:
+        description: "Skip build job (release workflow builds for real)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -68,6 +73,7 @@ jobs:
   # ── CLI: build check ─────────────────────────────────────────────────────────
   build:
     name: Build cappctl binary
+    if: ${{ github.event_name != 'workflow_call' || !inputs.skip_build_checks }}
     runs-on: ubuntu-latest
     needs: go
     steps:

@@ -23,10 +23,14 @@ jobs:
   test-server:
     name: Run server tests
     uses: ./.github/workflows/test.yaml
+    with:
+      skip_build_checks: true
 
   test-cli:
     name: Run CLI tests
     uses: ./.github/workflows/test-cli.yaml
+    with:
+      skip_build_checks: true
 
   # ── Build & push Docker image ─────────────────────────────────────────────────
   docker:
@@ -167,13 +171,57 @@ jobs:
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
-            LOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
+            RANGE="${PREV_TAG}..HEAD"
           else
-            LOG=$(git log --pretty=format:"- %s (%h)")
+            RANGE="HEAD"
           fi
-          echo "CHANGELOG<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$LOG" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          ALL=$(git log --no-merges --pretty=format:"%s (%h)" "$RANGE")
+
+          # Each pattern is mutually exclusive — priority order determines bucket
+          CLI_PAT="^(feat|fix|refactor|test|chore)\(cappctl\)|^(feat|fix)\(cli\)|cappctl|^cli:"
+          HELM_PAT="^(feat|fix|chore)\(helm\)|^helm:"
+          DEPS_PAT="^chore\(deps\)|^build\(deps\)|^bump "
+          CI_PAT="^ci:|^chore\(ci\)|^chore\(release\)|^chore:"
+          DOCS_PAT="^docs:"
+          FEAT_PAT="^feat(\([^)]*\))?:"
+          FIX_PAT="^fix(\([^)]*\))?:"
+
+          emit_section() {
+            local header="$1" pat="$2" exclude="$3"
+            local lines
+            if [ -n "$exclude" ]; then
+              lines=$(printf '%s\n' "$ALL" | grep -iE "$pat" | grep -viE "$exclude" || true)
+            else
+              lines=$(printf '%s\n' "$ALL" | grep -iE "$pat" || true)
+            fi
+            if [ -n "$lines" ]; then
+              echo "### $header"
+              printf '%s\n' "$lines" | sed 's/^/- /'
+              echo ""
+            fi
+          }
+
+          {
+            emit_section "cappctl CLI"       "$CLI_PAT"  ""
+            emit_section "Features"          "$FEAT_PAT" "$CLI_PAT|$HELM_PAT"
+            emit_section "Bug Fixes"         "$FIX_PAT"  "$CLI_PAT|$HELM_PAT"
+            emit_section "Helm"              "$HELM_PAT" "$CLI_PAT"
+            emit_section "Dependency Updates" "$DEPS_PAT" ""
+            emit_section "CI / Chore"        "$CI_PAT"   "$DEPS_PAT"
+            emit_section "Documentation"     "$DOCS_PAT" ""
+            # Uncategorised
+            CATCHALL=$(printf '%s\n' "$ALL" | grep -viE "$CLI_PAT|$HELM_PAT|$DEPS_PAT|$CI_PAT|$DOCS_PAT|$FEAT_PAT|$FIX_PAT" || true)
+            if [ -n "$CATCHALL" ]; then
+              echo "### Other"
+              printf '%s\n' "$CATCHALL" | sed 's/^/- /'
+            fi
+          } > /tmp/changelog.md
+
+          DELIM="CHANGELOG_$(openssl rand -hex 8)"
+          echo "CHANGELOG<<$DELIM" >> "$GITHUB_OUTPUT"
+          cat /tmp/changelog.md >> "$GITHUB_OUTPUT"
+          echo "$DELIM" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
