@@ -150,11 +150,33 @@ cappctl login --server https://capp.example.com --context prod-dex --auth-mode d
 
 ### openshift
 
-OAuth2 device-like flow. `cappctl` fetches an authorization URL from the server, opens it in your browser (Linux: `xdg-open`, Windows: `rundll32`), then prompts you to paste the authorization code from the redirect URL.
+Three login paths are available:
+
+**Password (challenge-response):** Uses the built-in `openshift-challenging-client` — the same mechanism as `oc login`. No browser required. Works with any IDP that supports Basic auth challenges (HTPasswd, LDAP, etc.).
+
+```bash
+# Interactive (prompts for password)
+cappctl login --server https://capp.example.com --context ocp --auth-mode openshift \
+  --username alice
+
+# Scripted (--password is hidden from --help)
+cappctl login --server https://capp.example.com --context ocp --auth-mode openshift \
+  --username alice --password hunter2
+```
+
+> Note: password login issues an implicit-grant token — no refresh token is returned. Re-run `login` when the token expires.
+
+**Browser flow:** `cappctl` fetches an authorization URL and opens it in your browser (Linux: `xdg-open`, Windows: `rundll32`). After consent, the token is captured automatically via a local callback server on port 18085.
 
 ```bash
 cappctl login --server https://capp.example.com --context ocp --auth-mode openshift
-# → Browser opens, paste the code when prompted
+```
+
+**Direct token:** Pass a raw OpenShift bearer token obtained externally (e.g. `oc whoami -t`).
+
+```bash
+cappctl login --server https://capp.example.com --context ocp --auth-mode openshift \
+  --token "$(oc whoami -t)"
 ```
 
 ---
@@ -182,7 +204,7 @@ Authenticates and saves credentials to a named context. The context is set as cu
 | `--token`     | Bearer / service-account token (passthrough/static/jwt)  |
 | `--cluster`   | Target cluster (required for jwt mode)                   |
 | `--namespace` | Default namespace to store in the context                |
-| `--username`  | Username (dex mode)                                      |
+| `--username`  | Username (dex or openshift password mode)                |
 | `--insecure`  | Skip TLS certificate verification                        |
 
 **Examples:**

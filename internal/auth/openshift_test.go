@@ -243,21 +243,23 @@ func TestOpenShift_Login_NotSupported(t *testing.T) {
 }
 
 func TestOpenShift_PasswordLogin_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == oAuthTokenURLSuffix {
-			require.NoError(t, r.ParseForm())
-			assert.Equal(t, "password", r.FormValue("grant_type"))
-			assert.Equal(t, "user", r.FormValue("username"))
-			assert.Equal(t, "pass", r.FormValue("password"))
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(oauthTokenResponse{
-				AccessToken:  "access-tok",
-				RefreshToken: "refresh-tok",
-				ExpiresIn:    3600,
-			})
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != oAuthAuthorizeURLSuffix {
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		w.WriteHeader(http.StatusNotFound)
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="openshift"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		user, pass, ok := r.BasicAuth()
+		require.True(t, ok)
+		assert.Equal(t, "user", user)
+		assert.Equal(t, "pass", pass)
+		w.Header().Set("Location", srv.URL+"/oauth/token/implicit#access_token=access-tok&expires_in=3600&token_type=bearer")
+		w.WriteHeader(http.StatusFound)
 	}))
 	defer srv.Close()
 
@@ -265,13 +267,18 @@ func TestOpenShift_PasswordLogin_Success(t *testing.T) {
 	pair, err := mgr.PasswordLogin(context.Background(), "user", "pass")
 	require.NoError(t, err)
 	assert.Equal(t, "access-tok", pair.AccessToken)
-	assert.Equal(t, "refresh-tok", pair.RefreshToken)
+	assert.Empty(t, pair.RefreshToken) // implicit grant: no refresh token
+	assert.False(t, pair.ExpiresAt.IsZero())
 }
 
 func TestOpenShift_PasswordLogin_BadCredentials(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != oAuthAuthorizeURLSuffix {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Basic realm="openshift"`)
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
 	}))
 	defer srv.Close()
 

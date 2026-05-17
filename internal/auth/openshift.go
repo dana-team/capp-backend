@@ -3,11 +3,13 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -235,19 +237,65 @@ func (m *openShiftManager) Login(_ context.Context, _, _ string) (TokenPair, err
 	return TokenPair{}, ErrNotSupported
 }
 
-// PasswordLogin authenticates a user with username and password against the
-// OpenShift OAuth server using the Resource Owner Password Credentials grant.
-// Works with identity providers that support ROPC (HTPasswd, LDAP, etc.).
+// PasswordLogin authenticates a user with username and password using the
+// OpenShift challenge-response flow (same mechanism as `oc login`).
+// Uses the built-in openshift-challenging-client OAuth client with implicit
+// grant; the token arrives in the Location header fragment of the final redirect.
 func (m *openShiftManager) PasswordLogin(ctx context.Context, username, password string) (TokenPair, error) {
-	form := url.Values{
-		"grant_type":    {"password"},
-		"username":      {username},
-		"password":      {password},
-		"client_id":     {m.cfg.ClientID},
-		"client_secret": {m.cfg.ClientSecret},
-		"scope":         {strings.Join(m.cfg.Scopes, " ")},
+	authorizeURL := strings.TrimRight(m.cfg.APIServer, "/") +
+		"/oauth/authorize?response_type=token&client_id=openshift-challenging-client"
+
+	// Non-redirecting client — we capture the Location header ourselves.
+	nonRedirectClient := *m.httpClient
+	nonRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
-	return m.oauthTokenRequest(ctx, form)
+
+	doRequest := func(authHeader string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, authorizeURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("X-CSRF-Token", "1") // required by OpenShift OAuth
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		return nonRedirectClient.Do(req)
+	}
+
+	// Step 1: unauthenticated request to receive the Basic auth challenge.
+	resp, err := doRequest("")
+	if err != nil {
+		return TokenPair{}, fmt.Errorf("openshift: challenge request failed: %w", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+
+	switch resp.StatusCode {
+	case http.StatusFound:
+		// Some IDPs skip the challenge and redirect immediately.
+		return parseTokenFromLocation(resp.Header.Get("Location"))
+	case http.StatusUnauthorized:
+		// Expected: proceed to credential submission.
+	default:
+		return TokenPair{}, fmt.Errorf("openshift: unexpected challenge status %d (IDP may not support challenge-response)", resp.StatusCode)
+	}
+
+	// Step 2: retry with Basic credentials.
+	encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	resp2, err := doRequest("Basic " + encoded)
+	if err != nil {
+		return TokenPair{}, fmt.Errorf("openshift: authenticated challenge request failed: %w", err)
+	}
+	resp2.Body.Close() //nolint:errcheck
+
+	switch resp2.StatusCode {
+	case http.StatusFound:
+		return parseTokenFromLocation(resp2.Header.Get("Location"))
+	case http.StatusUnauthorized:
+		return TokenPair{}, fmt.Errorf("%w: invalid credentials", ErrBadCredentials)
+	default:
+		return TokenPair{}, fmt.Errorf("openshift: unexpected auth response status %d", resp2.StatusCode)
+	}
 }
 
 // Refresh exchanges an OpenShift refresh token for a new access token at the
@@ -361,13 +409,16 @@ func (m *openShiftManager) oauthTokenRequest(ctx context.Context, form url.Value
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(body, &oauthErr)
-		// Only explicit auth failures (invalid_grant on 400/401) map to
-		// ErrBadCredentials. Server errors and other failures are surfaced as
-		// internal errors so that operational incidents are not masked.
-		if (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized) &&
-			oauthErr.Error == "invalid_grant" {
-			return TokenPair{}, fmt.Errorf("%w: oauth server returned %q (status %d)",
-				ErrBadCredentials, oauthErr.Error, resp.StatusCode)
+		// Only explicit auth failures map to ErrBadCredentials. Server errors
+		// and other failures are surfaced as internal errors so that
+		// operational incidents are not masked.
+		// access_denied: ROPC rejected (wrong credentials, or IDP/client policy).
+		// invalid_grant: bad credentials on code exchange or refresh.
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+			if oauthErr.Error == "invalid_grant" || oauthErr.Error == "access_denied" {
+				return TokenPair{}, fmt.Errorf("%w: oauth server returned %q (status %d)",
+					ErrBadCredentials, oauthErr.Error, resp.StatusCode)
+			}
 		}
 		return TokenPair{}, fmt.Errorf("openshift: oauth server returned %q (status %d)",
 			oauthErr.Error, resp.StatusCode)
@@ -387,6 +438,35 @@ func (m *openShiftManager) oauthTokenRequest(ctx context.Context, form url.Value
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ExpiresAt:    expiresAt,
+	}, nil
+}
+
+// parseTokenFromLocation extracts an access_token from an OAuth implicit-grant
+// redirect Location header. Checks the URL fragment first, falls back to query params.
+func parseTokenFromLocation(location string) (TokenPair, error) {
+	if location == "" {
+		return TokenPair{}, fmt.Errorf("openshift: no Location header in redirect")
+	}
+	u, err := url.Parse(location)
+	if err != nil {
+		return TokenPair{}, fmt.Errorf("openshift: parsing redirect URL: %w", err)
+	}
+	// Implicit grant puts token in fragment; some OpenShift versions use query params.
+	params, _ := url.ParseQuery(u.Fragment)
+	if params.Get("access_token") == "" {
+		params = u.Query()
+	}
+	token := params.Get("access_token")
+	if token == "" {
+		if errCode := params.Get("error"); errCode != "" {
+			return TokenPair{}, fmt.Errorf("%w: %s", ErrBadCredentials, params.Get("error_description"))
+		}
+		return TokenPair{}, fmt.Errorf("openshift: no access_token in redirect")
+	}
+	expiresIn, _ := strconv.Atoi(params.Get("expires_in"))
+	return TokenPair{
+		AccessToken: token,
+		ExpiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),
 	}, nil
 }
 
