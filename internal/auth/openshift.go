@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +54,10 @@ type openShiftManager struct {
 	// tokenCache maps SHA-256 token hashes to cached validation results.
 	tokenCache sync.Map
 
+	// pendingStates maps CSRF state tokens to pendingState entries.
+	// Entries are created by GetAuthorizeURL and consumed by ValidateState.
+	pendingStates sync.Map
+
 	// cacheTTL is how long a token validation result is cached.
 	cacheTTL time.Duration
 }
@@ -69,6 +75,14 @@ type cachedIdentity struct {
 	groups    []string
 	expiresAt time.Time
 }
+
+// pendingState is a short-lived CSRF state token issued by GetAuthorizeURL.
+type pendingState struct {
+	expiresAt time.Time
+}
+
+// oauthStateTTL is how long a CSRF state token remains valid.
+const oauthStateTTL = 10 * time.Minute
 
 // newOpenShiftManager builds an openShiftManager. It creates an in-cluster
 // K8s client for TokenReview and discovers OAuth endpoints from the configured
@@ -316,20 +330,57 @@ func (m *openShiftManager) Refresh(ctx context.Context, refreshToken string) (To
 
 // ── OAuthAuthorizer implementation ──────────────────────────────────────────
 
-// GetAuthorizeURL builds the OAuth authorize URL. redirectURI overrides the
-// server-configured redirect URI when non-empty; callers must validate it
-// before passing it here (e.g. localhost-only check in the route handler).
-func (m *openShiftManager) GetAuthorizeURL(redirectURI string) (string, error) {
+// GetAuthorizeURL builds the OAuth authorize URL and generates a
+// cryptographically random CSRF state token (RFC 6749 §10.12). The state is
+// stored server-side with a short TTL and must be validated via ValidateState
+// when the callback is received. redirectURI overrides the server-configured
+// redirect URI when non-empty; callers must validate it before passing it here
+// (e.g. localhost-only check in the route handler).
+func (m *openShiftManager) GetAuthorizeURL(redirectURI string) (string, string, error) {
 	if redirectURI == "" {
 		redirectURI = m.cfg.RedirectURI
 	}
+
+	state, err := generateState()
+	if err != nil {
+		return "", "", fmt.Errorf("openshift: generating CSRF state: %w", err)
+	}
+	m.pendingStates.Store(state, &pendingState{
+		expiresAt: time.Now().Add(oauthStateTTL),
+	})
+
 	params := url.Values{
 		"client_id":     {m.cfg.ClientID},
 		"redirect_uri":  {redirectURI},
 		"response_type": {"code"},
 		"scope":         {strings.Join(m.cfg.Scopes, " ")},
+		"state":         {state},
 	}
-	return m.oauthMeta.AuthorizationEndpoint + "?" + params.Encode(), nil
+	return m.oauthMeta.AuthorizationEndpoint + "?" + params.Encode(), state, nil
+}
+
+// ValidateState checks that the given state token was issued by
+// GetAuthorizeURL, has not expired, and has not already been consumed. On
+// success the token is deleted so it cannot be replayed.
+func (m *openShiftManager) ValidateState(state string) error {
+	val, ok := m.pendingStates.LoadAndDelete(state)
+	if !ok {
+		return fmt.Errorf("%w: invalid or already-used OAuth state parameter", ErrUnauthenticated)
+	}
+	ps := val.(*pendingState)
+	if time.Now().After(ps.expiresAt) {
+		return fmt.Errorf("%w: OAuth state parameter has expired", ErrUnauthenticated)
+	}
+	return nil
+}
+
+// generateState returns a 32-byte hex-encoded cryptographically random string.
+func generateState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // OAuthExchange exchanges an OAuth authorization code for tokens. redirectURI
@@ -354,8 +405,8 @@ func (m *openShiftManager) OAuthExchange(ctx context.Context, code, redirectURI 
 
 // ── Cache cleanup ───────────────────────────────────────────────────────────
 
-// StartCleanup runs a background goroutine that evicts expired cache entries.
-// Call as: go mgr.StartCleanup(ctx)
+// StartCleanup runs a background goroutine that evicts expired cache entries
+// and expired pending CSRF states. Call as: go mgr.StartCleanup(ctx)
 func (m *openShiftManager) StartCleanup(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
@@ -369,6 +420,12 @@ func (m *openShiftManager) StartCleanup(ctx context.Context) {
 			m.tokenCache.Range(func(key, value any) bool {
 				if cached, ok := value.(*cachedIdentity); ok && now.After(cached.expiresAt) {
 					m.tokenCache.Delete(key)
+				}
+				return true
+			})
+			m.pendingStates.Range(func(key, value any) bool {
+				if ps, ok := value.(*pendingState); ok && now.After(ps.expiresAt) {
+					m.pendingStates.Delete(key)
 				}
 				return true
 			})

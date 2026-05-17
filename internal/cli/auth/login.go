@@ -174,7 +174,7 @@ func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config
 	}
 
 	// OAuth browser flow with local callback server.
-	codeCh, errCh, redirectURI, stop, err := startCallbackServer()
+	resultCh, errCh, redirectURI, stop, err := startCallbackServer()
 	if err != nil {
 		return ctx, err
 	}
@@ -182,6 +182,7 @@ func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config
 
 	var authResp struct {
 		AuthorizeURL string `json:"authorizeUrl"`
+		State        string `json:"state"`
 	}
 	authorizeEndpoint := "/api/v1/auth/openshift/authorize?redirect_uri=" + url.QueryEscape(redirectURI)
 	if err := c.Get(cmd.Context(), authorizeEndpoint, &authResp); err != nil {
@@ -193,14 +194,22 @@ func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config
 		fmt.Fprintf(cmd.OutOrStdout(), "Could not open browser. Visit the URL above manually.\n") //nolint:errcheck
 	}
 
-	code, err := awaitOAuthCode(cmd.Context(), codeCh, errCh)
+	cbResult, err := awaitOAuthCallback(cmd.Context(), resultCh, errCh)
 	if err != nil {
 		return ctx, err
 	}
 
+	// Use the state from the authorize response. The OAuth server echoes it
+	// back in the redirect; if they don't match, the backend will reject it.
+	state := authResp.State
+	if cbResult.State != "" {
+		state = cbResult.State
+	}
+
 	var pair client.TokenPair
 	if err := c.Post(cmd.Context(), "/api/v1/auth/openshift/callback", map[string]string{
-		"code":        code,
+		"code":        cbResult.Code,
+		"state":       state,
 		"redirectUri": redirectURI,
 	}, &pair); err != nil {
 		return ctx, fmt.Errorf("exchanging code: %w", err)

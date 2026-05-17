@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -389,10 +390,91 @@ func TestOpenShift_GetAuthorizeURL(t *testing.T) {
 	defer srv.Close()
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
-	authURL, err := mgr.GetAuthorizeURL("")
+	authURL, state, err := mgr.GetAuthorizeURL("")
 	require.NoError(t, err)
 	assert.Contains(t, authURL, oAuthAuthorizeURLSuffix)
 	assert.Contains(t, authURL, "client_id=test-client")
 	assert.Contains(t, authURL, "response_type=code")
 	assert.Contains(t, authURL, "redirect_uri=")
+	assert.Contains(t, authURL, "state="+state)
+	assert.Len(t, state, 64) // 32 bytes hex-encoded
+}
+
+func TestOpenShift_GetAuthorizeURL_CustomRedirectURI(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	authURL, state, err := mgr.GetAuthorizeURL("http://localhost:18085/callback")
+	require.NoError(t, err)
+	assert.Contains(t, authURL, "redirect_uri="+url.QueryEscape("http://localhost:18085/callback"))
+	assert.NotEmpty(t, state)
+}
+
+func TestOpenShift_GetAuthorizeURL_UniqueStates(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	_, state1, err := mgr.GetAuthorizeURL("")
+	require.NoError(t, err)
+	_, state2, err := mgr.GetAuthorizeURL("")
+	require.NoError(t, err)
+	assert.NotEqual(t, state1, state2)
+}
+
+func TestOpenShift_ValidateState_Success(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	_, state, err := mgr.GetAuthorizeURL("")
+	require.NoError(t, err)
+
+	err = mgr.ValidateState(state)
+	assert.NoError(t, err)
+}
+
+func TestOpenShift_ValidateState_ConsumedOnUse(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	_, state, err := mgr.GetAuthorizeURL("")
+	require.NoError(t, err)
+
+	err = mgr.ValidateState(state)
+	require.NoError(t, err)
+
+	err = mgr.ValidateState(state)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnauthenticated)
+}
+
+func TestOpenShift_ValidateState_UnknownState(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	err := mgr.ValidateState("nonexistent-state")
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnauthenticated)
+}
+
+func TestOpenShift_ValidateState_Expired(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	_, state, err := mgr.GetAuthorizeURL("")
+	require.NoError(t, err)
+
+	// Manually expire the state.
+	val, _ := mgr.pendingStates.Load(state)
+	ps := val.(*pendingState)
+	ps.expiresAt = time.Now().Add(-1 * time.Second)
+
+	err = mgr.ValidateState(state)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
