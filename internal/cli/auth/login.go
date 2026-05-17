@@ -181,9 +181,9 @@ func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config
 		return ctx, fmt.Errorf("getting authorize URL: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for authentication...\n") //nolint:errcheck
+	fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for authentication...\n\n  %s\n\n", authResp.AuthorizeURL) //nolint:errcheck
 	if !openBrowser(authResp.AuthorizeURL) {
-		fmt.Fprintf(cmd.OutOrStdout(), "Could not open browser. Visit this URL manually:\n\n  %s\n\n", authResp.AuthorizeURL) //nolint:errcheck
+		fmt.Fprintf(cmd.OutOrStdout(), "Could not open browser. Visit the URL above manually.\n") //nolint:errcheck
 	}
 
 	code, err := awaitOAuthCode(cmd.Context(), codeCh, errCh)
@@ -212,7 +212,7 @@ func openBrowser(rawURL string) bool {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
-		cmd = exec.Command("xdg-open", "--", rawURL)
+		cmd = exec.Command("xdg-open", rawURL)
 	case "windows":
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
