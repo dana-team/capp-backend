@@ -270,6 +270,8 @@ cappctl context use staging
 
 > Auth mode is auto-detected from the server if `--auth-mode` is omitted.
 
+> **OpenShift browser flow:** `cappctl` binds a local callback server on port **18085**. The ServiceAccount used as the OAuth client must have the annotation `serviceaccounts.openshift.io/oauth-redirecturi.cli: "http://localhost:18085/callback"` (set automatically by the Helm chart). Ensure port 18085 is free when running `cappctl login` in OpenShift mode.
+
 ### Shell completion
 
 `cappctl` supports tab completion for bash, zsh, fish, and PowerShell. See [docs/cappctl.md](docs/cappctl.md#shell-completion) for setup instructions.
