@@ -242,8 +242,11 @@ func (m *openShiftManager) Login(_ context.Context, _, _ string) (TokenPair, err
 // Uses the built-in openshift-challenging-client OAuth client with implicit
 // grant; the token arrives in the Location header fragment of the final redirect.
 func (m *openShiftManager) PasswordLogin(ctx context.Context, username, password string) (TokenPair, error) {
-	authorizeURL := strings.TrimRight(m.cfg.APIServer, "/") +
-		"/oauth/authorize?response_type=token&client_id=openshift-challenging-client"
+	params := url.Values{
+		"response_type": {"token"},
+		"client_id":     {"openshift-challenging-client"},
+	}
+	authorizeURL := m.oauthMeta.AuthorizationEndpoint + "?" + params.Encode()
 
 	// Non-redirecting client — we capture the Location header ourselves.
 	nonRedirectClient := *m.httpClient
@@ -452,22 +455,30 @@ func parseTokenFromLocation(location string) (TokenPair, error) {
 		return TokenPair{}, fmt.Errorf("openshift: parsing redirect URL: %w", err)
 	}
 	// Implicit grant puts token in fragment; some OpenShift versions use query params.
+	// Fall back to query params only when the fragment carries neither a token
+	// nor an error — otherwise we lose error information present in the fragment.
 	params, _ := url.ParseQuery(u.Fragment)
-	if params.Get("access_token") == "" {
+	if params.Get("access_token") == "" && params.Get("error") == "" {
 		params = u.Query()
 	}
 	token := params.Get("access_token")
 	if token == "" {
 		if errCode := params.Get("error"); errCode != "" {
-			return TokenPair{}, fmt.Errorf("%w: %s", ErrBadCredentials, params.Get("error_description"))
+			// Only credential-related errors map to ErrBadCredentials.
+			// Server errors (server_error, temporarily_unavailable, etc.) are
+			// surfaced as internal errors so operational incidents are not masked.
+			if errCode == "access_denied" || errCode == "invalid_grant" {
+				return TokenPair{}, fmt.Errorf("%w: %s", ErrBadCredentials, params.Get("error_description"))
+			}
+			return TokenPair{}, fmt.Errorf("openshift: OAuth error %q: %s", errCode, params.Get("error_description"))
 		}
 		return TokenPair{}, fmt.Errorf("openshift: no access_token in redirect")
 	}
-	expiresIn, _ := strconv.Atoi(params.Get("expires_in"))
-	return TokenPair{
-		AccessToken: token,
-		ExpiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),
-	}, nil
+	pair := TokenPair{AccessToken: token}
+	if expiresIn, err := strconv.Atoi(params.Get("expires_in")); err == nil && expiresIn > 0 {
+		pair.ExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second)
+	}
+	return pair, nil
 }
 
 // sha256Sum returns a hex-encoded SHA-256 hash of the input string.

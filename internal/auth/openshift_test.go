@@ -287,6 +287,103 @@ func TestOpenShift_PasswordLogin_BadCredentials(t *testing.T) {
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
+func TestOpenShift_PasswordLogin_QueryParamToken(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != oAuthAuthorizeURLSuffix {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="openshift"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Some OpenShift versions put the token in query params rather than fragment.
+		w.Header().Set("Location", srv.URL+"/oauth/token/implicit?access_token=qp-tok&expires_in=1800&token_type=bearer")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	pair, err := mgr.PasswordLogin(context.Background(), "user", "pass")
+	require.NoError(t, err)
+	assert.Equal(t, "qp-tok", pair.AccessToken)
+	assert.False(t, pair.ExpiresAt.IsZero())
+}
+
+func TestOpenShift_PasswordLogin_MissingExpiresIn(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != oAuthAuthorizeURLSuffix {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="openshift"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// No expires_in — ExpiresAt should be zero (unknown), not time.Now().
+		w.Header().Set("Location", srv.URL+"/oauth/token/implicit#access_token=notok&token_type=bearer")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	pair, err := mgr.PasswordLogin(context.Background(), "user", "pass")
+	require.NoError(t, err)
+	assert.Equal(t, "notok", pair.AccessToken)
+	assert.True(t, pair.ExpiresAt.IsZero()) // unknown expiry, not immediately expired
+}
+
+func TestOpenShift_PasswordLogin_OAuthErrorInRedirect(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != oAuthAuthorizeURLSuffix {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="openshift"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Redirect with an access_denied credential error.
+		w.Header().Set("Location", srv.URL+"/oauth/token/implicit#error=access_denied&error_description=bad+creds")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	_, err := mgr.PasswordLogin(context.Background(), "user", "pass")
+	assert.ErrorIs(t, err, ErrBadCredentials)
+}
+
+func TestOpenShift_PasswordLogin_ServerErrorInRedirect(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != oAuthAuthorizeURLSuffix {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="openshift"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Non-credential server error must NOT map to ErrBadCredentials.
+		w.Header().Set("Location", srv.URL+"/oauth/token/implicit#error=server_error&error_description=internal+error")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	mgr := newTestOpenShiftManager(t, srv, nil)
+	_, err := mgr.PasswordLogin(context.Background(), "user", "pass")
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, ErrBadCredentials)
+}
+
 func TestOpenShift_GetAuthorizeURL(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
