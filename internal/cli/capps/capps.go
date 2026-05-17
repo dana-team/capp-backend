@@ -7,6 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dana-team/capp-backend/internal/cli/client"
+	"github.com/dana-team/capp-backend/internal/cli/config"
 	"github.com/dana-team/capp-backend/internal/cli/output"
 	"github.com/dana-team/capp-backend/internal/cli/resource"
 	"github.com/dana-team/capp-backend/internal/cli/root"
@@ -78,6 +80,7 @@ func (h *handler) RegisterGetCommand(parent *cobra.Command) {
 	}
 	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "list across all namespaces")
 	parent.AddCommand(cmd)
+	cmd.ValidArgsFunction = h.completeCappNames
 }
 
 func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
@@ -241,6 +244,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (replaces all env vars)")
 	parent.AddCommand(cmd)
+	cmd.ValidArgsFunction = h.completeCappNames
 }
 
 func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
@@ -283,6 +287,7 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
 	parent.AddCommand(cmd)
+	cmd.ValidArgsFunction = h.completeCappNames
 }
 
 // syncResult is the response returned by the sync endpoint.
@@ -387,4 +392,66 @@ func age(createdAt string) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// completeCappNames fetches capp names from the API for shell completion.
+// It reads the active context from config directly (PersistentPreRunE does not
+// run during completion), builds a temporary client, and lists capps.
+// Any error silently returns nothing — broken completion is better than an error.
+func (h *handler) completeCappNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// already have a name, no more completions needed
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// load config the same way auth commands do
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	ctx, err := cfg.ActiveContext()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	if ctx.Server == "" || ctx.Token == "" {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// resolve cluster and namespace: flag > state > context
+	cluster := h.state.Cluster
+	if cluster == "" {
+		cluster = ctx.Cluster
+	}
+
+	ns := h.state.Namespace
+	if ns == "" {
+		ns = ctx.Namespace
+	}
+
+	if cluster == "" {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	c := client.New(ctx.Server, ctx.Token, false)
+
+	var list apitypes.CappListResponse
+	var path string
+	if ns == "" {
+		path = fmt.Sprintf("/api/v1/clusters/%s/capps", cluster)
+	} else {
+		path = fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps", cluster, ns)
+	}
+
+	if err := c.Get(cmd.Context(), path, &list); err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	names := make([]string, 0, len(list.Items))
+	for _, item := range list.Items {
+		names = append(names, item.Name)
+	}
+
+	return names, cobra.ShellCompDirectiveNoFileComp
 }
