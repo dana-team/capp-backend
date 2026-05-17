@@ -126,12 +126,7 @@ func validateAuth(auth *AuthConfig) []error {
 
 	switch auth.Mode {
 	case "jwt":
-		if auth.JWT.SecretKey == "" {
-			errs = append(errs, errors.New(
-				"config: auth.jwt.secretKey is required when auth.mode is 'jwt'; "+
-					"set it via the CAPP_AUTH_JWT_SECRETKEY environment variable",
-			))
-		}
+		errs = append(errs, validateJWTSecretKey(auth.JWT.SecretKey, "jwt")...)
 	case "static":
 		if len(auth.Static.APIKeys) == 0 {
 			errs = append(errs, errors.New(
@@ -155,13 +150,7 @@ func validateAuth(auth *AuthConfig) []error {
 					"set via CAPP_AUTH_DEX_CLIENTSECRET environment variable",
 			))
 		}
-		if auth.JWT.SecretKey == "" {
-			errs = append(errs, errors.New(
-				"config: auth.jwt.secretKey is required when auth.mode is 'dex' "+
-					"(used for signing backend session JWTs); "+
-					"set via CAPP_AUTH_JWT_SECRETKEY environment variable",
-			))
-		}
+		errs = append(errs, validateJWTSecretKey(auth.JWT.SecretKey, "dex")...)
 	case "openshift":
 		if auth.OpenShift.APIServer == "" {
 			errs = append(errs, errors.New(
@@ -229,6 +218,30 @@ func validateGitOps(g *GitOpsConfig) []error {
 	}
 
 	return errs
+}
+
+// minJWTSecretKeyLen is the minimum required length for the JWT secret key.
+// HMAC-SHA256 keys should be at least 256 bits (32 bytes) per NIST guidance.
+const minJWTSecretKeyLen = 32
+
+// validateJWTSecretKey checks that the JWT secret key is present and meets
+// the minimum entropy requirement for HMAC-SHA256.
+func validateJWTSecretKey(key, mode string) []error {
+	if key == "" {
+		return []error{fmt.Errorf(
+			"config: auth.jwt.secretKey is required when auth.mode is %q; "+
+				"set it via the CAPP_AUTH_JWT_SECRETKEY environment variable",
+			mode,
+		)}
+	}
+	if len(key) < minJWTSecretKeyLen {
+		return []error{fmt.Errorf(
+			"config: auth.jwt.secretKey must be at least %d characters (got %d); "+
+				"HMAC-SHA256 requires a key of at least 256 bits for security",
+			minJWTSecretKeyLen, len(key),
+		)}
+	}
+	return nil
 }
 
 // validateGitOpsPaths checks that every cluster's GitOpsPath (after fallback)
