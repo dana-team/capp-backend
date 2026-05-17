@@ -137,9 +137,17 @@ type AuthManager interface {
 // implements it. Route handlers type-assert to this interface to expose the
 // /openshift/authorize and /openshift/callback endpoints.
 type OAuthAuthorizer interface {
-	// GetAuthorizeURL returns the OAuth authorization URL. redirectURI overrides
-	// the server-configured redirect URI when non-empty (localhost URIs only).
-	GetAuthorizeURL(redirectURI string) (string, error)
+	// GetAuthorizeURL returns the OAuth authorization URL and a CSRF state
+	// token. The state token is stored server-side and must be validated via
+	// ValidateState during the callback. redirectURI overrides the
+	// server-configured redirect URI when non-empty (localhost URIs only).
+	GetAuthorizeURL(redirectURI string) (authorizeURL string, state string, err error)
+
+	// ValidateState checks that the given state token was issued by
+	// GetAuthorizeURL, has not expired, and has not been used before. The
+	// token is consumed (deleted) on successful validation so it cannot be
+	// replayed.
+	ValidateState(state string) error
 
 	// OAuthExchange exchanges an OAuth authorization code for an access token
 	// and refresh token from the identity provider. redirectURI overrides the

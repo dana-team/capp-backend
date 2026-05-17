@@ -61,10 +61,16 @@ func loginWithPassword(ctx context.Context, c *client.Client, username, password
 // http://localhost:18085/callback.
 const oauthCallbackPort = 18085
 
+// oauthCallbackResult holds the code and state received from the OAuth callback.
+type oauthCallbackResult struct {
+	Code  string
+	State string
+}
+
 // startCallbackServer starts a local HTTP server on oauthCallbackPort to receive
-// the OAuth callback. Returns channels for the code/error, the redirect URI,
+// the OAuth callback. Returns channels for the result/error, the redirect URI,
 // and a stop function. The caller must call stop() when done.
-func startCallbackServer() (<-chan string, <-chan error, string, func(), error) {
+func startCallbackServer() (<-chan oauthCallbackResult, <-chan error, string, func(), error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", oauthCallbackPort))
 	if err != nil {
 		return nil, nil, "", nil, fmt.Errorf("starting local callback server on port %d (must be free): %w", oauthCallbackPort, err)
@@ -72,7 +78,7 @@ func startCallbackServer() (<-chan string, <-chan error, string, func(), error) 
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
 
-	codeCh := make(chan string, 1)
+	resultCh := make(chan oauthCallbackResult, 1)
 	errCh := make(chan error, 1)
 	var once sync.Once
 
@@ -92,26 +98,31 @@ func startCallbackServer() (<-chan string, <-chan error, string, func(), error) 
 			return
 		}
 		fmt.Fprint(w, "<html><body><h2>Login successful</h2><p>You may close this tab and return to the terminal.</p></body></html>") //nolint:errcheck
-		once.Do(func() { codeCh <- code })
+		once.Do(func() {
+			resultCh <- oauthCallbackResult{
+				Code:  code,
+				State: r.URL.Query().Get("state"),
+			}
+		})
 	})
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go srv.Serve(ln) //nolint:errcheck
 
-	return codeCh, errCh, redirectURI, func() { srv.Close() }, nil //nolint:errcheck
+	return resultCh, errCh, redirectURI, func() { srv.Close() }, nil //nolint:errcheck
 }
 
-// awaitOAuthCode waits for the authorization code from the callback server,
-// an OAuth error, a timeout, or context cancellation.
-func awaitOAuthCode(ctx context.Context, codeCh <-chan string, errCh <-chan error) (string, error) {
+// awaitOAuthCallback waits for the authorization code and state from the
+// callback server, an OAuth error, a timeout, or context cancellation.
+func awaitOAuthCallback(ctx context.Context, resultCh <-chan oauthCallbackResult, errCh <-chan error) (oauthCallbackResult, error) {
 	select {
-	case code := <-codeCh:
-		return code, nil
+	case result := <-resultCh:
+		return result, nil
 	case err := <-errCh:
-		return "", err
+		return oauthCallbackResult{}, err
 	case <-time.After(5 * time.Minute):
-		return "", fmt.Errorf("timed out waiting for browser authentication")
+		return oauthCallbackResult{}, fmt.Errorf("timed out waiting for browser authentication")
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return oauthCallbackResult{}, ctx.Err()
 	}
 }

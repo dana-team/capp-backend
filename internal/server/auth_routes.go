@@ -27,7 +27,8 @@ type refreshRequest struct {
 
 // openshiftCallbackRequest is the body for POST /api/v1/auth/openshift/callback.
 type openshiftCallbackRequest struct {
-	Code string `json:"code" binding:"required"`
+	Code  string `json:"code" binding:"required"`
+	State string `json:"state" binding:"required"`
 	// RedirectURI may be provided by the CLI to complete its local-server OAuth
 	// flow. It is validated to be a localhost URI before use, preventing the
 	// backend from acting as a generic code exchanger for arbitrary redirect URIs.
@@ -38,6 +39,7 @@ type openshiftCallbackRequest struct {
 // openshiftAuthorizeResponse is returned by GET /api/v1/auth/openshift/authorize.
 type openshiftAuthorizeResponse struct {
 	AuthorizeURL string `json:"authorizeUrl"`
+	State        string `json:"state"`
 }
 
 // authModeResponse is returned by GET /api/v1/auth/mode.
@@ -163,13 +165,13 @@ func openshiftAuthorizeHandler(mgr auth.AuthManager) gin.HandlerFunc {
 			return
 		}
 
-		authorizeURL, err := osMgr.GetAuthorizeURL(redirectURI)
+		authorizeURL, state, err := osMgr.GetAuthorizeURL(redirectURI)
 		if err != nil {
 			apierrors.Respond(c, apierrors.NewInternal(err))
 			return
 		}
 
-		c.JSON(http.StatusOK, openshiftAuthorizeResponse{AuthorizeURL: authorizeURL})
+		c.JSON(http.StatusOK, openshiftAuthorizeResponse{AuthorizeURL: authorizeURL, State: state})
 	}
 }
 
@@ -193,6 +195,11 @@ func openshiftCallbackHandler(mgr auth.AuthManager) gin.HandlerFunc {
 		osMgr, ok := mgr.(auth.OAuthAuthorizer)
 		if !ok {
 			apierrors.Respond(c, apierrors.NewInternal(errors.New("auth manager does not support OAuth")))
+			return
+		}
+
+		if err := osMgr.ValidateState(req.State); err != nil {
+			apierrors.Respond(c, apierrors.NewUnauthorized("invalid or expired OAuth state parameter"))
 			return
 		}
 
