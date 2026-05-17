@@ -73,6 +73,9 @@ data:
             {{- if $cluster.credential.inline.caCert }}
             caCert: {{ $cluster.credential.inline.caCert | quote }}
             {{- end }}
+            {{- if $cluster.credential.inline.insecure }}
+            insecure: true
+            {{- end }}
             {{- if (eq $cluster.credential.inline.apiServer "https://kubernetes.default.svc") }}
             token: {{ $cluster.credential.inline.token  | quote }}
             {{- else }}

@@ -99,6 +99,7 @@ config:
         inline:
           apiServer: "https://kubernetes.default.svc"
           # caCert: ""    # base64 PEM — omit for in-cluster service account
+          insecure: false  # set true to skip TLS verification (NOT for production)
           token: ""       # overridden by secret.clusterTokens[0]
       allowedNamespaces: []
 
