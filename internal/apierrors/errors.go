@@ -57,6 +57,15 @@ type APIError struct {
 
 	// Details holds optional structured context. May be nil.
 	Details map[string]any `json:"details,omitempty"`
+
+	// cause holds the original error for server-side logging. It is never
+	// serialized to JSON or exposed to clients.
+	cause error `json:"-"`
+}
+
+// Unwrap returns the underlying cause so errors.Is/As can traverse the chain.
+func (e *APIError) Unwrap() error {
+	return e.cause
 }
 
 // Error implements the error interface.
@@ -99,14 +108,17 @@ func NewBadRequest(msg string) *APIError {
 	return &APIError{Code: CodeBadRequest, Message: msg, Status: http.StatusBadRequest}
 }
 
-// NewInternal wraps an unexpected internal error as a 500 response.
-// The original error message is included to aid debugging; callers should
-// ensure the underlying error does not contain secrets before calling this.
+// NewInternal returns a generic 500 response. The original error is NOT
+// included in the client-facing message to prevent leaking internal
+// details (cluster URLs, service-account paths, etc.). Callers that need
+// to preserve the original error for server-side logging should use
+// Respond, which attaches the original error to the Gin context.
 func NewInternal(err error) *APIError {
 	return &APIError{
 		Code:    CodeInternal,
-		Message: fmt.Sprintf("internal server error: %s", err.Error()),
+		Message: "internal server error",
 		Status:  http.StatusInternalServerError,
+		cause:   err,
 	}
 }
 
@@ -157,8 +169,13 @@ func NewNamespaceDenied(namespace, cluster string) *APIError {
 //  2. Kubernetes API errors — mapped to the nearest APIError.
 //  3. Anything else — wrapped as a 500 Internal Error.
 //
-// Respond calls c.Abort() so no further handlers are executed.
+// The original error is attached to the Gin context (via c.Error) so the
+// logging middleware can record it server-side without leaking it to the
+// client. Respond calls c.Abort() so no further handlers are executed.
 func Respond(c *gin.Context, err error) {
+	// Attach the original error for server-side logging.
+	_ = c.Error(err)
+
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		c.AbortWithStatusJSON(apiErr.Status, gin.H{"error": apiErr})
@@ -176,30 +193,46 @@ func Respond(c *gin.Context, err error) {
 	c.AbortWithStatusJSON(internal.Status, gin.H{"error": internal})
 }
 
-// translateK8sError maps a Kubernetes API error to an APIError.
-// Returns nil if err is not a Kubernetes API error.
+// translateK8sError maps a Kubernetes API error to an APIError with a safe,
+// generic client-facing message. The original error is preserved as the cause
+// for server-side logging. Returns nil if err is not a Kubernetes API error.
 func translateK8sError(err error) *APIError {
 	switch {
 	case k8serrors.IsNotFound(err):
-		return &APIError{Code: CodeNotFound, Message: err.Error(), Status: http.StatusNotFound}
+		return &APIError{Code: CodeNotFound, Message: k8sSafeMessage(err, "resource not found"), Status: http.StatusNotFound, cause: err}
 	case k8serrors.IsAlreadyExists(err):
-		return &APIError{Code: CodeConflict, Message: err.Error(), Status: http.StatusConflict}
+		return &APIError{Code: CodeConflict, Message: k8sSafeMessage(err, "resource already exists"), Status: http.StatusConflict, cause: err}
 	case k8serrors.IsForbidden(err):
-		return &APIError{Code: CodeForbidden, Message: err.Error(), Status: http.StatusForbidden}
+		return &APIError{Code: CodeForbidden, Message: "access denied", Status: http.StatusForbidden, cause: err}
 	case k8serrors.IsUnauthorized(err):
-		return &APIError{Code: CodeUnauthorized, Message: err.Error(), Status: http.StatusUnauthorized}
+		return &APIError{Code: CodeUnauthorized, Message: "unauthorized", Status: http.StatusUnauthorized, cause: err}
 	case k8serrors.IsInvalid(err):
-		return &APIError{Code: CodeBadRequest, Message: err.Error(), Status: http.StatusBadRequest}
+		return &APIError{Code: CodeBadRequest, Message: "request validation failed", Status: http.StatusBadRequest, cause: err}
 	case k8serrors.IsServiceUnavailable(err):
-		return &APIError{Code: CodeInternal, Message: err.Error(), Status: http.StatusServiceUnavailable}
+		return &APIError{Code: CodeInternal, Message: "service temporarily unavailable", Status: http.StatusServiceUnavailable, cause: err}
 	case k8serrors.IsTimeout(err), k8serrors.IsServerTimeout(err):
-		return &APIError{Code: CodeInternal, Message: err.Error(), Status: http.StatusGatewayTimeout}
+		return &APIError{Code: CodeInternal, Message: "request timed out", Status: http.StatusGatewayTimeout, cause: err}
 	default:
 		if k8serrors.IsInternalError(err) {
-			return &APIError{Code: CodeInternal, Message: err.Error(), Status: http.StatusInternalServerError}
+			return &APIError{Code: CodeInternal, Message: "internal server error", Status: http.StatusInternalServerError, cause: err}
 		}
 		return nil
 	}
+}
+
+// k8sSafeMessage extracts the resource name from a K8s StatusError (if
+// available) and builds a safe client-facing message. Falls back to
+// fallback when structured details are absent.
+func k8sSafeMessage(err error, fallback string) string {
+	var statusErr *k8serrors.StatusError
+	if !errors.As(err, &statusErr) {
+		return fallback
+	}
+	details := statusErr.Status().Details
+	if details == nil || details.Name == "" {
+		return fallback
+	}
+	return fmt.Sprintf("%s: %q", fallback, details.Name)
 }
 
 // RespondOK writes a 200 response with data as the JSON body.
