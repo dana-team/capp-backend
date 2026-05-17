@@ -48,6 +48,12 @@ func Logging(logger *zap.Logger) gin.HandlerFunc {
 			}
 		}
 
+		// Include handler errors stored via c.Error() by the error response
+		// layer so that sanitized client responses can still be debugged.
+		if len(c.Errors) > 0 {
+			fields = append(fields, zap.String("error", c.Errors.String()))
+		}
+
 		switch {
 		case status >= 500:
 			logger.Error("request completed", fields...)

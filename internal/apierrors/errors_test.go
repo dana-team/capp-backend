@@ -77,7 +77,17 @@ func TestNewInternal(t *testing.T) {
 	e := NewInternal(errors.New("db gone"))
 	assert.Equal(t, CodeInternal, e.Code)
 	assert.Equal(t, http.StatusInternalServerError, e.Status)
-	assert.Contains(t, e.Message, "db gone")
+	assert.Equal(t, "internal server error", e.Message)
+	assert.NotContains(t, e.Message, "db gone")
+	assert.ErrorIs(t, e, e.Unwrap())
+}
+
+func TestNewInternal_DoesNotLeakDetails(t *testing.T) {
+	sensitiveErr := errors.New("connection to https://k8s-api.internal:6443 refused: service-account /var/run/secrets/token not found")
+	e := NewInternal(sensitiveErr)
+	assert.NotContains(t, e.Message, "k8s-api.internal")
+	assert.NotContains(t, e.Message, "/var/run/secrets")
+	assert.Equal(t, "internal server error", e.Message)
 }
 
 func TestNewClusterNotFound(t *testing.T) {
@@ -126,6 +136,8 @@ func TestRespond_K8sNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	e := decodeError(t, w)
 	assert.Equal(t, CodeNotFound, e.Code)
+	assert.Contains(t, e.Message, "my-app")
+	assert.NotContains(t, e.Message, "rcs.dana.io")
 }
 
 func TestRespond_K8sAlreadyExists(t *testing.T) {
@@ -136,6 +148,7 @@ func TestRespond_K8sAlreadyExists(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, w.Code)
 	e := decodeError(t, w)
 	assert.Equal(t, CodeConflict, e.Code)
+	assert.Contains(t, e.Message, "app")
 }
 
 func TestRespond_K8sForbidden(t *testing.T) {
@@ -145,15 +158,41 @@ func TestRespond_K8sForbidden(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	e := decodeError(t, w)
 	assert.Equal(t, CodeForbidden, e.Code)
+	assert.Equal(t, "access denied", e.Message)
+}
+
+func TestRespond_K8sForbidden_DoesNotLeakDetails(t *testing.T) {
+	w := recordResponse(t, func(c *gin.Context) {
+		Respond(c, k8serrors.NewForbidden(
+			schema.GroupResource{Group: "rcs.dana.io", Resource: "capps"},
+			"my-app",
+			fmt.Errorf("user system:serviceaccount:ns:sa cannot get resource"),
+		))
+	})
+	e := decodeError(t, w)
+	assert.Equal(t, "access denied", e.Message)
+	assert.NotContains(t, e.Message, "serviceaccount")
 }
 
 func TestRespond_GenericError(t *testing.T) {
 	w := recordResponse(t, func(c *gin.Context) {
-		Respond(c, errors.New("something exploded"))
+		Respond(c, errors.New("connection to internal-api:6443 refused"))
 	})
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	e := decodeError(t, w)
 	assert.Equal(t, CodeInternal, e.Code)
+	assert.Equal(t, "internal server error", e.Message)
+	assert.NotContains(t, e.Message, "internal-api")
+}
+
+func TestRespond_AttachesErrorToGinContext(t *testing.T) {
+	originalErr := errors.New("database connection lost")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	Respond(c, originalErr)
+	require.Len(t, c.Errors, 1)
+	assert.Equal(t, originalErr.Error(), c.Errors[0].Err.Error())
 }
 
 func TestRespond_Aborts(t *testing.T) {
