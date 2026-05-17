@@ -139,6 +139,12 @@ func login(cmd *cobra.Command, server, authMode, cluster, token, username, passw
 		return ctx, nil
 
 	case "openshift":
+		// Direct token: store as-is, no OAuth flow needed. OpenShift mode is
+		// stateless — the backend validates via TokenReview on every request.
+		if token != "" {
+			ctx.Token = token
+			return ctx, nil
+		}
 		return loginOpenShift(cmd, server, insecure, ctx, username, password)
 
 	default:

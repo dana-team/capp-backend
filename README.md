@@ -266,7 +266,7 @@ cappctl context use staging
 | `passthrough` / `static` | `--token <raw-token>` |
 | `jwt` | `--token <k8s-token> --cluster <name>` |
 | `dex` | `--username <u>` (password prompted) |
-| `openshift` | browser flow (URL opened automatically on Linux/Windows) |
+| `openshift` | `--username <u>` (password prompted) **or** browser flow (URL opened automatically on Linux/Windows) **or** `--token <raw-token>` |
 
 > Auth mode is auto-detected from the server if `--auth-mode` is omitted.
 
