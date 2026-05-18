@@ -91,11 +91,11 @@ func (c *Client) BuildRelPath(gitOpsPath, namespace, cappName string) string {
 
 // SyncValues writes a per-capp values file to the GitOps repository,
 // commits it, and pushes to the remote. Returns the commit SHA on success.
-func (c *Client) SyncValues(_ context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
+func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := c.pull(); err != nil {
+	if err := c.pullCtx(ctx); err != nil {
 		return "", fmt.Errorf("pull: %w", err)
 	}
 
@@ -127,7 +127,7 @@ func (c *Client) SyncValues(_ context.Context, gitOpsPath, namespace, cappName s
 		return "", fmt.Errorf("commit: %w", err)
 	}
 
-	if err := c.push(); err != nil {
+	if err := c.pushCtx(ctx); err != nil {
 		c.resetToRemote()
 		return "", fmt.Errorf("push: %w", err)
 	}
@@ -143,11 +143,11 @@ func (c *Client) SyncValues(_ context.Context, gitOpsPath, namespace, cappName s
 // DeleteValues removes a per-capp values file from the GitOps repository,
 // commits the removal, and pushes. If the file does not exist the call is a
 // no-op and returns ("", nil).
-func (c *Client) DeleteValues(_ context.Context, gitOpsPath, namespace, cappName string) (string, error) {
+func (c *Client) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := c.pull(); err != nil {
+	if err := c.pullCtx(ctx); err != nil {
 		return "", fmt.Errorf("pull: %w", err)
 	}
 
@@ -182,7 +182,7 @@ func (c *Client) DeleteValues(_ context.Context, gitOpsPath, namespace, cappName
 		return "", fmt.Errorf("commit: %w", err)
 	}
 
-	if err := c.push(); err != nil {
+	if err := c.pushCtx(ctx); err != nil {
 		c.resetToRemote()
 		return "", fmt.Errorf("push: %w", err)
 	}
@@ -195,14 +195,15 @@ func (c *Client) DeleteValues(_ context.Context, gitOpsPath, namespace, cappName
 	return hash.String(), nil
 }
 
-// pull fetches and fast-forwards the local branch to match the remote.
-func (c *Client) pull() error {
+// pullCtx fetches and fast-forwards the local branch to match the remote.
+// It respects the provided context for cancellation and timeouts.
+func (c *Client) pullCtx(ctx context.Context) error {
 	wt, err := c.repo.Worktree()
 	if err != nil {
 		return err
 	}
 
-	err = wt.Pull(&git.PullOptions{
+	err = wt.PullContext(ctx, &git.PullOptions{
 		RemoteName:    "origin",
 		ReferenceName: plumbing.NewBranchReferenceName(c.branch),
 		Auth:          c.auth,
@@ -245,9 +246,10 @@ func (c *Client) resetToRemote() {
 	c.logger.Info("reset local branch to remote after push failure")
 }
 
-// push pushes the current branch to the remote.
-func (c *Client) push() error {
-	return c.repo.Push(&git.PushOptions{
+// pushCtx pushes the current branch to the remote.
+// It respects the provided context for cancellation and timeouts.
+func (c *Client) pushCtx(ctx context.Context) error {
+	return c.repo.PushContext(ctx, &git.PushOptions{
 		RemoteName: "origin",
 		RefSpecs: []gitconfig.RefSpec{
 			gitconfig.RefSpec("refs/heads/" + c.branch + ":refs/heads/" + c.branch),
