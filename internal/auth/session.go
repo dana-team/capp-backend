@@ -115,6 +115,11 @@ func (s *sessionStore) authenticate(r *http.Request) (ClusterCredential, error) 
 
 // refresh validates the refresh token, updates the session TTL, and issues a
 // new TokenPair with fresh JWTs.
+//
+// To avoid a data race between concurrent refresh/authenticate calls operating
+// on the same session, the entry is replaced atomically rather than mutated
+// in place. Readers that loaded the old pointer see a consistent (slightly
+// stale) snapshot, which is safe.
 func (s *sessionStore) refresh(refreshToken string) (TokenPair, error) {
 	claims, err := s.parseToken(refreshToken)
 	if err != nil {
@@ -137,11 +142,17 @@ func (s *sessionStore) refresh(refreshToken string) (TokenPair, error) {
 		return TokenPair{}, ErrTokenExpired
 	}
 
-	// Extend the session's lifetime on successful refresh.
-	entry.expiresAt = time.Now().Add(time.Duration(s.cfg.RefreshTTLMinutes) * time.Minute)
-	s.sessions.Store(sessionID, entry)
+	// Replace the entry with a new one to extend the session's lifetime.
+	// Creating a new struct avoids mutating the shared pointer, which would
+	// race with concurrent authenticate calls reading expiresAt.
+	renewed := &sessionEntry{
+		clusterName:  entry.clusterName,
+		clusterToken: entry.clusterToken,
+		expiresAt:    time.Now().Add(time.Duration(s.cfg.RefreshTTLMinutes) * time.Minute),
+	}
+	s.sessions.Store(sessionID, renewed)
 
-	return s.issueTokenPair(sessionID, entry.clusterName)
+	return s.issueTokenPair(sessionID, renewed.clusterName)
 }
 
 // StartCleanup runs a background goroutine that evicts expired sessions every
