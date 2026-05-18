@@ -128,7 +128,9 @@ func (h *Handler) list(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, NamespaceListResponse{Items: items})
+	canCreate, _ := canCreateNamespaces(c.Request.Context(), userClient)
+
+	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, CanCreate: canCreate})
 }
 
 // canCreateCapps performs a SelfSubjectAccessReview to check whether the current
