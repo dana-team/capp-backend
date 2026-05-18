@@ -119,6 +119,8 @@ func main() {
 	enabledResources := map[string]bool{
 		"namespaces": cfg.Resources.Namespaces.Enabled,
 		"capps":      cfg.Resources.Capps.Enabled,
+		"configmaps": cfg.Resources.Configmaps.Enabled,
+		"secrets":    cfg.Resources.Secrets.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New())

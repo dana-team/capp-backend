@@ -253,6 +253,8 @@ type ResourceToggle struct {
 type ResourcesConfig struct {
 	Namespaces ResourceToggle `mapstructure:"namespaces"`
 	Capps      ResourceToggle `mapstructure:"capps"`
+	Configmaps ResourceToggle `mapstructure:"configmaps"`
+	Secrets    ResourceToggle `mapstructure:"secrets"`
 }
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
@@ -374,6 +376,8 @@ func setDefaults(v *viper.Viper) {
 	// Resources — all enabled by default
 	v.SetDefault("resources.namespaces.enabled", true)
 	v.SetDefault("resources.capps.enabled", true)
+	v.SetDefault("resources.configmaps.enabled", true)
+	v.SetDefault("resources.secrets.enabled", true)
 
 	// GitOps — disabled by default
 	v.SetDefault("gitops.enabled", false)
