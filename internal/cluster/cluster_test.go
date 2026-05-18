@@ -147,21 +147,24 @@ func TestClusterManager_Get_NotFound(t *testing.T) {
 }
 
 func TestClusterManager_List(t *testing.T) {
-	mgr := testManager(map[string]*ClusterClient{
-		"a": {Meta: ClusterMeta{Name: "a", Healthy: true}},
-		"b": {Meta: ClusterMeta{Name: "b", Healthy: false}},
-	})
-	assert.Len(t, mgr.List(), 2)
+	ccA := &ClusterClient{Meta: ClusterMeta{Name: "a"}}
+	ccA.healthy.Store(true)
+	ccB := &ClusterClient{Meta: ClusterMeta{Name: "b"}}
+	ccB.healthy.Store(false)
+	mgr := testManager(map[string]*ClusterClient{"a": ccA, "b": ccB})
+	list := mgr.List()
+	assert.Len(t, list, 2)
 }
 
 func TestClusterManager_IsAnyHealthy(t *testing.T) {
-	mgr := testManager(map[string]*ClusterClient{
-		"a": {Meta: ClusterMeta{Healthy: false}},
-		"b": {Meta: ClusterMeta{Healthy: true}},
-	})
+	ccA := &ClusterClient{Meta: ClusterMeta{}}
+	ccA.healthy.Store(false)
+	ccB := &ClusterClient{Meta: ClusterMeta{}}
+	ccB.healthy.Store(true)
+	mgr := testManager(map[string]*ClusterClient{"a": ccA, "b": ccB})
 	assert.True(t, mgr.IsAnyHealthy())
 
-	mgr.clusters["b"].Meta.Healthy = false
+	mgr.clusters["b"].healthy.Store(false)
 	assert.False(t, mgr.IsAnyHealthy())
 }
 
@@ -173,7 +176,7 @@ func TestClusterManager_New_UnreachableClusterNotFatal(t *testing.T) {
 	require.NoError(t, err)
 	cc, err := mgr.Get("unreachable")
 	require.NoError(t, err)
-	assert.False(t, cc.Meta.Healthy)
+	assert.False(t, cc.IsHealthy())
 }
 
 func TestClientFor_OverridesBearerToken(t *testing.T) {
@@ -236,7 +239,9 @@ func TestHealthCheck(t *testing.T) {
 	defer srv.Close()
 
 	restCfg := mustBuildRestConfig(t, inlineClusterConfig("ok", srv.URL))
-	assert.NoError(t, checkHealth(restCfg))
+	hc, err := rest.HTTPClientFor(restCfg)
+	require.NoError(t, err)
+	assert.NoError(t, checkHealth(hc, restCfg.Host))
 }
 
 func TestHealthCheck_Unhealthy(t *testing.T) {
@@ -246,7 +251,9 @@ func TestHealthCheck_Unhealthy(t *testing.T) {
 	defer srv.Close()
 
 	restCfg := mustBuildRestConfig(t, inlineClusterConfig("bad", srv.URL))
-	assert.Error(t, checkHealth(restCfg))
+	hc, err := rest.HTTPClientFor(restCfg)
+	require.NoError(t, err)
+	assert.Error(t, checkHealth(hc, restCfg.Host))
 }
 
 func TestClusterManager_StartHealthChecks(t *testing.T) {
