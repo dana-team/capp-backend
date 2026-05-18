@@ -111,10 +111,20 @@ tracing:
   serviceName: "capp-backend"
   sampleRate: 0.1
 
+gitops:
+  enabled: false
+  repoURL: "https://github.com/org/capp-gitops.git"
+  branch: "main"
+  authMethod: "token"    # "token" or "ssh"
+  token: ""              # inject via CAPP_GITOPS_TOKEN
+  sshKeyPath: ""         # path to SSH private key (when authMethod is "ssh")
+  pathPrefix: "sites"    # prefix for values files in the repo
+
 clusters:
   - name: "local"                 # Used as path parameter in /api/v1/clusters/:cluster
     displayName: "Local Cluster"  # Human-readable label for the UI
     allowedNamespaces: []         # Empty = all namespaces allowed
+    gitOpsPath: ""                # Sub-path within gitops.pathPrefix for this cluster
     credential:
       # Option A: kubeconfig file
       kubeconfigPath: "/home/user/.kube/config"
@@ -128,6 +138,10 @@ resources:
   namespaces:
     enabled: true
   capps:
+    enabled: true
+  configmaps:
+    enabled: true
+  secrets:
     enabled: true
 ```
 
@@ -179,6 +193,9 @@ To add a new managed cluster in `openshift` mode:
      - apiGroups: [""]
        resources: ["users", "groups"]
        verbs: ["impersonate"]
+     - apiGroups: ["authentication.k8s.io"]
+       resources: ["tokenreviews"]
+       verbs: ["create"]
    ---
    apiVersion: rbac.authorization.k8s.io/v1
    kind: ClusterRoleBinding
@@ -214,19 +231,34 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/auth/login` | — | Sign in (jwt / dex / static modes) |
+| `GET` | `/api/v1/auth/mode` | — | Get active auth mode |
+| `POST` | `/api/v1/auth/login` | — | Sign in (jwt / dex / static / openshift modes) |
 | `POST` | `/api/v1/auth/refresh` | — | Refresh access token (jwt / dex / openshift modes) |
 | `GET` | `/api/v1/auth/openshift/authorize` | — | Get OpenShift OAuth authorize URL (openshift mode) |
 | `POST` | `/api/v1/auth/openshift/callback` | — | Exchange OAuth code for tokens (openshift mode) |
 | `GET` | `/api/v1/clusters` | ✓ | List configured clusters |
 | `GET` | `/api/v1/clusters/:cluster` | ✓ | Get cluster metadata |
 | `GET` | `/api/v1/clusters/:cluster/namespaces` | ✓ | List namespaces |
+| `POST` | `/api/v1/clusters/:cluster/namespaces` | ✓ | Create a namespace |
 | `GET` | `/api/v1/clusters/:cluster/capps` | ✓ | List all Capps across namespaces |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps` | ✓ | List Capps in a namespace |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps` | ✓ | Create a Capp |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Get a Capp |
 | `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Update a Capp |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Delete a Capp |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Trigger Capp GitOps sync |
+| `GET` | `/api/v1/clusters/:cluster/configmaps` | ✓ | List all ConfigMaps across namespaces |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | List ConfigMaps in a namespace |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | Create a ConfigMap |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps/:name` | ✓ | Get a ConfigMap |
+| `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps/:name` | ✓ | Update a ConfigMap |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps/:name` | ✓ | Delete a ConfigMap |
+| `GET` | `/api/v1/clusters/:cluster/secrets` | ✓ | List all Secrets across namespaces |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets` | ✓ | List Secrets in a namespace |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets` | ✓ | Create a Secret |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Get a Secret |
+| `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Update a Secret |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Delete a Secret |
 | `GET` | `/healthz` | — | Liveness probe |
 | `GET` | `/readyz` | — | Readiness probe (healthy when ≥1 cluster is reachable) |
 | `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
@@ -301,10 +333,15 @@ internal/
 │   └── root/       # Root Cobra command, PersistentPreRunE, token refresh
 ├── cluster/        # ClusterManager — multi-cluster routing and health checks
 ├── config/         # Config structs, Viper loading, and validation
+├── gitops/         # GitOps client — clone, commit, push per-capp values files
 ├── middleware/      # Gin middleware: auth, cluster resolution, CORS, logging, metrics, rate limiting
 ├── resources/      # Resource handler registry
-│   ├── capps/      # Capp list, get, create, update, delete handlers
-│   └── namespaces/ # Namespace list handler
+│   ├── cluster/
+│   │   └── namespaces/  # Namespace list + create handler
+│   └── namespaced/
+│       ├── capps/       # Capp CRUD + sync handler
+│       ├── configmaps/  # ConfigMap CRUD handler
+│       └── secrets/     # Secret CRUD handler
 └── server/         # Gin engine setup, route registration, auth endpoints
 pkg/k8s/            # Kubernetes scheme builder (registers CRD types)
 ```

@@ -74,7 +74,7 @@ Default config: `config/config.yaml`. Key settings:
 - `auth.mode`: passthrough | jwt | static | dex | openshift
 - `clusters[]`: array of cluster connections with credentials
 - `resources.<name>.enabled`: feature flags for resource handlers
-- `server.corsAllowedOrigins`: defaults to Vite dev server (`localhost:5173`)
+- `server.corsAllowedOrigins`: defaults to `localhost:3000` (capp-frontend dev server)
 
 ### Project Layout
 
@@ -87,6 +87,7 @@ internal/
   config/                       # Config structs, Viper loading, validation
   auth/                         # AuthManager implementations (passthrough, jwt, static, dex, openshift)
   cluster/                      # ClusterManager, health checks, credential loading
+  gitops/                       # GitOps client: clone, commit, push per-capp values files to a remote repo
   middleware/                   # Auth, cluster, logging, metrics, CORS, rate limit, recovery
   resources/                    # Resource handler registry
     cluster/
@@ -102,7 +103,7 @@ internal/
     resource/                   # ResourceCommand interface + registry
     root/                       # State struct, root Cobra command, PersistentPreRunE, token refresh
     auth/                       # login, logout, context commands
-    capps/                      # Capps ResourceCommand: get/list/create/update/delete
+    capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync
   apierrors/                    # Canonical error types
 pkg/k8s/                        # Kubernetes scheme builder (CRD type registration)
 api/openapi.yaml                # OpenAPI 3.1 spec (embedded in binary)
@@ -123,6 +124,7 @@ cappctl get      capps [name]
 cappctl create   capps
 cappctl update   capps <name>
 cappctl delete   capps <name>
+cappctl sync     capps <name>
 ```
 
 **Global flags:** `--server`, `--token`, `--cluster`, `--namespace`, `--context`, `--output` (table|wide|json|yaml), `--insecure`
@@ -133,7 +135,7 @@ cappctl delete   capps <name>
 
 **Token refresh:** `PersistentPreRunE` in `internal/cli/root/root.go` checks `token-expires-at` before every request; refreshes transparently if expiry < 30s away.
 
-**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change.
+**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)` — implement as a no-op if sync is not applicable to the resource.
 
 ### Startup Sequence
 1. Load config (YAML + env vars) → validate
@@ -141,6 +143,7 @@ cappctl delete   capps <name>
 3. Build K8s scheme (register CRD types)
 4. Create ClusterManager → connect to clusters → start health checks
 5. Create AuthManager (based on auth.mode) → start session cleanup (jwt/dex)
-6. Build resource handler registry
-7. Create Gin server → listen on :8080
-8. Graceful shutdown on SIGTERM/SIGINT (30s drain)
+6. Create GitOps client (if `gitops.enabled`) → clone remote repo
+7. Build resource handler registry
+8. Create Gin server → listen on :8080
+9. Graceful shutdown on SIGTERM/SIGINT (30s drain)
