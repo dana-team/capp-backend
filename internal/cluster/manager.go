@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/auth"
@@ -53,10 +52,9 @@ type ClusterManager interface {
 }
 
 // defaultClusterManager is the production ClusterManager implementation.
+// The clusters map is read-only after New returns. Health status is stored
+// in each ClusterClient.healthy (atomic.Bool) so no mutex is needed.
 type defaultClusterManager struct {
-	// mu protects the Healthy fields inside each ClusterClient.Meta.
-	// The map itself is read-only after New returns.
-	mu       sync.RWMutex
 	clusters map[string]*ClusterClient
 	logger   *zap.Logger
 }
@@ -80,16 +78,24 @@ func New(cfgs []config.ClusterConfig, scheme *runtime.Scheme, logger *zap.Logger
 			return nil, fmt.Errorf("cluster manager: initialising cluster %q: %w", cfg.Name, err)
 		}
 
+		// Build a reusable HTTP client for health probes to avoid leaking
+		// transports on every check interval.
+		hc, err := rest.HTTPClientFor(cc.RestConfig)
+		if err != nil {
+			return nil, fmt.Errorf("cluster manager: building health client for %q: %w", cfg.Name, err)
+		}
+		cc.healthClient = hc
+
 		// Perform an initial health check synchronously so the first /readyz
 		// response reflects real cluster state rather than always returning 503.
-		if err := checkHealth(cc.RestConfig); err != nil {
+		if err := checkHealth(cc.healthClient, cc.RestConfig.Host); err != nil {
 			logger.Warn("cluster is unreachable at startup",
 				zap.String("cluster", cfg.Name),
 				zap.Error(err),
 			)
-			cc.Meta.Healthy = false
+			cc.healthy.Store(false)
 		} else {
-			cc.Meta.Healthy = true
+			cc.healthy.Store(true)
 			logger.Info("cluster connected", zap.String("cluster", cfg.Name))
 		}
 
@@ -124,12 +130,11 @@ func (m *defaultClusterManager) Get(name string) (*ClusterClient, error) {
 
 // List returns a copy of all cluster metadata with current health status.
 func (m *defaultClusterManager) List() []ClusterMeta {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	metas := make([]ClusterMeta, 0, len(m.clusters))
 	for _, cc := range m.clusters {
-		metas = append(metas, cc.Meta)
+		meta := cc.Meta
+		meta.Healthy = cc.healthy.Load()
+		metas = append(metas, meta)
 	}
 	return metas
 }
@@ -178,8 +183,8 @@ func (m *defaultClusterManager) IsNamespaceAllowed(cluster *ClusterClient, names
 }
 
 // StartHealthChecks ticks every intervalSeconds and pings each cluster's
-// /version endpoint. It updates each ClusterClient.Meta.Healthy under the
-// write lock and logs state transitions.
+// /version endpoint. It updates each ClusterClient.healthy atomically and
+// logs state transitions.
 func (m *defaultClusterManager) StartHealthChecks(ctx context.Context, intervalSeconds int) {
 	interval := time.Duration(intervalSeconds) * time.Second
 	ticker := time.NewTicker(interval)
@@ -197,10 +202,8 @@ func (m *defaultClusterManager) StartHealthChecks(ctx context.Context, intervalS
 
 // IsAnyHealthy returns true if at least one cluster is currently healthy.
 func (m *defaultClusterManager) IsAnyHealthy() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	for _, cc := range m.clusters {
-		if cc.Meta.Healthy {
+		if cc.healthy.Load() {
 			return true
 		}
 	}
@@ -210,12 +213,10 @@ func (m *defaultClusterManager) IsAnyHealthy() bool {
 // runHealthChecks checks all clusters and updates their health status.
 func (m *defaultClusterManager) runHealthChecks() {
 	for name, cc := range m.clusters {
-		err := checkHealth(cc.RestConfig)
+		err := checkHealth(cc.healthClient, cc.RestConfig.Host)
 
-		m.mu.Lock()
-		wasHealthy := cc.Meta.Healthy
-		cc.Meta.Healthy = err == nil
-		m.mu.Unlock()
+		wasHealthy := cc.healthy.Load()
+		cc.healthy.Store(err == nil)
 
 		if err != nil && wasHealthy {
 			m.logger.Warn("cluster became unhealthy",
@@ -228,17 +229,13 @@ func (m *defaultClusterManager) runHealthChecks() {
 
 // checkHealth performs a GET /version probe against the cluster to verify
 // reachability. A 200 response is considered healthy regardless of the
-// response body.
-func checkHealth(restCfg *rest.Config) error {
-	httpClient, err := rest.HTTPClientFor(restCfg)
-	if err != nil {
-		return fmt.Errorf("building HTTP client: %w", err)
-	}
-
+// response body. The provided httpClient is reused across calls to avoid
+// leaking transports.
+func checkHealth(httpClient *http.Client, host string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	url := restCfg.Host + "/version"
+	url := host + "/version"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)

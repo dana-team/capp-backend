@@ -42,7 +42,7 @@ func Cluster(mgr cluster.ClusterManager) gin.HandlerFunc {
 		}
 
 		// Reject requests to unhealthy clusters with 503.
-		if !cc.Meta.Healthy {
+		if !cc.IsHealthy() {
 			apierrors.Respond(c, apierrors.NewClusterUnhealthy(clusterName))
 			return
 		}

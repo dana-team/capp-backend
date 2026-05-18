@@ -14,6 +14,8 @@ package cluster
 
 import (
 	"errors"
+	"net/http"
+	"sync/atomic"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -36,8 +38,9 @@ var (
 )
 
 // ClusterMeta holds identifying and health metadata for one managed cluster.
-// It is safe to copy — the Healthy field is updated atomically by the health
-// checker goroutine using the parent manager's mutex.
+// It is a pure value type safe to copy and serialize. The Healthy field is
+// populated from the atomic source of truth in ClusterClient when building
+// snapshots (e.g. List).
 type ClusterMeta struct {
 	// Name is the unique identifier used in all API paths.
 	Name string `json:"name"`
@@ -70,8 +73,18 @@ type ClusterMeta struct {
 // the per-request bearer token (in passthrough mode). Use ClusterManager.ClientFor
 // to obtain a scoped client for a specific request.
 type ClusterClient struct {
-	// Meta holds display and health metadata.
+	// Meta holds display and health metadata. The Healthy field in Meta is
+	// only accurate in snapshots returned by List(). For live health status,
+	// use IsHealthy().
 	Meta ClusterMeta
+
+	// healthy is the atomic source of truth for this cluster's health status.
+	// Written by the health-check goroutine, read by middleware — no mutex needed.
+	healthy atomic.Bool
+
+	// healthClient is a reusable HTTP client for the /version health probe.
+	// Created once at startup from RestConfig to avoid leaking transports.
+	healthClient *http.Client
 
 	// RestConfig is the base configuration for this cluster. It contains the
 	// API server URL, CA certificate, and (for service-account / inline mode)
@@ -84,4 +97,9 @@ type ClusterClient struct {
 	// Scheme has all API types registered that capp-backend works with.
 	// Shared across all per-request clients for this cluster.
 	Scheme *runtime.Scheme
+}
+
+// IsHealthy returns the current health status. Safe for concurrent use.
+func (cc *ClusterClient) IsHealthy() bool {
+	return cc.healthy.Load()
 }
