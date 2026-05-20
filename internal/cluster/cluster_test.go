@@ -41,7 +41,7 @@ func inlineClusterConfig(name, apiServer string) config.ClusterConfig {
 	return config.ClusterConfig{
 		Name: name,
 		Credential: config.CredentialConfig{
-			Inline: &config.InlineCredential{APIServer: apiServer},
+			Inline: &config.InlineCredential{APIServer: apiServer, Insecure: true},
 		},
 	}
 }
@@ -50,7 +50,7 @@ func inlineClusterConfigWithToken(name, apiServer, token string) config.ClusterC
 	return config.ClusterConfig{
 		Name: name,
 		Credential: config.CredentialConfig{
-			Inline: &config.InlineCredential{APIServer: apiServer, Token: token},
+			Inline: &config.InlineCredential{APIServer: apiServer, Token: token, Insecure: true},
 		},
 	}
 }
@@ -104,6 +104,18 @@ func TestBuildRestConfig_NoCredential(t *testing.T) {
 	_, err := BuildRestConfig(config.ClusterConfig{Name: "empty", Credential: config.CredentialConfig{}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no credential configured")
+}
+
+func TestBuildRestConfig_Inline_NoCA_NoInsecure(t *testing.T) {
+	cfg := config.ClusterConfig{
+		Name: "strict",
+		Credential: config.CredentialConfig{
+			Inline: &config.InlineCredential{APIServer: "https://localhost:6443"},
+		},
+	}
+	_, err := BuildRestConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "caCert or explicit insecure")
 }
 
 func TestBuildRestConfig_InvalidCACert(t *testing.T) {

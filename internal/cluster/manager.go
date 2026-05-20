@@ -78,6 +78,12 @@ func New(cfgs []config.ClusterConfig, scheme *runtime.Scheme, logger *zap.Logger
 			return nil, fmt.Errorf("cluster manager: initialising cluster %q: %w", cfg.Name, err)
 		}
 
+		if cc.RestConfig.Insecure {
+			logger.Warn("TLS verification disabled for cluster — do not use in production",
+				zap.String("cluster", cfg.Name),
+			)
+		}
+
 		// Build a reusable HTTP client for health probes to avoid leaking
 		// transports on every check interval.
 		hc, err := rest.HTTPClientFor(cc.RestConfig)

@@ -198,8 +198,13 @@ type InlineCredential struct {
 	APIServer string `mapstructure:"apiServer"`
 
 	// CACert is a base64-encoded PEM certificate authority bundle.
-	// If empty, TLS server verification is disabled (Insecure: true).
+	// Required unless Insecure is explicitly set to true.
 	CACert string `mapstructure:"caCert"`
+
+	// Insecure disables TLS server verification for this cluster. Must be
+	// explicitly set to true when CACert is omitted — the backend will not
+	// silently skip verification.
+	Insecure bool `mapstructure:"insecure"`
 
 	// Token is the service-account or user bearer token.
 	Token string `mapstructure:"token"`

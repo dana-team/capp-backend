@@ -51,10 +51,10 @@ func BuildRestConfig(cfg config.ClusterConfig) (*rest.Config, error) {
 				return nil, fmt.Errorf("cluster %q: decoding base64 CA cert: %w", cfg.Name, err)
 			}
 			restCfg.TLSClientConfig = rest.TLSClientConfig{CAData: caData}
-		} else {
-			// No CA provided — skip TLS verification. Log a warning at startup
-			// (done by the caller) so operators are aware.
+		} else if inline.Insecure {
 			restCfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+		} else {
+			return nil, fmt.Errorf("cluster %q: inline credentials require either caCert or explicit insecure: true", cfg.Name)
 		}
 
 	default:
