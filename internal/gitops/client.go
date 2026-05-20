@@ -30,6 +30,7 @@ type Client struct {
 	auth       transport.AuthMethod
 	branch     string
 	pathPrefix string
+	cloneDir   string
 	logger     *zap.Logger
 }
 
@@ -42,11 +43,13 @@ func NewClient(cfg config.GitOpsConfig, logger *zap.Logger, cloneDir string) (*C
 		return nil, fmt.Errorf("gitops auth: %w", err)
 	}
 
+	createdTmp := false
 	if cloneDir == "" {
 		cloneDir, err = os.MkdirTemp("", "gitops-*")
 		if err != nil {
 			return nil, fmt.Errorf("create temp dir: %w", err)
 		}
+		createdTmp = true
 	}
 
 	refName := plumbing.NewBranchReferenceName(cfg.Branch)
@@ -59,6 +62,9 @@ func NewClient(cfg config.GitOpsConfig, logger *zap.Logger, cloneDir string) (*C
 		Depth:         1,
 	})
 	if err != nil {
+		if createdTmp {
+			_ = os.RemoveAll(cloneDir)
+		}
 		return nil, fmt.Errorf("clone %s: %w", cfg.RepoURL, err)
 	}
 
@@ -67,8 +73,18 @@ func NewClient(cfg config.GitOpsConfig, logger *zap.Logger, cloneDir string) (*C
 		auth:       auth,
 		branch:     cfg.Branch,
 		pathPrefix: cfg.PathPrefix,
+		cloneDir:   cloneDir,
 		logger:     logger,
 	}, nil
+}
+
+// Close removes the local clone directory. Call this when the Client is no
+// longer needed to avoid leaking temp directories.
+func (c *Client) Close() error {
+	if c.cloneDir == "" {
+		return nil
+	}
+	return os.RemoveAll(c.cloneDir)
 }
 
 // NewClientFromRepo creates a Client backed by an already-opened repository.
