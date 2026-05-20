@@ -130,7 +130,11 @@ func (h *Handler) create(c *gin.Context) {
 	// Override namespace from URL — the URL is authoritative.
 	req.Namespace = namespace
 
-	capp := ToK8s(req, namespace)
+	capp, err := ToK8s(req, namespace)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
+		return
+	}
 	if err := k8sClient.Create(c.Request.Context(), capp); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -168,7 +172,11 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	updated := ToK8s(req, namespace)
+	updated, err := ToK8s(req, namespace)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
+		return
+	}
 	// Preserve the resource version from the live object to satisfy the
 	// Kubernetes API server's optimistic concurrency check.
 	updated.ResourceVersion = existing.ResourceVersion

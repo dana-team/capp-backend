@@ -41,7 +41,8 @@ func minimalCapp() *cappv1alpha1.Capp {
 // -- ToK8s tests --
 
 func TestToK8s_MinimalRequest(t *testing.T) {
-	capp := ToK8s(minimalRequest(), "ns1")
+	capp, err := ToK8s(minimalRequest(), "ns1")
+	require.NoError(t, err)
 	require.NotNil(t, capp)
 	assert.Equal(t, "my-app", capp.Name)
 	assert.Equal(t, "ns1", capp.Namespace)
@@ -54,7 +55,8 @@ func TestToK8s_WithRoute(t *testing.T) {
 	req := minimalRequest()
 	timeout := int64(30)
 	req.RouteSpec = &RouteSpec{Hostname: "app.example.com", TLSEnabled: true, RouteTimeoutSeconds: &timeout}
-	capp := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
 	assert.Equal(t, "app.example.com", capp.Spec.RouteSpec.Hostname)
 	assert.True(t, capp.Spec.RouteSpec.TlsEnabled)
 	require.NotNil(t, capp.Spec.RouteSpec.RouteTimeoutSeconds)
@@ -64,7 +66,8 @@ func TestToK8s_WithRoute(t *testing.T) {
 func TestToK8s_WithLogSpec(t *testing.T) {
 	req := minimalRequest()
 	req.LogSpec = &LogSpec{Type: "elastic", Host: "es.example.com", Index: "logs", User: "admin", PasswordSecret: "pw-secret"}
-	capp := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
 	assert.Equal(t, cappv1alpha1.LogType("elastic"), capp.Spec.LogSpec.Type)
 	assert.Equal(t, "es.example.com", capp.Spec.LogSpec.Host)
 }
@@ -72,15 +75,25 @@ func TestToK8s_WithLogSpec(t *testing.T) {
 func TestToK8s_WithNFSVolumes(t *testing.T) {
 	req := minimalRequest()
 	req.NFSVolumes = []NFSVolume{{Name: "data", Server: "nfs.local", Path: "/export", Capacity: "10Gi"}}
-	capp := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
 	require.Len(t, capp.Spec.VolumesSpec.NFSVolumes, 1)
 	assert.Equal(t, "data", capp.Spec.VolumesSpec.NFSVolumes[0].Name)
+}
+
+func TestToK8s_InvalidNFSCapacity(t *testing.T) {
+	req := minimalRequest()
+	req.NFSVolumes = []NFSVolume{{Name: "data", Server: "nfs.local", Path: "/export", Capacity: "not-a-quantity"}}
+	_, err := ToK8s(req, "ns1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid NFS volume capacity")
 }
 
 func TestToK8s_WithScaleSpec(t *testing.T) {
 	req := minimalRequest()
 	req.ScaleSpec = ScaleSpec{Metric: "cpu", MinReplicas: 2, ScaleDelaySeconds: 30}
-	capp := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
 	assert.Equal(t, "cpu", capp.Spec.ScaleSpec.Metric)
 	assert.Equal(t, 2, capp.Spec.ScaleSpec.MinReplicas)
 	assert.Equal(t, 30, capp.Spec.ScaleSpec.ScaleDelaySeconds)
@@ -89,7 +102,8 @@ func TestToK8s_WithScaleSpec(t *testing.T) {
 func TestToK8s_WithEnvVars(t *testing.T) {
 	req := minimalRequest()
 	req.Env = []EnvVar{{Name: "FOO", Value: "bar"}}
-	capp := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
 	require.Len(t, capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env, 1)
 	assert.Equal(t, "FOO", capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env[0].Name)
 }
@@ -97,7 +111,8 @@ func TestToK8s_WithEnvVars(t *testing.T) {
 func TestToK8s_WithVolumeMounts(t *testing.T) {
 	req := minimalRequest()
 	req.VolumeMounts = []VolumeMount{{Name: "data", MountPath: "/data"}}
-	capp := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
 	require.Len(t, capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts, 1)
 	assert.Equal(t, "/data", capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts[0].MountPath)
 }
