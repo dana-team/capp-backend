@@ -5,6 +5,8 @@ package capps
 // is contained here — changing the K8s schema only requires updating this file.
 
 import (
+	"fmt"
+
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -21,7 +23,7 @@ import (
 //     defaults to "concurrency", state defaults to "enabled").
 //   - resourceVersion is NOT set here; the update handler reads it from the
 //     live object and sets it before calling Update.
-func ToK8s(req CappRequest, namespace string) *cappv1alpha1.Capp {
+func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 	capp := &cappv1alpha1.Capp{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "rcs.dana.io/v1alpha1",
@@ -90,7 +92,10 @@ func ToK8s(req CappRequest, namespace string) *cappv1alpha1.Capp {
 	if len(req.NFSVolumes) > 0 {
 		nfsVols := make([]cappv1alpha1.NFSVolume, 0, len(req.NFSVolumes))
 		for _, v := range req.NFSVolumes {
-			qty := resource.MustParse(v.Capacity)
+			qty, err := resource.ParseQuantity(v.Capacity)
+			if err != nil {
+				return nil, fmt.Errorf("invalid NFS volume capacity %q: %w", v.Capacity, err)
+			}
 			nfsVols = append(nfsVols, cappv1alpha1.NFSVolume{
 				Name:     v.Name,
 				Server:   v.Server,
@@ -101,7 +106,7 @@ func ToK8s(req CappRequest, namespace string) *cappv1alpha1.Capp {
 		capp.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{NFSVolumes: nfsVols}
 	}
 
-	return capp
+	return capp, nil
 }
 
 // FromK8s converts a live rcs.dana.io/v1alpha1.Capp into a CappResponse DTO.
