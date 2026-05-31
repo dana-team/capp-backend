@@ -146,7 +146,7 @@ func NewClusterUnhealthy(name string) *APIError {
 func NewNotSupported(operation string) *APIError {
 	return &APIError{
 		Code:    CodeNotSupported,
-		Message: fmt.Sprintf("operation %q is not supported in the current auth mode", operation),
+		Message: fmt.Sprintf("operation %q is not supported in the current configuration", operation),
 		Status:  http.StatusNotImplemented,
 	}
 }

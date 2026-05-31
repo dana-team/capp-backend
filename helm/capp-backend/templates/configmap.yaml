@@ -101,5 +101,6 @@ data:
       {{- if .Values.config.gitops.sshKeyPath }}
       sshKeyPath: {{ .Values.config.gitops.sshKeyPath | quote }}
       {{- end }}
+      insecureHostKey: {{ .Values.config.gitops.insecureHostKey }}
       pathPrefix: {{ .Values.config.gitops.pathPrefix | quote }}
     {{- end }}

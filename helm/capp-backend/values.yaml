@@ -116,7 +116,8 @@ config:
     repoURL: ""           # e.g. "https://github.com/org/capps-gitops.git"
     branch: "main"
     authMethod: "token"   # "token" or "ssh"
-    sshKeyPath: ""        # path to SSH key file when authMethod is "ssh"
+    sshKeyPath: "/etc/capp/ssh/id_rsa"  # path to SSH key file when authMethod is "ssh"
+    insecureHostKey: false # skip SSH host key verification (required in containers without known_hosts)
     pathPrefix: "sites"   # directory prefix: <pathPrefix>/<gitOpsPath>/<ns>/<capp>.yaml
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
@@ -139,6 +140,10 @@ secret:
   # GitOps token. Required when config.gitops.authMethod is "token".
   # Override: --set secret.gitopsToken="<personal-access-token>"
   gitopsToken: ""
+
+  # SSH private key for GitOps. Required when config.gitops.authMethod is "ssh".
+  # Override: --set-file secret.sshKey=/path/to/private/key
+  sshKey: ""
 
 # ── Service Account (openshift mode) ──────────────────────────────────────────
 # Created when auth.mode is "openshift". The SA needs impersonation permissions.

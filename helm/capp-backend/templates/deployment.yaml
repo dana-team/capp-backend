@@ -69,6 +69,13 @@ spec:
             - name: config
               mountPath: /etc/capp
               readOnly: true
+            {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "ssh") }}
+            - name: ssh-key
+              mountPath: /etc/capp/ssh
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -81,6 +88,17 @@ spec:
         - name: config
           configMap:
             name: {{ include "capp-backend.configMapName" . }}
+        {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "ssh") }}
+        - name: ssh-key
+          secret:
+            secretName: {{ include "capp-backend.secretName" . }}
+            items:
+              - key: id_rsa
+                path: id_rsa
+            defaultMode: 420
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

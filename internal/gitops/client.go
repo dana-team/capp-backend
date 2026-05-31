@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"go.uber.org/zap"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // Client manages a local clone of the GitOps repository and provides
@@ -65,7 +67,7 @@ func NewClient(cfg config.GitOpsConfig, logger *zap.Logger, cloneDir string) (*C
 		if createdTmp {
 			_ = os.RemoveAll(cloneDir)
 		}
-		return nil, fmt.Errorf("clone %s: %w", cfg.RepoURL, err)
+		return nil, fmt.Errorf("clone %s: %w", cfg.RepoURL, wrapSSHError(err))
 	}
 
 	return &Client{
@@ -227,7 +229,7 @@ func (c *Client) pullCtx(ctx context.Context) error {
 		Force:         true,
 	})
 	if err != nil && err != git.NoErrAlreadyUpToDate {
-		return err
+		return wrapSSHError(err)
 	}
 
 	return nil
@@ -265,13 +267,13 @@ func (c *Client) resetToRemote() {
 // pushCtx pushes the current branch to the remote.
 // It respects the provided context for cancellation and timeouts.
 func (c *Client) pushCtx(ctx context.Context) error {
-	return c.repo.PushContext(ctx, &git.PushOptions{
+	return wrapSSHError(c.repo.PushContext(ctx, &git.PushOptions{
 		RemoteName: "origin",
 		RefSpecs: []gitconfig.RefSpec{
 			gitconfig.RefSpec("refs/heads/" + c.branch + ":refs/heads/" + c.branch),
 		},
 		Auth: c.auth,
-	})
+	}))
 }
 
 func commitAuthor() *object.Signature {
@@ -280,6 +282,21 @@ func commitAuthor() *object.Signature {
 		Email: "capp-backend@dana.io",
 		When:  time.Now(),
 	}
+}
+
+// wrapSSHError checks whether err is related to SSH host-key verification and,
+// if so, returns a new error with an actionable hint. Otherwise returns err unchanged.
+func wrapSSHError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "known_hosts") || strings.Contains(msg, "knownhosts") ||
+		strings.Contains(msg, "host key") || strings.Contains(msg, "key is unknown") {
+		return fmt.Errorf("%w (hint: set gitops.insecureHostKey=true or mount a known_hosts file; "+
+			"this typically happens in containers that lack an SSH known_hosts file)", err)
+	}
+	return err
 }
 
 func buildAuth(cfg config.GitOpsConfig) (transport.AuthMethod, error) {
@@ -299,6 +316,9 @@ func buildAuth(cfg config.GitOpsConfig) (transport.AuthMethod, error) {
 		keys, err := ssh.NewPublicKeysFromFile("git", cfg.SSHKeyPath, "")
 		if err != nil {
 			return nil, fmt.Errorf("load SSH key %s: %w", cfg.SSHKeyPath, err)
+		}
+		if cfg.InsecureHostKey {
+			keys.HostKeyCallback = gossh.InsecureIgnoreHostKey() //nolint:gosec
 		}
 		return keys, nil
 	default:
