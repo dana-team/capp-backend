@@ -286,6 +286,11 @@ type GitOpsConfig struct {
 	// SSHKeyPath is the path to an SSH private key file. Required when authMethod is "ssh".
 	SSHKeyPath string `mapstructure:"sshKeyPath"`
 
+	// InsecureHostKey skips SSH host key verification when true. Required for
+	// environments without a known_hosts file (e.g. distroless containers,
+	// air-gapped clusters with self-signed git servers). Default: false.
+	InsecureHostKey bool `mapstructure:"insecureHostKey"`
+
 	// PathPrefix is the directory prefix for per-capp values files in the git
 	// repository: <pathPrefix>/<siteName>/<namespace>/<cappName>.yaml
 	// Default: "sites".
