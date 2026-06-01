@@ -388,9 +388,37 @@ components:
             $ref: '#/components/schemas/SecretResponse'
 
     # ── Capps ─────────────────────────────────────────────────────────────────────
+    KeySelector:
+      type: object
+      required: [name, key]
+      properties:
+        name:
+          type: string
+          description: Name of the Secret or ConfigMap.
+          example: my-secret
+        key:
+          type: string
+          description: Key within the Secret or ConfigMap.
+          example: password
+
+    EnvVarSource:
+      type: object
+      description: |
+        Selects the value of an env var from a Secret or ConfigMap key.
+        Exactly one of `secretKeyRef` or `configMapKeyRef` must be set.
+      properties:
+        secretKeyRef:
+          $ref: '#/components/schemas/KeySelector'
+        configMapKeyRef:
+          $ref: '#/components/schemas/KeySelector'
+
     EnvVar:
       type: object
       required: [name]
+      description: |
+        `value` and `valueFrom` are mutually exclusive. Set `value` for a literal
+        string or `valueFrom` to reference a Secret/ConfigMap key. Setting both
+        is invalid.
       properties:
         name:
           type: string
@@ -398,6 +426,8 @@ components:
         value:
           type: string
           example: info
+        valueFrom:
+          $ref: '#/components/schemas/EnvVarSource'
 
     VolumeMount:
       type: object
@@ -466,6 +496,36 @@ components:
           description: Storage capacity, e.g. "10Gi".
           example: "10Gi"
 
+    SecretVolume:
+      type: object
+      required: [name, secretName, mountPath]
+      properties:
+        name:
+          type: string
+          example: my-secret-vol
+        secretName:
+          type: string
+          description: Name of the Kubernetes Secret to mount.
+          example: my-secret
+        mountPath:
+          type: string
+          example: /etc/secrets
+
+    ConfigMapVolume:
+      type: object
+      required: [name, configMapName, mountPath]
+      properties:
+        name:
+          type: string
+          example: my-cm-vol
+        configMapName:
+          type: string
+          description: Name of the Kubernetes ConfigMap to mount.
+          example: my-config
+        mountPath:
+          type: string
+          example: /etc/config
+
     ScaleSpec:
       type: object
       properties:
@@ -520,6 +580,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NFSVolume'
+        secretVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretVolume'
+        configMapVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigMapVolume'
 
     ConditionResponse:
       type: object
@@ -638,6 +706,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NFSVolume'
+        secretVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretVolume'
+        configMapVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigMapVolume'
         status:
           $ref: '#/components/schemas/CappStatusResponse'
 

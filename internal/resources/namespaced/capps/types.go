@@ -19,10 +19,23 @@ package capps
 // They are intentionally simpler than the raw Kubernetes Capp spec so the
 // frontend does not need to understand K8s conventions.
 
+// EnvVarSource selects a value from a Secret or ConfigMap key.
+type EnvVarSource struct {
+	SecretKeyRef    *KeySelector `json:"secretKeyRef,omitempty"`
+	ConfigMapKeyRef *KeySelector `json:"configMapKeyRef,omitempty"`
+}
+
+// KeySelector identifies a key within a named Secret or ConfigMap.
+type KeySelector struct {
+	Name string `json:"name" binding:"required"`
+	Key  string `json:"key"  binding:"required"`
+}
+
 // EnvVar represents a single container environment variable.
 type EnvVar struct {
-	Name  string `json:"name"  binding:"required"`
-	Value string `json:"value"`
+	Name      string        `json:"name"      binding:"required"`
+	Value     string        `json:"value,omitempty"`
+	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
 }
 
 // VolumeMount maps a volume into a container at a path.
@@ -60,6 +73,20 @@ type NFSVolume struct {
 	Server   string `json:"server"   binding:"required"`
 	Path     string `json:"path"     binding:"required"`
 	Capacity string `json:"capacity" binding:"required"` // e.g. "10Gi"
+}
+
+// SecretVolume mounts a Kubernetes Secret as a volume into the container.
+type SecretVolume struct {
+	Name       string `json:"name"       binding:"required"`
+	SecretName string `json:"secretName" binding:"required"`
+	MountPath  string `json:"mountPath"  binding:"required"`
+}
+
+// ConfigMapVolume mounts a Kubernetes ConfigMap as a volume into the container.
+type ConfigMapVolume struct {
+	Name          string `json:"name"          binding:"required"`
+	ConfigMapName string `json:"configMapName" binding:"required"`
+	MountPath     string `json:"mountPath"     binding:"required"`
 }
 
 // ScaleSpec configures autoscaling for a Capp.
@@ -109,6 +136,12 @@ type CappRequest struct {
 
 	// NFSVolumes lists NFS volumes to provision. Optional.
 	NFSVolumes []NFSVolume `json:"nfsVolumes,omitempty"`
+
+	// SecretVolumes lists Kubernetes Secrets to mount as volumes. Optional.
+	SecretVolumes []SecretVolume `json:"secretVolumes,omitempty"`
+
+	// ConfigMapVolumes lists Kubernetes ConfigMaps to mount as volumes. Optional.
+	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -166,6 +199,9 @@ type CappResponse struct {
 	RouteSpec    *RouteSpec    `json:"routeSpec,omitempty"`
 	LogSpec      *LogSpec      `json:"logSpec,omitempty"`
 	NFSVolumes   []NFSVolume   `json:"nfsVolumes,omitempty"`
+
+	SecretVolumes    []SecretVolume    `json:"secretVolumes,omitempty"`
+	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
 
 	Status CappStatusResponse `json:"status"`
 }

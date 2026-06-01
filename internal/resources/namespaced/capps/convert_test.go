@@ -201,6 +201,195 @@ func TestFromK8s_NoLogSpec_WhenEmpty(t *testing.T) {
 	assert.Nil(t, resp.LogSpec)
 }
 
+func TestToK8s_EnvVarValueFrom_SecretKeyRef(t *testing.T) {
+	req := minimalRequest()
+	req.Env = []EnvVar{{
+		Name:      "DB_PASS",
+		ValueFrom: &EnvVarSource{SecretKeyRef: &KeySelector{Name: "db-secret", Key: "password"}},
+	}}
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
+	env := capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env
+	require.Len(t, env, 1)
+	require.NotNil(t, env[0].ValueFrom)
+	require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
+	assert.Equal(t, "db-secret", env[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "password", env[0].ValueFrom.SecretKeyRef.Key)
+	assert.Nil(t, env[0].ValueFrom.ConfigMapKeyRef)
+}
+
+func TestToK8s_EnvVarValueFrom_ConfigMapKeyRef(t *testing.T) {
+	req := minimalRequest()
+	req.Env = []EnvVar{{
+		Name:      "LOG_LEVEL",
+		ValueFrom: &EnvVarSource{ConfigMapKeyRef: &KeySelector{Name: "app-config", Key: "log.level"}},
+	}}
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
+	env := capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env
+	require.Len(t, env, 1)
+	require.NotNil(t, env[0].ValueFrom)
+	require.NotNil(t, env[0].ValueFrom.ConfigMapKeyRef)
+	assert.Equal(t, "app-config", env[0].ValueFrom.ConfigMapKeyRef.Name)
+	assert.Equal(t, "log.level", env[0].ValueFrom.ConfigMapKeyRef.Key)
+	assert.Nil(t, env[0].ValueFrom.SecretKeyRef)
+}
+
+func TestToK8s_EnvVarValueFrom_BothRefs_Error(t *testing.T) {
+	req := minimalRequest()
+	req.Env = []EnvVar{{
+		Name: "AMBIGUOUS",
+		ValueFrom: &EnvVarSource{
+			SecretKeyRef:    &KeySelector{Name: "s", Key: "k"},
+			ConfigMapKeyRef: &KeySelector{Name: "c", Key: "k"},
+		},
+	}}
+	_, err := ToK8s(req, "ns1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AMBIGUOUS")
+	assert.Contains(t, err.Error(), "exactly one")
+}
+
+func TestToK8s_EnvVarValueFrom_NeitherRef_Error(t *testing.T) {
+	req := minimalRequest()
+	req.Env = []EnvVar{{Name: "EMPTY", ValueFrom: &EnvVarSource{}}}
+	_, err := ToK8s(req, "ns1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "EMPTY")
+	assert.Contains(t, err.Error(), "exactly one")
+}
+
+func TestToK8s_SecretVolumes(t *testing.T) {
+	req := minimalRequest()
+	req.SecretVolumes = []SecretVolume{{Name: "sec-vol", SecretName: "my-secret", MountPath: "/etc/sec"}}
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
+	podSpec := capp.Spec.ConfigurationSpec.Template.Spec
+	require.Len(t, podSpec.Volumes, 1)
+	require.NotNil(t, podSpec.Volumes[0].Secret)
+	assert.Equal(t, "my-secret", podSpec.Volumes[0].Secret.SecretName)
+	mounts := podSpec.Containers[0].VolumeMounts
+	require.Len(t, mounts, 1)
+	assert.Equal(t, "sec-vol", mounts[0].Name)
+	assert.Equal(t, "/etc/sec", mounts[0].MountPath)
+}
+
+func TestToK8s_ConfigMapVolumes(t *testing.T) {
+	req := minimalRequest()
+	req.ConfigMapVolumes = []ConfigMapVolume{{Name: "cm-vol", ConfigMapName: "my-config", MountPath: "/etc/cfg"}}
+	capp, err := ToK8s(req, "ns1")
+	require.NoError(t, err)
+	podSpec := capp.Spec.ConfigurationSpec.Template.Spec
+	require.Len(t, podSpec.Volumes, 1)
+	require.NotNil(t, podSpec.Volumes[0].ConfigMap)
+	assert.Equal(t, "my-config", podSpec.Volumes[0].ConfigMap.Name)
+	mounts := podSpec.Containers[0].VolumeMounts
+	require.Len(t, mounts, 1)
+	assert.Equal(t, "cm-vol", mounts[0].Name)
+	assert.Equal(t, "/etc/cfg", mounts[0].MountPath)
+}
+
+func TestToK8s_DuplicateVolumeName_SecretVsVolumeMount(t *testing.T) {
+	req := minimalRequest()
+	req.VolumeMounts = []VolumeMount{{Name: "vol", MountPath: "/a"}}
+	req.SecretVolumes = []SecretVolume{{Name: "vol", SecretName: "s", MountPath: "/b"}}
+	_, err := ToK8s(req, "ns1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vol")
+}
+
+func TestToK8s_DuplicateVolumeName_ConfigMapVsSecret(t *testing.T) {
+	req := minimalRequest()
+	req.SecretVolumes = []SecretVolume{{Name: "vol", SecretName: "s", MountPath: "/a"}}
+	req.ConfigMapVolumes = []ConfigMapVolume{{Name: "vol", ConfigMapName: "c", MountPath: "/b"}}
+	_, err := ToK8s(req, "ns1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vol")
+}
+
+func TestFromK8s_SecretVolumes_RoundTrip(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = []corev1.Volume{{
+		Name:         "sec-vol",
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "my-secret"}},
+	}}
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+		Name: "sec-vol", MountPath: "/etc/sec",
+	}}
+	resp := FromK8s(capp)
+	require.Len(t, resp.SecretVolumes, 1)
+	assert.Equal(t, "sec-vol", resp.SecretVolumes[0].Name)
+	assert.Equal(t, "my-secret", resp.SecretVolumes[0].SecretName)
+	assert.Equal(t, "/etc/sec", resp.SecretVolumes[0].MountPath)
+}
+
+func TestFromK8s_ConfigMapVolumes_RoundTrip(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = []corev1.Volume{{
+		Name: "cm-vol",
+		VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "my-config"},
+		}},
+	}}
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+		Name: "cm-vol", MountPath: "/etc/cfg",
+	}}
+	resp := FromK8s(capp)
+	require.Len(t, resp.ConfigMapVolumes, 1)
+	assert.Equal(t, "cm-vol", resp.ConfigMapVolumes[0].Name)
+	assert.Equal(t, "my-config", resp.ConfigMapVolumes[0].ConfigMapName)
+	assert.Equal(t, "/etc/cfg", resp.ConfigMapVolumes[0].MountPath)
+}
+
+func TestFromK8s_UnmountedVolume_Skipped(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = []corev1.Volume{{
+		Name:         "orphan",
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "s"}},
+	}}
+	// No VolumeMounts entry for "orphan".
+	resp := FromK8s(capp)
+	assert.Empty(t, resp.SecretVolumes)
+}
+
+func TestFromK8s_EnvVarValueFrom_SecretKeyRef(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{
+		Name: "DB_PASS",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "db-secret"},
+				Key:                  "password",
+			},
+		},
+	}}
+	resp := FromK8s(capp)
+	require.Len(t, resp.Env, 1)
+	require.NotNil(t, resp.Env[0].ValueFrom)
+	require.NotNil(t, resp.Env[0].ValueFrom.SecretKeyRef)
+	assert.Equal(t, "db-secret", resp.Env[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "password", resp.Env[0].ValueFrom.SecretKeyRef.Key)
+}
+
+func TestFromK8s_EnvVarValueFrom_ConfigMapKeyRef(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{
+		Name: "LOG_LEVEL",
+		ValueFrom: &corev1.EnvVarSource{
+			ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+				Key:                  "log.level",
+			},
+		},
+	}}
+	resp := FromK8s(capp)
+	require.Len(t, resp.Env, 1)
+	require.NotNil(t, resp.Env[0].ValueFrom)
+	require.NotNil(t, resp.Env[0].ValueFrom.ConfigMapKeyRef)
+	assert.Equal(t, "app-config", resp.Env[0].ValueFrom.ConfigMapKeyRef.Name)
+	assert.Equal(t, "log.level", resp.Env[0].ValueFrom.ConfigMapKeyRef.Key)
+}
+
 // -- filterAnnotations tests --
 
 func TestFilterAnnotations_StripKubectl(t *testing.T) {
