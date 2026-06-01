@@ -49,12 +49,79 @@ func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 		Image: req.Image,
 	}
 	for _, e := range req.Env {
-		container.Env = append(container.Env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+		ev := corev1.EnvVar{Name: e.Name}
+		if e.ValueFrom != nil {
+			bothSet := e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.ConfigMapKeyRef != nil
+			neitherSet := e.ValueFrom.SecretKeyRef == nil && e.ValueFrom.ConfigMapKeyRef == nil
+			if bothSet || neitherSet {
+				return nil, fmt.Errorf("env var %q: valueFrom must set exactly one of secretKeyRef or configMapKeyRef", e.Name)
+			}
+			ev.ValueFrom = &corev1.EnvVarSource{}
+			if e.ValueFrom.SecretKeyRef != nil {
+				ev.ValueFrom.SecretKeyRef = &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.SecretKeyRef.Name},
+					Key:                  e.ValueFrom.SecretKeyRef.Key,
+				}
+			} else {
+				ev.ValueFrom.ConfigMapKeyRef = &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.ConfigMapKeyRef.Name},
+					Key:                  e.ValueFrom.ConfigMapKeyRef.Key,
+				}
+			}
+		} else {
+			ev.Value = e.Value
+		}
+		container.Env = append(container.Env, ev)
 	}
+
+	// Validate and collect volume/mount names to catch duplicates early.
+	volumeNames := make(map[string]struct{}, len(req.VolumeMounts)+len(req.SecretVolumes)+len(req.ConfigMapVolumes))
 	for _, vm := range req.VolumeMounts {
+		if _, exists := volumeNames[vm.Name]; exists {
+			return nil, fmt.Errorf("duplicate volume mount name %q in volumeMounts", vm.Name)
+		}
+		volumeNames[vm.Name] = struct{}{}
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      vm.Name,
 			MountPath: vm.MountPath,
+		})
+	}
+
+	// Secret volumes
+	extraVolumes := make([]corev1.Volume, 0, len(req.SecretVolumes)+len(req.ConfigMapVolumes))
+	for _, sv := range req.SecretVolumes {
+		if _, exists := volumeNames[sv.Name]; exists {
+			return nil, fmt.Errorf("duplicate volume name %q in secretVolumes", sv.Name)
+		}
+		volumeNames[sv.Name] = struct{}{}
+		extraVolumes = append(extraVolumes, corev1.Volume{
+			Name: sv.Name,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: sv.SecretName},
+			},
+		})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      sv.Name,
+			MountPath: sv.MountPath,
+		})
+	}
+	// ConfigMap volumes
+	for _, cv := range req.ConfigMapVolumes {
+		if _, exists := volumeNames[cv.Name]; exists {
+			return nil, fmt.Errorf("duplicate volume name %q in configMapVolumes", cv.Name)
+		}
+		volumeNames[cv.Name] = struct{}{}
+		extraVolumes = append(extraVolumes, corev1.Volume{
+			Name: cv.Name,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: cv.ConfigMapName},
+				},
+			},
+		})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      cv.Name,
+			MountPath: cv.MountPath,
 		})
 	}
 
@@ -63,6 +130,7 @@ func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 			Spec: knativev1.RevisionSpec{
 				PodSpec: corev1.PodSpec{
 					Containers: []corev1.Container{container},
+					Volumes:    extraVolumes,
 				},
 			},
 		},
@@ -139,12 +207,59 @@ func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
 		resp.Image = c.Image
 		resp.ContainerName = c.Name
 		for _, e := range c.Env {
-			resp.Env = append(resp.Env, EnvVar{Name: e.Name, Value: e.Value})
+			ev := EnvVar{Name: e.Name}
+			if e.ValueFrom != nil {
+				src := &EnvVarSource{}
+				if e.ValueFrom.SecretKeyRef != nil {
+					src.SecretKeyRef = &KeySelector{
+						Name: e.ValueFrom.SecretKeyRef.Name,
+						Key:  e.ValueFrom.SecretKeyRef.Key,
+					}
+				}
+				if e.ValueFrom.ConfigMapKeyRef != nil {
+					src.ConfigMapKeyRef = &KeySelector{
+						Name: e.ValueFrom.ConfigMapKeyRef.Name,
+						Key:  e.ValueFrom.ConfigMapKeyRef.Key,
+					}
+				}
+				ev.ValueFrom = src
+			} else {
+				ev.Value = e.Value
+			}
+			resp.Env = append(resp.Env, ev)
 		}
 		for _, vm := range c.VolumeMounts {
 			resp.VolumeMounts = append(resp.VolumeMounts, VolumeMount{
 				Name:      vm.Name,
 				MountPath: vm.MountPath,
+			})
+		}
+	}
+
+	// Secret and ConfigMap volumes.
+	podSpec := capp.Spec.ConfigurationSpec.Template.Spec
+	mountByName := make(map[string]string)
+	if len(containers) > 0 {
+		for _, vm := range containers[0].VolumeMounts {
+			mountByName[vm.Name] = vm.MountPath
+		}
+	}
+	for _, vol := range podSpec.Volumes {
+		mountPath, mounted := mountByName[vol.Name]
+		if !mounted {
+			continue
+		}
+		if vol.Secret != nil {
+			resp.SecretVolumes = append(resp.SecretVolumes, SecretVolume{
+				Name:       vol.Name,
+				SecretName: vol.Secret.SecretName,
+				MountPath:  mountPath,
+			})
+		} else if vol.ConfigMap != nil {
+			resp.ConfigMapVolumes = append(resp.ConfigMapVolumes, ConfigMapVolume{
+				Name:          vol.Name,
+				ConfigMapName: vol.ConfigMap.Name,
+				MountPath:     mountPath,
 			})
 		}
 	}
