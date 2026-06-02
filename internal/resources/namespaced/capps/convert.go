@@ -23,7 +23,8 @@ import (
 //     defaults to "concurrency", state defaults to "enabled").
 //   - resourceVersion is NOT set here; the update handler reads it from the
 //     live object and sets it before calling Update.
-func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
+func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string) (*cappv1alpha1.Capp, error) {
+
 	capp := &cappv1alpha1.Capp{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "rcs.dana.io/v1alpha1",
@@ -33,21 +34,43 @@ func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 			Name:      req.Name,
 			Namespace: namespace,
 		},
-		Spec: cappv1alpha1.CappSpec{
-			State: req.State,
-			ScaleSpec: cappv1alpha1.ScaleSpec{
-				Metric:            req.ScaleSpec.Metric,
-				MinReplicas:       req.ScaleSpec.MinReplicas,
-				ScaleDelaySeconds: req.ScaleSpec.ScaleDelaySeconds,
+		Spec: cappv1alpha1.CappSpec{},
+	}
+	capp.Spec.ConfigurationSpec = knativev1.ConfigurationSpec{
+		Template: knativev1.RevisionTemplateSpec{
+			Spec: knativev1.RevisionSpec{
+				PodSpec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{},
+					},
+				},
 			},
 		},
 	}
 
-	// Build the container spec.
-	container := corev1.Container{
-		Name:  req.ContainerName,
-		Image: req.Image,
+	// Copy unmanaged fields from the existing object to preserve them across updates.
+	if existing != nil {
+		capp.Spec = *existing.Spec.DeepCopy()
 	}
+
+	capp.Spec.State = req.State
+
+	capp.Spec.ScaleSpec = cappv1alpha1.ScaleSpec{
+		Metric:            req.ScaleSpec.Metric,
+		MinReplicas:       req.ScaleSpec.MinReplicas,
+		ScaleDelaySeconds: req.ScaleSpec.ScaleDelaySeconds,
+	}
+
+	// Build the container spec.
+
+	container := corev1.Container{}
+	if len(capp.Spec.ConfigurationSpec.Template.Spec.Containers) > 0 {
+		container = capp.Spec.ConfigurationSpec.Template.Spec.Containers[0]
+	}
+	container.Name = req.ContainerName
+	container.Image = req.Image
+
+	container.Env = nil
 	for _, e := range req.Env {
 		ev := corev1.EnvVar{Name: e.Name}
 		if e.ValueFrom != nil {
@@ -73,6 +96,9 @@ func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 		}
 		container.Env = append(container.Env, ev)
 	}
+
+	container.VolumeMounts = nil
+	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = nil
 
 	// Validate and collect volume/mount names to catch duplicates early.
 	volumeNames := make(map[string]struct{}, len(req.VolumeMounts)+len(req.SecretVolumes)+len(req.ConfigMapVolumes))
@@ -125,18 +151,11 @@ func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 		})
 	}
 
-	capp.Spec.ConfigurationSpec = knativev1.ConfigurationSpec{
-		Template: knativev1.RevisionTemplateSpec{
-			Spec: knativev1.RevisionSpec{
-				PodSpec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
-					Volumes:    extraVolumes,
-				},
-			},
-		},
-	}
+	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = extraVolumes
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers = []corev1.Container{container}
 
 	// Route spec.
+	capp.Spec.RouteSpec = cappv1alpha1.RouteSpec{}
 	if req.RouteSpec != nil {
 		capp.Spec.RouteSpec = cappv1alpha1.RouteSpec{
 			Hostname:            req.RouteSpec.Hostname,
@@ -146,6 +165,7 @@ func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 	}
 
 	// Log spec.
+	capp.Spec.LogSpec = cappv1alpha1.LogSpec{}
 	if req.LogSpec != nil {
 		capp.Spec.LogSpec = cappv1alpha1.LogSpec{
 			Type:           cappv1alpha1.LogType(req.LogSpec.Type),
@@ -157,22 +177,20 @@ func ToK8s(req CappRequest, namespace string) (*cappv1alpha1.Capp, error) {
 	}
 
 	// NFS volumes.
-	if len(req.NFSVolumes) > 0 {
-		nfsVols := make([]cappv1alpha1.NFSVolume, 0, len(req.NFSVolumes))
-		for _, v := range req.NFSVolumes {
-			qty, err := resource.ParseQuantity(v.Capacity)
-			if err != nil {
-				return nil, fmt.Errorf("invalid NFS volume capacity %q: %w", v.Capacity, err)
-			}
-			nfsVols = append(nfsVols, cappv1alpha1.NFSVolume{
-				Name:     v.Name,
-				Server:   v.Server,
-				Path:     v.Path,
-				Capacity: corev1.ResourceList{corev1.ResourceStorage: qty},
-			})
+	nfsVols := make([]cappv1alpha1.NFSVolume, 0, len(req.NFSVolumes))
+	for _, v := range req.NFSVolumes {
+		qty, err := resource.ParseQuantity(v.Capacity)
+		if err != nil {
+			return nil, fmt.Errorf("invalid NFS volume capacity %q: %w", v.Capacity, err)
 		}
-		capp.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{NFSVolumes: nfsVols}
+		nfsVols = append(nfsVols, cappv1alpha1.NFSVolume{
+			Name:     v.Name,
+			Server:   v.Server,
+			Path:     v.Path,
+			Capacity: corev1.ResourceList{corev1.ResourceStorage: qty},
+		})
 	}
+	capp.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{NFSVolumes: nfsVols}
 
 	return capp, nil
 }
