@@ -130,7 +130,7 @@ func (h *Handler) create(c *gin.Context) {
 	// Override namespace from URL — the URL is authoritative.
 	req.Namespace = namespace
 
-	capp, err := ToK8s(req, namespace)
+	capp, err := ToK8s(req, nil, namespace)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
@@ -172,7 +172,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	updated, err := ToK8s(req, namespace)
+	updated, err := ToK8s(req, &existing, namespace)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return

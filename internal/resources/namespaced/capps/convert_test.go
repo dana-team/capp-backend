@@ -41,7 +41,7 @@ func minimalCapp() *cappv1alpha1.Capp {
 // -- ToK8s tests --
 
 func TestToK8s_MinimalRequest(t *testing.T) {
-	capp, err := ToK8s(minimalRequest(), "ns1")
+	capp, err := ToK8s(minimalRequest(), nil, "ns1")
 	require.NoError(t, err)
 	require.NotNil(t, capp)
 	assert.Equal(t, "my-app", capp.Name)
@@ -55,7 +55,7 @@ func TestToK8s_WithRoute(t *testing.T) {
 	req := minimalRequest()
 	timeout := int64(30)
 	req.RouteSpec = &RouteSpec{Hostname: "app.example.com", TLSEnabled: true, RouteTimeoutSeconds: &timeout}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	assert.Equal(t, "app.example.com", capp.Spec.RouteSpec.Hostname)
 	assert.True(t, capp.Spec.RouteSpec.TlsEnabled)
@@ -66,7 +66,7 @@ func TestToK8s_WithRoute(t *testing.T) {
 func TestToK8s_WithLogSpec(t *testing.T) {
 	req := minimalRequest()
 	req.LogSpec = &LogSpec{Type: "elastic", Host: "es.example.com", Index: "logs", User: "admin", PasswordSecret: "pw-secret"}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	assert.Equal(t, cappv1alpha1.LogType("elastic"), capp.Spec.LogSpec.Type)
 	assert.Equal(t, "es.example.com", capp.Spec.LogSpec.Host)
@@ -75,7 +75,7 @@ func TestToK8s_WithLogSpec(t *testing.T) {
 func TestToK8s_WithNFSVolumes(t *testing.T) {
 	req := minimalRequest()
 	req.NFSVolumes = []NFSVolume{{Name: "data", Server: "nfs.local", Path: "/export", Capacity: "10Gi"}}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	require.Len(t, capp.Spec.VolumesSpec.NFSVolumes, 1)
 	assert.Equal(t, "data", capp.Spec.VolumesSpec.NFSVolumes[0].Name)
@@ -84,7 +84,7 @@ func TestToK8s_WithNFSVolumes(t *testing.T) {
 func TestToK8s_InvalidNFSCapacity(t *testing.T) {
 	req := minimalRequest()
 	req.NFSVolumes = []NFSVolume{{Name: "data", Server: "nfs.local", Path: "/export", Capacity: "not-a-quantity"}}
-	_, err := ToK8s(req, "ns1")
+	_, err := ToK8s(req, nil, "ns1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid NFS volume capacity")
 }
@@ -92,7 +92,7 @@ func TestToK8s_InvalidNFSCapacity(t *testing.T) {
 func TestToK8s_WithScaleSpec(t *testing.T) {
 	req := minimalRequest()
 	req.ScaleSpec = ScaleSpec{Metric: "cpu", MinReplicas: 2, ScaleDelaySeconds: 30}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	assert.Equal(t, "cpu", capp.Spec.ScaleSpec.Metric)
 	assert.Equal(t, 2, capp.Spec.ScaleSpec.MinReplicas)
@@ -102,7 +102,7 @@ func TestToK8s_WithScaleSpec(t *testing.T) {
 func TestToK8s_WithEnvVars(t *testing.T) {
 	req := minimalRequest()
 	req.Env = []EnvVar{{Name: "FOO", Value: "bar"}}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	require.Len(t, capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env, 1)
 	assert.Equal(t, "FOO", capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env[0].Name)
@@ -111,10 +111,22 @@ func TestToK8s_WithEnvVars(t *testing.T) {
 func TestToK8s_WithVolumeMounts(t *testing.T) {
 	req := minimalRequest()
 	req.VolumeMounts = []VolumeMount{{Name: "data", MountPath: "/data"}}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	require.Len(t, capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts, 1)
 	assert.Equal(t, "/data", capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts[0].MountPath)
+}
+
+func TestToK8s_ExistingPreservedOnUpdate(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{"cpu": resource.MustParse("500m")},
+	}
+	req := minimalRequest()
+	updated, err := ToK8s(req, existing, "ns1")
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	assert.Equal(t, resource.MustParse("500m"), updated.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources.Limits["cpu"])
 }
 
 // -- FromK8s tests --
@@ -207,7 +219,7 @@ func TestToK8s_EnvVarValueFrom_SecretKeyRef(t *testing.T) {
 		Name:      "DB_PASS",
 		ValueFrom: &EnvVarSource{SecretKeyRef: &KeySelector{Name: "db-secret", Key: "password"}},
 	}}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	env := capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env
 	require.Len(t, env, 1)
@@ -224,7 +236,7 @@ func TestToK8s_EnvVarValueFrom_ConfigMapKeyRef(t *testing.T) {
 		Name:      "LOG_LEVEL",
 		ValueFrom: &EnvVarSource{ConfigMapKeyRef: &KeySelector{Name: "app-config", Key: "log.level"}},
 	}}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	env := capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env
 	require.Len(t, env, 1)
@@ -244,7 +256,7 @@ func TestToK8s_EnvVarValueFrom_BothRefs_Error(t *testing.T) {
 			ConfigMapKeyRef: &KeySelector{Name: "c", Key: "k"},
 		},
 	}}
-	_, err := ToK8s(req, "ns1")
+	_, err := ToK8s(req, nil, "ns1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AMBIGUOUS")
 	assert.Contains(t, err.Error(), "exactly one")
@@ -253,7 +265,7 @@ func TestToK8s_EnvVarValueFrom_BothRefs_Error(t *testing.T) {
 func TestToK8s_EnvVarValueFrom_NeitherRef_Error(t *testing.T) {
 	req := minimalRequest()
 	req.Env = []EnvVar{{Name: "EMPTY", ValueFrom: &EnvVarSource{}}}
-	_, err := ToK8s(req, "ns1")
+	_, err := ToK8s(req, nil, "ns1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "EMPTY")
 	assert.Contains(t, err.Error(), "exactly one")
@@ -262,7 +274,7 @@ func TestToK8s_EnvVarValueFrom_NeitherRef_Error(t *testing.T) {
 func TestToK8s_SecretVolumes(t *testing.T) {
 	req := minimalRequest()
 	req.SecretVolumes = []SecretVolume{{Name: "sec-vol", SecretName: "my-secret", MountPath: "/etc/sec"}}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	podSpec := capp.Spec.ConfigurationSpec.Template.Spec
 	require.Len(t, podSpec.Volumes, 1)
@@ -277,7 +289,7 @@ func TestToK8s_SecretVolumes(t *testing.T) {
 func TestToK8s_ConfigMapVolumes(t *testing.T) {
 	req := minimalRequest()
 	req.ConfigMapVolumes = []ConfigMapVolume{{Name: "cm-vol", ConfigMapName: "my-config", MountPath: "/etc/cfg"}}
-	capp, err := ToK8s(req, "ns1")
+	capp, err := ToK8s(req, nil, "ns1")
 	require.NoError(t, err)
 	podSpec := capp.Spec.ConfigurationSpec.Template.Spec
 	require.Len(t, podSpec.Volumes, 1)
@@ -293,7 +305,7 @@ func TestToK8s_DuplicateVolumeName_SecretVsVolumeMount(t *testing.T) {
 	req := minimalRequest()
 	req.VolumeMounts = []VolumeMount{{Name: "vol", MountPath: "/a"}}
 	req.SecretVolumes = []SecretVolume{{Name: "vol", SecretName: "s", MountPath: "/b"}}
-	_, err := ToK8s(req, "ns1")
+	_, err := ToK8s(req, nil, "ns1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vol")
 }
@@ -302,7 +314,7 @@ func TestToK8s_DuplicateVolumeName_ConfigMapVsSecret(t *testing.T) {
 	req := minimalRequest()
 	req.SecretVolumes = []SecretVolume{{Name: "vol", SecretName: "s", MountPath: "/a"}}
 	req.ConfigMapVolumes = []ConfigMapVolume{{Name: "vol", ConfigMapName: "c", MountPath: "/b"}}
-	_, err := ToK8s(req, "ns1")
+	_, err := ToK8s(req, nil, "ns1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vol")
 }
@@ -339,6 +351,79 @@ func TestFromK8s_ConfigMapVolumes_RoundTrip(t *testing.T) {
 	assert.Equal(t, "cm-vol", resp.ConfigMapVolumes[0].Name)
 	assert.Equal(t, "my-config", resp.ConfigMapVolumes[0].ConfigMapName)
 	assert.Equal(t, "/etc/cfg", resp.ConfigMapVolumes[0].MountPath)
+}
+
+// -- PUT semantics: full replacement, not partial update --
+
+func TestToK8s_UpdateClearsEnvWhenNotProvided(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+		{Name: "OLD_VAR", Value: "old"},
+	}
+	updated, err := ToK8s(minimalRequest(), existing, "ns1")
+	require.NoError(t, err)
+	assert.Empty(t, updated.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env)
+}
+
+func TestToK8s_UpdateClearsVolumesWhenNotProvided(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Volumes = []corev1.Volume{{
+		Name:         "old-vol",
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "old-secret"}},
+	}}
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+		Name: "old-vol", MountPath: "/old",
+	}}
+	updated, err := ToK8s(minimalRequest(), existing, "ns1")
+	require.NoError(t, err)
+	assert.Empty(t, updated.Spec.ConfigurationSpec.Template.Spec.Volumes)
+	assert.Empty(t, updated.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts)
+}
+
+func TestToK8s_UpdateReplacesOldPodVolumes(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Volumes = []corev1.Volume{{
+		Name:         "old-vol",
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "old-secret"}},
+	}}
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+		Name: "old-vol", MountPath: "/old",
+	}}
+	req := minimalRequest()
+	req.SecretVolumes = []SecretVolume{{Name: "new-vol", SecretName: "new-secret", MountPath: "/new"}}
+	updated, err := ToK8s(req, existing, "ns1")
+	require.NoError(t, err)
+	podSpec := updated.Spec.ConfigurationSpec.Template.Spec
+	require.Len(t, podSpec.Volumes, 1)
+	assert.Equal(t, "new-vol", podSpec.Volumes[0].Name)
+	require.Len(t, podSpec.Containers[0].VolumeMounts, 1)
+	assert.Equal(t, "new-vol", podSpec.Containers[0].VolumeMounts[0].Name)
+}
+
+func TestToK8s_UpdateClearsRouteSpecWhenNil(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.RouteSpec = cappv1alpha1.RouteSpec{Hostname: "app.example.com"}
+	updated, err := ToK8s(minimalRequest(), existing, "ns1")
+	require.NoError(t, err)
+	assert.Equal(t, cappv1alpha1.RouteSpec{}, updated.Spec.RouteSpec)
+}
+
+func TestToK8s_UpdateClearsLogSpecWhenNil(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.LogSpec = cappv1alpha1.LogSpec{Type: "elastic", Host: "es.local"}
+	updated, err := ToK8s(minimalRequest(), existing, "ns1")
+	require.NoError(t, err)
+	assert.Equal(t, cappv1alpha1.LogSpec{}, updated.Spec.LogSpec)
+}
+
+func TestToK8s_UpdateClearsNFSVolumesWhenNotProvided(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{
+		NFSVolumes: []cappv1alpha1.NFSVolume{{Name: "old-nfs", Server: "nfs.local", Path: "/export"}},
+	}
+	updated, err := ToK8s(minimalRequest(), existing, "ns1")
+	require.NoError(t, err)
+	assert.Empty(t, updated.Spec.VolumesSpec.NFSVolumes)
 }
 
 func TestFromK8s_UnmountedVolume_Skipped(t *testing.T) {
