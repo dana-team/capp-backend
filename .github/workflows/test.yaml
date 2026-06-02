@@ -78,7 +78,7 @@ jobs:
         run: go vet $(go list ./... | grep -v 'internal/cli\|cmd/cappctl')
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
           args: --timeout=5m --skip-dirs=internal/cli
