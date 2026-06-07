@@ -124,7 +124,7 @@ func main() {
 	}
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New())
-	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient))
+	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
 	// ── 8. Build and start HTTP server ────────────────────────────────────────

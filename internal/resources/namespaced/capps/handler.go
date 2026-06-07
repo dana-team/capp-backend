@@ -7,6 +7,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/dana-team/capp-backend/pkg/k8s"
@@ -29,12 +30,13 @@ type GitOpsSyncer interface {
 type Handler struct {
 	gitopsEnabled bool
 	gitops        GitOpsSyncer
+	sizes         config.CappSizes
 }
 
 // New returns a ready-to-use Capp Handler. When gitops is disabled, pass nil
 // for the syncer — the sync endpoint will return 501.
-func New(gitopsEnabled bool, gitops GitOpsSyncer) *Handler {
-	return &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops}
+func New(gitopsEnabled bool, gitops GitOpsSyncer, sizes config.CappSizes) *Handler {
+	return &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, sizes: sizes}
 }
 
 // Name returns the handler's identifier, matching the resources.capps config key.
@@ -129,8 +131,7 @@ func (h *Handler) create(c *gin.Context) {
 
 	// Override namespace from URL — the URL is authoritative.
 	req.Namespace = namespace
-
-	capp, err := ToK8s(req, nil, namespace)
+	capp, err := ToK8s(req, nil, namespace, h.sizes)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
@@ -172,7 +173,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	updated, err := ToK8s(req, &existing, namespace)
+	updated, err := ToK8s(req, &existing, namespace, h.sizes)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return

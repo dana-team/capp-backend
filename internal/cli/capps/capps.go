@@ -89,6 +89,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 		image             string
 		metric            string
 		cappState         string
+		size              string
 		minReplicas       int
 		scaleDelaySeconds int
 		containerName     string
@@ -119,10 +120,17 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 			if err != nil {
 				return err
 			}
+
+			var cappSize apitypes.CappSize
+			if size != "" {
+				cappSize = apitypes.CappSize(size)
+			}
+
 			req := apitypes.CappRequest{
 				Name:      name,
 				Namespace: ns,
 				Image:     image,
+				Size:      cappSize,
 				ScaleSpec: apitypes.ScaleSpec{
 					Metric:            metric,
 					MinReplicas:       minReplicas,
@@ -150,6 +158,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (repeatable)")
+	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size available values: %s, %s, %s", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge)) // not required, server will default
 	parent.AddCommand(cmd)
 }
 
@@ -158,6 +167,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		image             string
 		metric            string
 		cappState         string
+		size              string
 		minReplicas       int
 		scaleDelaySeconds int
 		containerName     string
@@ -194,6 +204,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				ScaleSpec:     current.ScaleSpec,
 				State:         current.State,
 				ContainerName: current.ContainerName,
+				Size:          current.Size,
 				Env:           current.Env,
 				VolumeMounts:  current.VolumeMounts,
 				RouteSpec:     current.RouteSpec,
@@ -227,6 +238,9 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				req.Env = envVars
 			}
 
+			if cmd.Flags().Changed("size") {
+				req.Size = apitypes.CappSize(size)
+			}
 			putPath := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
 			var updated apitypes.CappResponse
 			if err := h.state.Client.Put(cmd.Context(), putPath, req, &updated); err != nil {
@@ -243,6 +257,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (replaces all env vars)")
+	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size, available values: %s, %s, %s", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge))
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }

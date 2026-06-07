@@ -7,6 +7,7 @@ package capps
 import (
 	"fmt"
 
+	"github.com/dana-team/capp-backend/internal/config"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -23,7 +24,7 @@ import (
 //     defaults to "concurrency", state defaults to "enabled").
 //   - resourceVersion is NOT set here; the update handler reads it from the
 //     live object and sets it before calling Update.
-func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string) (*cappv1alpha1.Capp, error) {
+func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes config.CappSizes) (*cappv1alpha1.Capp, error) {
 
 	capp := &cappv1alpha1.Capp{
 		TypeMeta: metav1.TypeMeta{
@@ -192,6 +193,35 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string) (*cap
 	}
 	capp.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{NFSVolumes: nfsVols}
 
+	// resources
+	if req.Size != "" {
+		var requests, limits config.ResourceQuantities
+		switch req.Size {
+		case CappSizeSmall:
+			requests = sizes.Small.Requests
+			limits = sizes.Small.Limits
+		case CappSizeLarge:
+			requests = sizes.Large.Requests
+			limits = sizes.Large.Limits
+		case CappSizeMedium:
+			requests = sizes.Medium.Requests
+			limits = sizes.Medium.Limits
+		default:
+			return nil, fmt.Errorf("invalid size %q: must be one of small, medium, or large", req.Size)
+		}
+
+		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse(requests.CPU),
+				corev1.ResourceMemory: resource.MustParse(requests.Memory),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse(limits.CPU),
+				corev1.ResourceMemory: resource.MustParse(limits.Memory),
+			},
+		}
+
+	}
 	return capp, nil
 }
 

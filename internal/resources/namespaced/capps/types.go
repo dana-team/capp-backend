@@ -19,6 +19,12 @@ package capps
 // They are intentionally simpler than the raw Kubernetes Capp spec so the
 // frontend does not need to understand K8s conventions.
 
+type CappSize string
+
+const CappSizeSmall CappSize = "small"
+const CappSizeMedium CappSize = "medium"
+const CappSizeLarge CappSize = "large"
+
 // EnvVarSource selects a value from a Secret or ConfigMap key.
 type EnvVarSource struct {
 	SecretKeyRef    *KeySelector `json:"secretKeyRef,omitempty"`
@@ -122,6 +128,9 @@ type CappRequest struct {
 	// ContainerName is the optional container name.
 	ContainerName string `json:"containerName,omitempty"`
 
+	// CappSize is a high-level sizing abstraction that maps to specific resource requests/limits.
+	Size CappSize `json:"size,omitempty"`
+
 	// Env is the list of environment variables.
 	Env []EnvVar `json:"env,omitempty"`
 
@@ -189,16 +198,16 @@ type CappResponse struct {
 	Labels          map[string]string `json:"labels,omitempty"`
 	Annotations     map[string]string `json:"annotations,omitempty"`
 
-	ScaleSpec     ScaleSpec `json:"scaleSpec,omitempty"`
-	State         string    `json:"state,omitempty"`
-	Image         string    `json:"image,omitempty"`
-	ContainerName string    `json:"containerName,omitempty"`
-
-	Env          []EnvVar      `json:"env,omitempty"`
-	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
-	RouteSpec    *RouteSpec    `json:"routeSpec,omitempty"`
-	LogSpec      *LogSpec      `json:"logSpec,omitempty"`
-	NFSVolumes   []NFSVolume   `json:"nfsVolumes,omitempty"`
+	ScaleSpec     ScaleSpec     `json:"scaleSpec,omitempty"`
+	State         string        `json:"state,omitempty"`
+	Image         string        `json:"image,omitempty"`
+	ContainerName string        `json:"containerName,omitempty"`
+	Size          CappSize      `json:"size,omitempty"`
+	Env           []EnvVar      `json:"env,omitempty"`
+	VolumeMounts  []VolumeMount `json:"volumeMounts,omitempty"`
+	RouteSpec     *RouteSpec    `json:"routeSpec,omitempty"`
+	LogSpec       *LogSpec      `json:"logSpec,omitempty"`
+	NFSVolumes    []NFSVolume   `json:"nfsVolumes,omitempty"`
 
 	SecretVolumes    []SecretVolume    `json:"secretVolumes,omitempty"`
 	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
