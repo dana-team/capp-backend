@@ -112,7 +112,7 @@ func (h *Handler) get(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, FromK8s(&capp))
+	c.JSON(http.StatusOK, FromK8s(&capp, h.sizes))
 }
 
 // create handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps
@@ -141,7 +141,7 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, FromK8s(capp))
+	c.JSON(http.StatusCreated, FromK8s(capp, h.sizes))
 }
 
 // update handles PUT /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
@@ -188,7 +188,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, FromK8s(updated))
+	c.JSON(http.StatusOK, FromK8s(updated, h.sizes))
 }
 
 // delete handles DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
@@ -308,7 +308,7 @@ func extractClusterMeta(c *gin.Context) (cluster.ClusterMeta, error) {
 func (h *Handler) respondList(c *gin.Context, cappList cappv1alpha1.CappList) {
 	items := make([]CappResponse, 0, len(cappList.Items))
 	for i := range cappList.Items {
-		items = append(items, FromK8s(&cappList.Items[i]))
+		items = append(items, FromK8s(&cappList.Items[i], h.sizes))
 	}
 	c.JSON(http.StatusOK, CappListResponse{Items: items, Total: len(items)})
 }

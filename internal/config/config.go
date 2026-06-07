@@ -416,4 +416,18 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gitops.branch", "main")
 	v.SetDefault("gitops.authMethod", "token")
 	v.SetDefault("gitops.pathPrefix", "sites")
+
+	// Capp t-shirt sizes
+	v.SetDefault("cappSizes.small.requests.cpu", "250m")
+	v.SetDefault("cappSizes.small.requests.memory", "256Mi")
+	v.SetDefault("cappSizes.small.limits.cpu", "500m")
+	v.SetDefault("cappSizes.small.limits.memory", "512Mi")
+	v.SetDefault("cappSizes.medium.requests.cpu", "500m")
+	v.SetDefault("cappSizes.medium.requests.memory", "512Mi")
+	v.SetDefault("cappSizes.medium.limits.cpu", "1")
+	v.SetDefault("cappSizes.medium.limits.memory", "1Gi")
+	v.SetDefault("cappSizes.large.requests.cpu", "1")
+	v.SetDefault("cappSizes.large.requests.memory", "1Gi")
+	v.SetDefault("cappSizes.large.limits.cpu", "2")
+	v.SetDefault("cappSizes.large.limits.memory", "2Gi")
 }
