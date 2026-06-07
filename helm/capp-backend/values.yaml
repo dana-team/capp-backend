@@ -108,6 +108,28 @@ config:
       enabled: true
     capps:
       enabled: true
+    cappSizes:
+      small:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+      medium:
+        requests:
+          cpu: "500m"
+          memory: "512Mi"
+        limits:
+          cpu: "1000m"
+          memory: "1Gi"
+      large:
+        requests:
+          cpu: "1000m"
+          memory: "1Gi"
+        limits:
+          cpu: "2000m"
+          memory: "2Gi"
 
   # GitOps — push Capp values to a git repository for ArgoCD sync.
   # Disabled by default. Enable and provide credentials to activate.

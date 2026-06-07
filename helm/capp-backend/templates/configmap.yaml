@@ -91,6 +91,28 @@ data:
         enabled: {{ .Values.config.resources.namespaces.enabled }}
       capps:
         enabled: {{ .Values.config.resources.capps.enabled }}
+      cappSizes:
+        small:
+          requests:
+            cpu: {{ .Values.config.resources.cappSizes.small.requests.cpu | quote }}
+            memory: {{ .Values.config.resources.cappSizes.small.requests.memory | quote }}
+          limits:
+            cpu: {{ .Values.config.resources.cappSizes.small.limits.cpu | quote }}
+            memory: {{ .Values.config.resources.cappSizes.small.limits.memory | quote }}
+        medium:
+          requests:
+            cpu: {{ .Values.config.resources.cappSizes.medium.requests.cpu | quote }}
+            memory: {{ .Values.config.resources.cappSizes.medium.requests.memory | quote }}
+          limits:
+            cpu: {{ .Values.config.resources.cappSizes.medium.limits.cpu | quote }}
+            memory: {{ .Values.config.resources.cappSizes.medium.limits.memory | quote }}
+        large:
+          requests:
+            cpu: {{ .Values.config.resources.cappSizes.large.requests.cpu | quote }}
+            memory: {{ .Values.config.resources.cappSizes.large.requests.memory | quote }}
+          limits:
+            cpu: {{ .Values.config.resources.cappSizes.large.limits.cpu | quote }}
+            memory: {{ .Values.config.resources.cappSizes.large.limits.memory | quote }}
 
     {{- if .Values.config.gitops.enabled }}
     gitops:

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -31,16 +32,36 @@ func makeCappWithLabel(name, namespace string, labels map[string]string) *cappv1
 	}
 }
 
+func makeSizes() config.CappSizes {
+	small := config.ResourceSize{
+		Requests: config.ResourceQuantities{CPU: "100m", Memory: "128Mi"},
+		Limits:   config.ResourceQuantities{CPU: "200m", Memory: "256Mi"},
+	}
+	medium := config.ResourceSize{
+		Requests: config.ResourceQuantities{CPU: "200m", Memory: "256Mi"},
+		Limits:   config.ResourceQuantities{CPU: "400m", Memory: "512Mi"},
+	}
+	large := config.ResourceSize{
+		Requests: config.ResourceQuantities{CPU: "400m", Memory: "512Mi"},
+		Limits:   config.ResourceQuantities{CPU: "800m", Memory: "1Gi"},
+	}
+	return config.CappSizes{
+		Small:  small,
+		Medium: medium,
+		Large:  large,
+	}
+}
+
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(false, nil))
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(false, nil, makeSizes()))
 }
 
 // syncEngine creates an engine with gitops enabled, ClusterMeta in context,
 // and a mock GitOpsSyncer.
-func syncEngine(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, objects ...client.Object) *testutil.EngineHelper {
+func syncEngine(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, sizes config.CappSizes, objects ...client.Object) *testutil.EngineHelper {
 	t.Helper()
 	k8sClient := testutil.FakeClient(t, objects...)
-	handler := New(true, mock)
+	handler := New(true, mock, sizes)
 	return testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
 }
 
@@ -187,7 +208,7 @@ func TestRespondList_CorrectTotalAndMapping(t *testing.T) {
 // -- Sync tests --
 
 func TestSync_GitOpsDisabled(t *testing.T) {
-	h := New(false, nil)
+	h := New(false, nil, makeSizes())
 	e := testutil.NewEngineHelper(t, testutil.FakeClient(t, makeCapp("app1", "ns1")), h)
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
@@ -195,7 +216,7 @@ func TestSync_GitOpsDisabled(t *testing.T) {
 
 func TestSync_CappNotFound(t *testing.T) {
 	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "nova"}
-	w := syncEngine(t, &mockGitOpsSyncer{}, meta).
+	w := syncEngine(t, &mockGitOpsSyncer{}, meta, makeSizes()).
 		Post("/namespaces/ns1/capps/missing/sync", nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -207,7 +228,7 @@ func TestSync_ReSync(t *testing.T) {
 	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "nova"}
 	mock := &mockGitOpsSyncer{}
 
-	w := syncEngine(t, mock, meta, capp).
+	w := syncEngine(t, mock, meta, makeSizes(), capp).
 		Post("/namespaces/ns1/capps/app1/sync", nil)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -222,7 +243,7 @@ func TestSync_Success(t *testing.T) {
 	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "nova"}
 	mock := &mockGitOpsSyncer{}
 
-	e := syncEngine(t, mock, meta, capp)
+	e := syncEngine(t, mock, meta, makeSizes(), capp)
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -241,7 +262,7 @@ func TestSync_GitPushError(t *testing.T) {
 		},
 	}
 
-	w := syncEngine(t, mock, meta, capp).
+	w := syncEngine(t, mock, meta, makeSizes(), capp).
 		Post("/namespaces/ns1/capps/app1/sync", nil)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -253,7 +274,7 @@ func TestSync_SuccessVerifyLabel(t *testing.T) {
 	mock := &mockGitOpsSyncer{}
 
 	k8sClient := testutil.FakeClient(t, capp)
-	handler := New(true, mock)
+	handler := New(true, mock, makeSizes())
 	e := testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
 
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
@@ -280,7 +301,7 @@ func TestSync_PassesCorrectGitOpsPath(t *testing.T) {
 		},
 	}
 
-	w := syncEngine(t, mock, meta, capp).
+	w := syncEngine(t, mock, meta, makeSizes(), capp).
 		Post("/namespaces/production/capps/myapp/sync", nil)
 
 	require.Equal(t, http.StatusOK, w.Code)

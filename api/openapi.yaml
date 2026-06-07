@@ -388,6 +388,15 @@ components:
             $ref: '#/components/schemas/SecretResponse'
 
     # ── Capps ─────────────────────────────────────────────────────────────────────
+    CappSize:
+      type: string
+      enum: [small, medium, large]
+      description: |
+        High-level sizing abstraction. Maps to specific CPU/memory requests and
+        limits configured on the server. Mutually exclusive with setting raw
+        resource quantities directly.
+      example: small
+
     KeySelector:
       type: object
       required: [name, key]
@@ -564,6 +573,8 @@ components:
         containerName:
           type: string
           example: my-app
+        size:
+          $ref: '#/components/schemas/CappSize'
         env:
           type: array
           items:
@@ -690,6 +701,8 @@ components:
         containerName:
           type: string
           example: my-app
+        size:
+          $ref: '#/components/schemas/CappSize'
         env:
           type: array
           items:

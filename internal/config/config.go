@@ -297,6 +297,27 @@ type GitOpsConfig struct {
 	PathPrefix string `mapstructure:"pathPrefix"`
 }
 
+type ResourceQuantities struct {
+	CPU    string `mapstructure:"cpu"`
+	Memory string `mapstructure:"memory"`
+}
+
+type ResourceSize struct {
+	Requests ResourceQuantities `mapstructure:"requests"`
+	Limits   ResourceQuantities `mapstructure:"limits"`
+}
+
+type CappSizes struct {
+	Small  ResourceSize `mapstructure:"small"`
+	Medium ResourceSize `mapstructure:"medium"`
+	Large  ResourceSize `mapstructure:"large"`
+}
+
+// ResourceConfig holds configuration for all resource handlers,
+type ResourceConfig struct {
+	CappSizes CappSizes `mapstructure:"cappSizes"`
+}
+
 // Config is the root configuration object for the capp-backend server.
 // It is populated once at startup by Load and then treated as read-only.
 type Config struct {
@@ -308,6 +329,7 @@ type Config struct {
 	Clusters  []ClusterConfig `mapstructure:"clusters"`
 	Resources ResourcesConfig `mapstructure:"resources"`
 	GitOps    GitOpsConfig    `mapstructure:"gitops"`
+	Sizes     CappSizes       `mapstructure:"cappSizes"`
 }
 
 // Load reads configuration from the file at path (if non-empty) and from
