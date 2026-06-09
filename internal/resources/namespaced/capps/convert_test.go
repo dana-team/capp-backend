@@ -154,7 +154,7 @@ func TestToK8s_ExistingPreservedOnUpdate(t *testing.T) {
 
 func TestFromK8s_MinimalCapp(t *testing.T) {
 	capp := minimalCapp()
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	assert.Equal(t, "my-app", resp.Name)
 	assert.Equal(t, "ns1", resp.Namespace)
 	assert.Equal(t, "nginx:latest", resp.Image)
@@ -164,7 +164,7 @@ func TestFromK8s_MinimalCapp(t *testing.T) {
 func TestFromK8s_WithHostname(t *testing.T) {
 	capp := minimalCapp()
 	capp.Spec.RouteSpec.Hostname = "app.example.com"
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.NotNil(t, resp.RouteSpec)
 	assert.Equal(t, "app.example.com", resp.RouteSpec.Hostname)
 }
@@ -172,7 +172,7 @@ func TestFromK8s_WithHostname(t *testing.T) {
 func TestFromK8s_WithTLS(t *testing.T) {
 	capp := minimalCapp()
 	capp.Spec.RouteSpec.TlsEnabled = true
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.NotNil(t, resp.RouteSpec)
 	assert.True(t, resp.RouteSpec.TLSEnabled)
 }
@@ -181,7 +181,7 @@ func TestFromK8s_WithTimeout(t *testing.T) {
 	capp := minimalCapp()
 	timeout := int64(60)
 	capp.Spec.RouteSpec.RouteTimeoutSeconds = &timeout
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.NotNil(t, resp.RouteSpec)
 	require.NotNil(t, resp.RouteSpec.RouteTimeoutSeconds)
 	assert.Equal(t, int64(60), *resp.RouteSpec.RouteTimeoutSeconds)
@@ -190,7 +190,7 @@ func TestFromK8s_WithTimeout(t *testing.T) {
 func TestFromK8s_WithLogSpec(t *testing.T) {
 	capp := minimalCapp()
 	capp.Spec.LogSpec = cappv1alpha1.LogSpec{Type: "elastic", Host: "es.local"}
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.NotNil(t, resp.LogSpec)
 	assert.Equal(t, "elastic", resp.LogSpec.Type)
 }
@@ -200,7 +200,7 @@ func TestFromK8s_WithNFSVolumes(t *testing.T) {
 	capp.Spec.VolumesSpec.NFSVolumes = []cappv1alpha1.NFSVolume{
 		{Name: "vol", Server: "nfs.local", Path: "/export", Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")}},
 	}
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.Len(t, resp.NFSVolumes, 1)
 	assert.Equal(t, "10Gi", resp.NFSVolumes[0].Capacity)
 }
@@ -208,7 +208,7 @@ func TestFromK8s_WithNFSVolumes(t *testing.T) {
 func TestFromK8s_WithScaleSpec(t *testing.T) {
 	capp := minimalCapp()
 	capp.Spec.ScaleSpec = cappv1alpha1.ScaleSpec{Metric: "cpu", MinReplicas: 3, ScaleDelaySeconds: 60}
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	assert.Equal(t, "cpu", resp.ScaleSpec.Metric)
 	assert.Equal(t, 3, resp.ScaleSpec.MinReplicas)
 	assert.Equal(t, 60, resp.ScaleSpec.ScaleDelaySeconds)
@@ -217,20 +217,20 @@ func TestFromK8s_WithScaleSpec(t *testing.T) {
 func TestFromK8s_CreationTimestamp_Formatted(t *testing.T) {
 	capp := minimalCapp()
 	capp.CreationTimestamp = metav1.Now()
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	assert.NotEmpty(t, resp.CreatedAt)
 	assert.Contains(t, resp.CreatedAt, "T")
 }
 
 func TestFromK8s_NoRouteSpec_WhenEmpty(t *testing.T) {
 	capp := minimalCapp()
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	assert.Nil(t, resp.RouteSpec)
 }
 
 func TestFromK8s_NoLogSpec_WhenEmpty(t *testing.T) {
 	capp := minimalCapp()
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	assert.Nil(t, resp.LogSpec)
 }
 
@@ -349,7 +349,7 @@ func TestFromK8s_SecretVolumes_RoundTrip(t *testing.T) {
 	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
 		Name: "sec-vol", MountPath: "/etc/sec",
 	}}
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.Len(t, resp.SecretVolumes, 1)
 	assert.Equal(t, "sec-vol", resp.SecretVolumes[0].Name)
 	assert.Equal(t, "my-secret", resp.SecretVolumes[0].SecretName)
@@ -367,7 +367,7 @@ func TestFromK8s_ConfigMapVolumes_RoundTrip(t *testing.T) {
 	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
 		Name: "cm-vol", MountPath: "/etc/cfg",
 	}}
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.Len(t, resp.ConfigMapVolumes, 1)
 	assert.Equal(t, "cm-vol", resp.ConfigMapVolumes[0].Name)
 	assert.Equal(t, "my-config", resp.ConfigMapVolumes[0].ConfigMapName)
@@ -489,7 +489,7 @@ func TestFromK8s_UnmountedVolume_Skipped(t *testing.T) {
 		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "s"}},
 	}}
 	// No VolumeMounts entry for "orphan".
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	assert.Empty(t, resp.SecretVolumes)
 }
 
@@ -504,7 +504,7 @@ func TestFromK8s_EnvVarValueFrom_SecretKeyRef(t *testing.T) {
 			},
 		},
 	}}
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.Len(t, resp.Env, 1)
 	require.NotNil(t, resp.Env[0].ValueFrom)
 	require.NotNil(t, resp.Env[0].ValueFrom.SecretKeyRef)
@@ -523,7 +523,7 @@ func TestFromK8s_EnvVarValueFrom_ConfigMapKeyRef(t *testing.T) {
 			},
 		},
 	}}
-	resp := FromK8s(capp)
+	resp := FromK8s(capp, config.CappSizes{})
 	require.Len(t, resp.Env, 1)
 	require.NotNil(t, resp.Env[0].ValueFrom)
 	require.NotNil(t, resp.Env[0].ValueFrom.ConfigMapKeyRef)

@@ -210,14 +210,30 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 			return nil, fmt.Errorf("invalid size %q: must be one of small, medium, or large", req.Size)
 		}
 
+		reqCPU, err := resource.ParseQuantity(requests.CPU)
+		if err != nil {
+			return nil, fmt.Errorf("size %q: invalid requests.cpu %q: %w", req.Size, requests.CPU, err)
+		}
+		reqMem, err := resource.ParseQuantity(requests.Memory)
+		if err != nil {
+			return nil, fmt.Errorf("size %q: invalid requests.memory %q: %w", req.Size, requests.Memory, err)
+		}
+		limCPU, err := resource.ParseQuantity(limits.CPU)
+		if err != nil {
+			return nil, fmt.Errorf("size %q: invalid limits.cpu %q: %w", req.Size, limits.CPU, err)
+		}
+		limMem, err := resource.ParseQuantity(limits.Memory)
+		if err != nil {
+			return nil, fmt.Errorf("size %q: invalid limits.memory %q: %w", req.Size, limits.Memory, err)
+		}
 		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse(requests.CPU),
-				corev1.ResourceMemory: resource.MustParse(requests.Memory),
+				corev1.ResourceCPU:    reqCPU,
+				corev1.ResourceMemory: reqMem,
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse(limits.CPU),
-				corev1.ResourceMemory: resource.MustParse(limits.Memory),
+				corev1.ResourceCPU:    limCPU,
+				corev1.ResourceMemory: limMem,
 			},
 		}
 
@@ -225,9 +241,36 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	return capp, nil
 }
 
+// sizeFromResources reverse-maps container resource limits back to a t-shirt
+// size label by comparing against the configured size definitions.
+// Returns empty string when no size matches (e.g. custom resource limits).
+func sizeFromResources(res corev1.ResourceRequirements, sizes config.CappSizes) string {
+	type candidate struct {
+		name   string
+		limits config.ResourceQuantities
+	}
+	for _, c := range []candidate{
+		{string(CappSizeSmall), sizes.Small.Limits},
+		{string(CappSizeMedium), sizes.Medium.Limits},
+		{string(CappSizeLarge), sizes.Large.Limits},
+	} {
+		cpu, errC := resource.ParseQuantity(c.limits.CPU)
+		mem, errM := resource.ParseQuantity(c.limits.Memory)
+		if errC != nil || errM != nil {
+			continue
+		}
+		gotCPU := res.Limits[corev1.ResourceCPU]
+		gotMem := res.Limits[corev1.ResourceMemory]
+		if cpu.Cmp(gotCPU) == 0 && mem.Cmp(gotMem) == 0 {
+			return c.name
+		}
+	}
+	return ""
+}
+
 // FromK8s converts a live rcs.dana.io/v1alpha1.Capp into a CappResponse DTO.
 // Status fields are included verbatim from the resource's Status sub-object.
-func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
+func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 	resp := CappResponse{
 		Name:            capp.Name,
 		Namespace:       capp.Namespace,
@@ -254,6 +297,9 @@ func FromK8s(capp *cappv1alpha1.Capp) CappResponse {
 		c := containers[0]
 		resp.Image = c.Image
 		resp.ContainerName = c.Name
+		if s := sizeFromResources(c.Resources, sizes); s != "" {
+			resp.Size = CappSize(s)
+		}
 		for _, e := range c.Env {
 			ev := EnvVar{Name: e.Name}
 			if e.ValueFrom != nil {
