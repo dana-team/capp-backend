@@ -1,0 +1,25 @@
+ARG KUBECTL_VERSION=1.32.4
+ARG HELM_VERSION=3.17.3
+
+# ── Stage 1: Download kubectl + helm ─────────────────────────────────────────
+FROM alpine:3.21 AS downloader
+ARG KUBECTL_VERSION
+ARG HELM_VERSION
+RUN apk add --no-cache curl && \
+    curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+         -o /tmp/kubectl && \
+    chmod +x /tmp/kubectl && \
+    curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" \
+         | tar -xz -C /tmp && \
+    mv /tmp/linux-amd64/helm /tmp/helm && \
+    chmod +x /tmp/helm
+
+# ── Stage 2: Final image ──────────────────────────────────────────────────────
+FROM alpine:3.21
+RUN addgroup -S cappctl && adduser -S -G cappctl cappctl
+COPY cappctl-linux-amd64               /usr/local/bin/cappctl
+COPY --from=downloader /tmp/kubectl    /usr/local/bin/kubectl
+COPY --from=downloader /tmp/helm       /usr/local/bin/helm
+RUN chmod +x /usr/local/bin/cappctl
+USER cappctl
+ENTRYPOINT ["cappctl"]
