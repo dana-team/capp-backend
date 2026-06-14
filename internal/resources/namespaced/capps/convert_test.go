@@ -531,6 +531,151 @@ func TestFromK8s_EnvVarValueFrom_ConfigMapKeyRef(t *testing.T) {
 	assert.Equal(t, "log.level", resp.Env[0].ValueFrom.ConfigMapKeyRef.Key)
 }
 
+// -- Event source tests --
+
+func TestToK8s_WithPingSource(t *testing.T) {
+	req := minimalRequest()
+	req.EventSourcesSpec = &EventSourcesSpec{
+		Sources: []SourceConfig{
+			{
+				Name: "ping-src",
+				URI:  "/events",
+				PingSourceConfig: &PingSourceConfig{
+					Schedule: "*/5 * * * *",
+					Data:     `{"msg":"hello"}`,
+				},
+			},
+		},
+	}
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+	require.Len(t, capp.Spec.EventSourcesSpec.Sources, 1)
+	src := capp.Spec.EventSourcesSpec.Sources[0]
+	assert.Equal(t, "ping-src", src.Name)
+	require.NotNil(t, src.URI)
+	assert.Equal(t, "/events", src.URI.String())
+	require.NotNil(t, src.PingSourceConfiguration)
+	assert.Equal(t, "*/5 * * * *", src.PingSourceConfiguration.Schedule)
+	assert.Equal(t, `{"msg":"hello"}`, src.PingSourceConfiguration.Data)
+	assert.Nil(t, src.KafkaSourceConfiguration)
+}
+
+func TestToK8s_WithKafkaSource(t *testing.T) {
+	consumers := int32(2)
+	req := minimalRequest()
+	req.EventSourcesSpec = &EventSourcesSpec{
+		Sources: []SourceConfig{
+			{
+				Name: "kafka-src",
+				KafkaSourceConfig: &KafkaSourceConfig{
+					BootstrapServers: []string{"broker1:9092", "broker2:9092"},
+					Topics:           []string{"topic-a"},
+					ConsumerGroup:    "my-group",
+					Consumers:        &consumers,
+					SecretRef:        "kafka-creds",
+				},
+			},
+		},
+	}
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+	require.Len(t, capp.Spec.EventSourcesSpec.Sources, 1)
+	src := capp.Spec.EventSourcesSpec.Sources[0]
+	assert.Equal(t, "kafka-src", src.Name)
+	require.NotNil(t, src.KafkaSourceConfiguration)
+	assert.Equal(t, []string{"broker1:9092", "broker2:9092"}, src.KafkaSourceConfiguration.BootstrapServers)
+	assert.Equal(t, []string{"topic-a"}, src.KafkaSourceConfiguration.Topics)
+	assert.Equal(t, "my-group", src.KafkaSourceConfiguration.ConsumerGroup)
+	require.NotNil(t, src.KafkaSourceConfiguration.Consumers)
+	assert.Equal(t, int32(2), *src.KafkaSourceConfiguration.Consumers)
+	assert.Equal(t, "kafka-creds", src.KafkaSourceConfiguration.SecretRef.Name)
+	assert.Nil(t, src.PingSourceConfiguration)
+}
+
+func TestToK8s_WithInvalidEventSourceURI(t *testing.T) {
+	req := minimalRequest()
+	req.EventSourcesSpec = &EventSourcesSpec{
+		Sources: []SourceConfig{
+			{
+				Name:             "bad-src",
+				URI:              "://invalid",
+				PingSourceConfig: &PingSourceConfig{Schedule: "* * * * *"},
+			},
+		},
+	}
+	_, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bad-src")
+}
+
+func TestToK8s_NilEventSourcesSpec_ClearsExisting(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.EventSourcesSpec.Sources = []cappv1alpha1.SourceConfiguration{
+		{Name: "old-src", PingSourceConfiguration: &cappv1alpha1.PingSourceConfiguration{Schedule: "* * * * *"}},
+	}
+	updated, err := ToK8s(minimalRequest(), existing, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Empty(t, updated.Spec.EventSourcesSpec.Sources)
+}
+
+func TestFromK8s_WithPingSource(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.EventSourcesSpec.Sources = []cappv1alpha1.SourceConfiguration{
+		{
+			Name: "ping-src",
+			PingSourceConfiguration: &cappv1alpha1.PingSourceConfiguration{
+				Schedule: "0 * * * *",
+				Data:     `{"key":"val"}`,
+			},
+		},
+	}
+	resp := FromK8s(capp, config.CappSizes{})
+	require.NotNil(t, resp.EventSourcesSpec)
+	require.Len(t, resp.EventSourcesSpec.Sources, 1)
+	src := resp.EventSourcesSpec.Sources[0]
+	assert.Equal(t, "ping-src", src.Name)
+	require.NotNil(t, src.PingSourceConfig)
+	assert.Equal(t, "0 * * * *", src.PingSourceConfig.Schedule)
+	assert.Equal(t, `{"key":"val"}`, src.PingSourceConfig.Data)
+	assert.Nil(t, src.KafkaSourceConfig)
+}
+
+func TestFromK8s_WithKafkaSource(t *testing.T) {
+	consumers := int32(3)
+	capp := minimalCapp()
+	capp.Spec.EventSourcesSpec.Sources = []cappv1alpha1.SourceConfiguration{
+		{
+			Name: "kafka-src",
+			KafkaSourceConfiguration: &cappv1alpha1.KafkaSourceConfiguration{
+				BootstrapServers: []string{"broker:9092"},
+				Topics:           []string{"t1", "t2"},
+				ConsumerGroup:    "grp",
+				Consumers:        &consumers,
+				SecretRef:        corev1.LocalObjectReference{Name: "my-secret"},
+			},
+		},
+	}
+	resp := FromK8s(capp, config.CappSizes{})
+	require.NotNil(t, resp.EventSourcesSpec)
+	require.Len(t, resp.EventSourcesSpec.Sources, 1)
+	src := resp.EventSourcesSpec.Sources[0]
+	assert.Equal(t, "kafka-src", src.Name)
+	require.NotNil(t, src.KafkaSourceConfig)
+	assert.Equal(t, []string{"broker:9092"}, src.KafkaSourceConfig.BootstrapServers)
+	assert.Equal(t, []string{"t1", "t2"}, src.KafkaSourceConfig.Topics)
+	assert.Equal(t, "grp", src.KafkaSourceConfig.ConsumerGroup)
+	require.NotNil(t, src.KafkaSourceConfig.Consumers)
+	assert.Equal(t, int32(3), *src.KafkaSourceConfig.Consumers)
+	assert.Equal(t, "my-secret", src.KafkaSourceConfig.SecretRef)
+	assert.Nil(t, src.PingSourceConfig)
+}
+
+func TestFromK8s_NoEventSourcesSpec_WhenEmpty(t *testing.T) {
+	capp := minimalCapp()
+	resp := FromK8s(capp, config.CappSizes{})
+	assert.Nil(t, resp.EventSourcesSpec)
+}
+
 // -- filterAnnotations tests --
 
 func TestFilterAnnotations_StripKubectl(t *testing.T) {
