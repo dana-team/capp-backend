@@ -227,13 +227,70 @@ components:
           type: boolean
           description: Whether the authenticated user has permission to create new namespaces in this cluster.
 
-    NamespaceRequest:
+    NamespaceQuota:
       type: object
-      required: [ name ]
+      description: Resource quota limits to enforce on the namespace.
+      properties:
+        cpu:
+          type: string
+          description: CPU limit quota (Kubernetes quantity format).
+          example: "4"
+        memory:
+          type: string
+          description: Memory limit quota (Kubernetes quantity format).
+          example: 8Gi
+        pods:
+          type: integer
+          description: Maximum number of pods allowed in the namespace.
+          example: 50
+
+    CreateNamespaceRequest:
+      type: object
+      required: [name]
       properties:
         name:
           type: string
+          description: Name of the namespace to create.
           example: my-namespace
+        users:
+          type: array
+          items:
+            type: string
+          description: |
+            Users to bind to the `capp-user` ClusterRole via a RoleBinding.
+            If omitted, no RoleBinding is created.
+          example: [alice, bob]
+        quota:
+          $ref: '#/components/schemas/NamespaceQuota'
+
+    UpdateNamespaceRequest:
+      type: object
+      description: |
+        Replaces the namespace's ResourceQuota and RoleBinding. Omit a field to
+        leave that resource unchanged. Quota decreases are rejected when current
+        usage exceeds the requested new limit.
+      properties:
+        users:
+          type: array
+          items:
+            type: string
+          description: |
+            Full replacement list of users for the `capp-user` RoleBinding.
+            Creates the RoleBinding if it does not exist.
+          example: [alice, bob]
+        quota:
+          $ref: '#/components/schemas/NamespaceQuota'
+
+    PatchNamespaceRequest:
+      type: object
+      description: Adds new users to the namespace's existing `capp-user` RoleBinding without removing current members.
+      properties:
+        users:
+          type: array
+          items:
+            type: string
+          description: Users to add. Existing users are deduplicated; no user is removed.
+          example: [charlie]
 
     # ── ConfigMaps ────────────────────────────────────────────────────────────────
     ConfigMapRequest:
@@ -1023,7 +1080,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/NamespaceRequest'
+              $ref: '#/components/schemas/CreateNamespaceRequest'
       responses:
         "201":
           description: Namespace created.
@@ -1043,6 +1100,94 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "409":
           $ref: '#/components/responses/Conflict'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/clusters/{cluster}/namespaces/{name}:
+    put:
+      tags: [namespaces]
+      summary: Replace namespace quota and role binding
+      description: |
+        Full replacement of the namespace's ResourceQuota and `capp-user` RoleBinding.
+        Omit `quota` or `users` to leave that resource unchanged.
+        Quota decreases are rejected when current usage exceeds the new limit.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Namespace name.
+          example: my-namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNamespaceRequest'
+      responses:
+        "200":
+          description: Namespace updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceItem'
+        "400":
+          description: Invalid request body or quota decrease rejected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    patch:
+      tags: [namespaces]
+      summary: Add users to namespace role binding
+      description: |
+        Appends new users to the namespace's existing `capp-user` RoleBinding.
+        Existing members are preserved; duplicate users are silently ignored.
+        The RoleBinding must already exist (created via POST or PUT).
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Namespace name.
+          example: my-namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchNamespaceRequest'
+      responses:
+        "200":
+          description: Role binding updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceItem'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
         "500":
           $ref: '#/components/responses/InternalError'
 
