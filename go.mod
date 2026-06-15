@@ -1,6 +1,6 @@
 module github.com/dana-team/capp-backend
 
-go 1.25.5
+go 1.26.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0
