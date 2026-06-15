@@ -144,16 +144,70 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=${GITHUB_REF_NAME}" \
             -o cappctl-windows-amd64.exe ./cmd/cappctl/
 
+      - name: Upload linux binary as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cappctl-linux-amd64
+          path: cappctl-linux-amd64
+
       - name: Upload binaries to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: cappctl-*
 
+  # ── Build & push cappctl Docker image ────────────────────────────────────────
+  docker-cli:
+    name: Build & push cappctl Docker image
+    runs-on: ubuntu-latest
+    needs: [test-cli, cli]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download cappctl binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cappctl-linux-amd64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/dana-team/cappctl
+          tags: |
+            type=raw,value={{tag}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile.cappctl
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
   # ── Create GitHub Release ─────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [docker, helm, cli]
+    needs: [docker, docker-cli, helm, cli]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -234,6 +288,11 @@ jobs:
             ### Docker image
             ```
             docker pull ghcr.io/dana-team/capp-backend:${{ steps.version.outputs.TAG }}
+            ```
+
+            ### cappctl Docker image
+            ```
+            docker pull ghcr.io/dana-team/cappctl:${{ steps.version.outputs.TAG }}
             ```
 
             ### Helm chart

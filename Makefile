@@ -67,6 +67,10 @@ docker-build: ## Build the Docker image
 docker-push: ## Push the Docker image to the registry
 	docker push ghcr.io/dana-team/capp-backend:latest
 
+.PHONY: docker-build-cli
+docker-build-cli: ## Build the cappctl Docker image (requires cappctl-linux-amd64 binary in repo root)
+	docker build -t ghcr.io/dana-team/cappctl:latest -f deploy/Dockerfile.cappctl .
+
 ##@ Deployment
 
 .PHONY: deploy
