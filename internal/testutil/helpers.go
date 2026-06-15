@@ -15,9 +15,11 @@ import (
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func init() {
@@ -62,6 +64,24 @@ func TestScheme(t *testing.T) *runtime.Scheme {
 func FakeClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().WithScheme(TestScheme(t)).WithObjects(objects...).Build()
+}
+
+// FakeClientAllowSAR creates a fake client where all SelfSubjectAccessReview
+// creations succeed with Allowed=true, enabling tests to exercise authorized paths.
+func FakeClientAllowSAR(t *testing.T, objects ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(TestScheme(t)).
+		WithObjects(objects...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
+					sar.Status.Allowed = true
+					return nil
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
 }
 
 // JSONBody marshals v to JSON and returns it as an *bytes.Buffer suitable for
@@ -154,6 +174,14 @@ func (h *EngineHelper) Put(path string, body io.Reader) *httptest.ResponseRecord
 
 func (h *EngineHelper) PutJSON(path string, v any) *httptest.ResponseRecorder {
 	return ServeHTTP(h.Engine, http.MethodPut, path, JSONBody(h.t, v))
+}
+
+func (h *EngineHelper) Patch(path string, body io.Reader) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodPatch, path, body)
+}
+
+func (h *EngineHelper) PatchJSON(path string, v any) *httptest.ResponseRecorder {
+	return ServeHTTP(h.Engine, http.MethodPatch, path, JSONBody(h.t, v))
 }
 
 func (h *EngineHelper) Delete(path string) *httptest.ResponseRecorder {
