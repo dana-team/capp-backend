@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kapis "knative.dev/pkg/apis"
 	knativev1 "knative.dev/serving/pkg/apis/serving/v1"
 )
 
@@ -193,6 +194,13 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	}
 	capp.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{NFSVolumes: nfsVols}
 
+	// Event sources.
+	var err error
+	capp.Spec.EventSourcesSpec, err = eventSourcesSpecToK8s(req.EventSourcesSpec)
+	if err != nil {
+		return nil, err
+	}
+
 	// resources
 	if req.Size != "" {
 		var requests, limits config.ResourceQuantities
@@ -239,6 +247,46 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 
 	}
 	return capp, nil
+}
+
+// eventSourcesSpecToK8s converts the DTO EventSourcesSpec into the K8s type.
+func eventSourcesSpecToK8s(spec *EventSourcesSpec) (cappv1alpha1.EventSourcesSpec, error) {
+	if spec == nil || len(spec.Sources) == 0 {
+		return cappv1alpha1.EventSourcesSpec{}, nil
+	}
+	sources := make([]cappv1alpha1.SourceConfiguration, 0, len(spec.Sources))
+	for _, s := range spec.Sources {
+		bothSet := s.PingSourceConfig != nil && s.KafkaSourceConfig != nil
+		neitherSet := s.PingSourceConfig == nil && s.KafkaSourceConfig == nil
+		if bothSet || neitherSet {
+			return cappv1alpha1.EventSourcesSpec{}, fmt.Errorf("event source %q: exactly one of pingSourceConfiguration or kafkaSourceConfiguration must be set", s.Name)
+		}
+		sc := cappv1alpha1.SourceConfiguration{Name: s.Name}
+		if s.URI != "" {
+			u, err := kapis.ParseURL(s.URI)
+			if err != nil {
+				return cappv1alpha1.EventSourcesSpec{}, fmt.Errorf("event source %q: invalid URI %q: %w", s.Name, s.URI, err)
+			}
+			sc.URI = u
+		}
+		if s.PingSourceConfig != nil {
+			sc.PingSourceConfiguration = &cappv1alpha1.PingSourceConfiguration{
+				Schedule: s.PingSourceConfig.Schedule,
+				Data:     s.PingSourceConfig.Data,
+			}
+		}
+		if s.KafkaSourceConfig != nil {
+			sc.KafkaSourceConfiguration = &cappv1alpha1.KafkaSourceConfiguration{
+				BootstrapServers: s.KafkaSourceConfig.BootstrapServers,
+				Topics:           s.KafkaSourceConfig.Topics,
+				ConsumerGroup:    s.KafkaSourceConfig.ConsumerGroup,
+				Consumers:        s.KafkaSourceConfig.Consumers,
+				SecretRef:        corev1.LocalObjectReference{Name: s.KafkaSourceConfig.SecretRef},
+			}
+		}
+		sources = append(sources, sc)
+	}
+	return cappv1alpha1.EventSourcesSpec{Sources: sources}, nil
 }
 
 // sizeFromResources reverse-maps container resource limits back to a t-shirt
@@ -392,6 +440,34 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 		})
 	}
 
+	// Event sources spec.
+	if len(capp.Spec.EventSourcesSpec.Sources) > 0 {
+		sources := make([]SourceConfig, 0, len(capp.Spec.EventSourcesSpec.Sources))
+		for _, s := range capp.Spec.EventSourcesSpec.Sources {
+			sc := SourceConfig{Name: s.Name}
+			if s.URI != nil {
+				sc.URI = s.URI.String()
+			}
+			if s.PingSourceConfiguration != nil {
+				sc.PingSourceConfig = &PingSourceConfig{
+					Schedule: s.PingSourceConfiguration.Schedule,
+					Data:     s.PingSourceConfiguration.Data,
+				}
+			}
+			if s.KafkaSourceConfiguration != nil {
+				sc.KafkaSourceConfig = &KafkaSourceConfig{
+					BootstrapServers: s.KafkaSourceConfiguration.BootstrapServers,
+					Topics:           s.KafkaSourceConfiguration.Topics,
+					ConsumerGroup:    s.KafkaSourceConfiguration.ConsumerGroup,
+					Consumers:        s.KafkaSourceConfiguration.Consumers,
+					SecretRef:        s.KafkaSourceConfiguration.SecretRef.Name,
+				}
+			}
+			sources = append(sources, sc)
+		}
+		resp.EventSourcesSpec = &EventSourcesSpec{Sources: sources}
+	}
+
 	// Status conditions.
 	resp.Status = buildStatus(capp)
 
@@ -457,13 +533,21 @@ func buildStatus(capp *cappv1alpha1.Capp) CappStatusResponse {
 		stateStatus.LastChange = capp.Status.StateStatus.LastChange.UTC().Format("2006-01-02T15:04:05Z")
 	}
 
+	var eventingStatus EventingStatusResponse
+	for _, es := range capp.Status.EventingStatus.EventSources {
+		eventingStatus.EventSources = append(eventingStatus.EventSources, EventSourceStatusResponse{
+			Name:    es.Name,
+			Type:    string(es.Condition.Type),
+			Status:  string(es.Condition.Status),
+			Reason:  es.Condition.Reason,
+			Message: es.Condition.Message,
+		})
+	}
+
 	return CappStatusResponse{
-		Conditions: conditions,
-		ApplicationLinks: ApplicationLinksResponse{
-			Site:        capp.Status.ApplicationLinks.Site,
-			ConsoleLink: capp.Status.ApplicationLinks.ConsoleLink,
-		},
-		StateStatus: stateStatus,
+		Conditions:     conditions,
+		EventingStatus: eventingStatus,
+		StateStatus:    stateStatus,
 	}
 }
 

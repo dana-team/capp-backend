@@ -151,6 +151,40 @@ type CappRequest struct {
 
 	// ConfigMapVolumes lists Kubernetes ConfigMaps to mount as volumes. Optional.
 	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
+
+	// EventSourcesSpec lists Knative Eventing sources to attach to the Capp. Optional.
+	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
+}
+
+// ── Event source types ────────────────────────────────────────────────────────
+
+// PingSourceConfig configures a Knative PingSource event source.
+type PingSourceConfig struct {
+	Schedule string `json:"schedule" binding:"required"`
+	Data     string `json:"data,omitempty"`
+}
+
+// KafkaSourceConfig configures a Kafka event source.
+type KafkaSourceConfig struct {
+	BootstrapServers []string `json:"bootstrapServers" binding:"required,min=1"`
+	Topics           []string `json:"topics"           binding:"required,min=1"`
+	ConsumerGroup    string   `json:"consumerGroup,omitempty"`
+	Consumers        *int32   `json:"consumers,omitempty"`
+	SecretRef        string   `json:"secretRef" binding:"required"`
+}
+
+// SourceConfig defines a single Knative Eventing source for a Capp.
+// Exactly one of PingSourceConfig or KafkaSourceConfig must be set.
+type SourceConfig struct {
+	Name              string             `json:"name" binding:"required"`
+	URI               string             `json:"uri,omitempty"`
+	PingSourceConfig  *PingSourceConfig  `json:"pingSourceConfiguration,omitempty"`
+	KafkaSourceConfig *KafkaSourceConfig `json:"kafkaSourceConfiguration,omitempty"`
+}
+
+// EventSourcesSpec lists all event sources attached to a Capp.
+type EventSourcesSpec struct {
+	Sources []SourceConfig `json:"sources,omitempty"`
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -167,10 +201,18 @@ type ConditionResponse struct {
 	Message            string `json:"message,omitempty"`
 }
 
-// ApplicationLinksResponse holds the cluster console and site link.
-type ApplicationLinksResponse struct {
-	Site        string `json:"site,omitempty"`
-	ConsoleLink string `json:"consoleLink,omitempty"`
+// EventSourceStatusResponse is the observed state of a single event source.
+type EventSourceStatusResponse struct {
+	Name    string `json:"name,omitempty"`
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// EventingStatusResponse is the observed state of all event sources linked to a Capp.
+type EventingStatusResponse struct {
+	EventSources []EventSourceStatusResponse `json:"eventSources,omitempty"`
 }
 
 // StateStatusResponse reflects the Capp's current enabled/disabled state.
@@ -183,9 +225,9 @@ type StateStatusResponse struct {
 // It exposes a flattened view of the condition tree that the frontend's
 // Conditions table renders.
 type CappStatusResponse struct {
-	Conditions       []ConditionResponse      `json:"conditions"`
-	ApplicationLinks ApplicationLinksResponse `json:"applicationLinks"`
-	StateStatus      StateStatusResponse      `json:"stateStatus"`
+	Conditions     []ConditionResponse    `json:"conditions"`
+	EventingStatus EventingStatusResponse `json:"eventingStatus,omitempty"`
+	StateStatus    StateStatusResponse    `json:"stateStatus"`
 }
 
 // CappResponse is returned by all read and write endpoints.
@@ -211,6 +253,7 @@ type CappResponse struct {
 
 	SecretVolumes    []SecretVolume    `json:"secretVolumes,omitempty"`
 	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
+	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
 
 	Status CappStatusResponse `json:"status"`
 }

@@ -599,6 +599,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConfigMapVolume'
+        eventSourcesSpec:
+          $ref: '#/components/schemas/EventSourcesSpec'
 
     ConditionResponse:
       type: object
@@ -626,17 +628,106 @@ components:
           type: string
           example: Revision is ready.
 
-    ApplicationLinksResponse:
+    PingSourceConfig:
+      type: object
+      required: [schedule]
+      properties:
+        schedule:
+          type: string
+          description: Cron expression defining when the PingSource fires.
+          example: "*/5 * * * *"
+        data:
+          type: string
+          description: JSON payload sent on each trigger. Must be valid JSON.
+          example: '{"msg":"hello"}'
+
+    KafkaSourceConfig:
+      type: object
+      required: [bootstrapServers, topics, secretRef]
+      properties:
+        bootstrapServers:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          example: ["broker1:9092", "broker2:9092"]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          example: ["topic-a"]
+        consumerGroup:
+          type: string
+          description: Kafka consumer group ID. Optional; operator assigns one when unset.
+          example: my-group
+        consumers:
+          type: integer
+          minimum: 1
+          description: Number of parallel consumers for this source.
+          example: 2
+        secretRef:
+          type: string
+          description: Name of the Secret in the Capp namespace with Kafka credentials.
+          example: kafka-creds
+
+    SourceConfig:
+      type: object
+      required: [name]
+      description: |
+        A single Knative Eventing source attached to the Capp.
+        Exactly one of pingSourceConfiguration or kafkaSourceConfiguration must be set.
+      properties:
+        name:
+          type: string
+          description: Unique logical name for this source within the Capp.
+          example: ping-src
+        uri:
+          type: string
+          description: Relative path appended to the Capp Knative Service address (e.g. "/events").
+          example: /events
+        pingSourceConfiguration:
+          $ref: '#/components/schemas/PingSourceConfig'
+        kafkaSourceConfiguration:
+          $ref: '#/components/schemas/KafkaSourceConfig'
+
+    EventSourcesSpec:
       type: object
       properties:
-        site:
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceConfig'
+
+    EventSourceStatusResponse:
+      type: object
+      properties:
+        name:
           type: string
-          description: Public URL of the deployed Capp.
-          example: https://my-app.example.com
-        consoleLink:
+          description: Name of the underlying event source resource.
+          example: ping-src
+        type:
           type: string
-          description: Cluster console URL for the Capp resource.
-          example: https://console.cluster.example.com/k8s/ns/default/capps/my-app
+          description: Condition type from the underlying source resource.
+          example: Ready
+        status:
+          type: string
+          enum: ["True", "False", Unknown]
+          example: "True"
+        reason:
+          type: string
+          example: EventSourceReady
+        message:
+          type: string
+          example: PingSource is ready.
+
+    EventingStatusResponse:
+      type: object
+      properties:
+        eventSources:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventSourceStatusResponse'
 
     StateStatusResponse:
       type: object
@@ -657,8 +748,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConditionResponse'
-        applicationLinks:
-          $ref: '#/components/schemas/ApplicationLinksResponse'
+        eventingStatus:
+          $ref: '#/components/schemas/EventingStatusResponse'
         stateStatus:
           $ref: '#/components/schemas/StateStatusResponse'
 
@@ -727,6 +818,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConfigMapVolume'
+        eventSourcesSpec:
+          $ref: '#/components/schemas/EventSourcesSpec'
         status:
           $ref: '#/components/schemas/CappStatusResponse'
 
