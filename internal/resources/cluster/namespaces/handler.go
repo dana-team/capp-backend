@@ -4,8 +4,8 @@
 //
 //	GET    /api/v1/clusters/:cluster/namespaces          — list CAPP-managed namespaces
 //	POST   /api/v1/clusters/:cluster/namespaces          — create namespace with quota + RoleBinding
-//	PUT    /api/v1/clusters/:cluster/namespaces/:name    — replace quota and RoleBinding
-//	PATCH  /api/v1/clusters/:cluster/namespaces/:name    — add users to existing RoleBinding
+//	PUT    /api/v1/clusters/:cluster/namespaces/:namespace    — replace quota and RoleBinding
+//	PATCH  /api/v1/clusters/:cluster/namespaces/:namespace    — add users to existing RoleBinding
 //
 // On OpenShift clusters, it lists project.openshift.io/v1 Projects using the
 // user-scoped client — the Projects API automatically returns only the projects
@@ -55,8 +55,8 @@ func (h *Handler) Name() string { return "namespaces" }
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/namespaces", h.list)
 	rg.POST("/namespaces", h.create)
-	rg.PUT("/namespaces/:name", h.update)
-	rg.PATCH("/namespaces/:name", h.patch)
+	rg.PUT("/namespaces/:namespace", h.update)
+	rg.PATCH("/namespaces/:namespace", h.patch)
 }
 
 // list handles GET /api/v1/clusters/:cluster/namespaces.
@@ -209,7 +209,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	nsName := c.Param("name")
+	nsName := c.Param("namespace")
 	ns := &corev1.Namespace{}
 	if err := adminClient.Get(c.Request.Context(), client.ObjectKey{Name: nsName}, ns); err != nil {
 		apierrors.Respond(c, err)
@@ -271,12 +271,12 @@ func updateNamespaceRoleBinding(ctx context.Context, adminClient client.Client, 
 	return adminClient.Update(ctx, roleBinding)
 }
 
-// patch handles PATCH /api/v1/clusters/:cluster/namespaces/:name.
+// patch handles PATCH /api/v1/clusters/:cluster/namespaces/:namespace.
 // This will update the rolebinding based on the request body.
 // To update the resource quota, use the PUT endpoint with the full quota spec.
 func (h *Handler) patch(c *gin.Context) {
 
-	namespaceName := c.Param("name")
+	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
