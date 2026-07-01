@@ -145,7 +145,7 @@ jobs:
             -o cappctl-windows-amd64.exe ./cmd/cappctl/
 
       - name: Upload linux binary as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cappctl-linux-amd64
           path: cappctl-linux-amd64
