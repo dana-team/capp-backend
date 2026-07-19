@@ -3,7 +3,7 @@ module github.com/dana-team/capp-backend
 go 1.26.0
 
 require (
-	github.com/coreos/go-oidc/v3 v3.19.0
+	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/dana-team/container-app-operator v0.9.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-git/go-git/v5 v5.19.1
