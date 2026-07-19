@@ -112,12 +112,17 @@ func TestToK8s_InvalidNFSCapacity(t *testing.T) {
 
 func TestToK8s_WithScaleSpec(t *testing.T) {
 	req := minimalRequest()
-	req.ScaleSpec = ScaleSpec{Metric: "cpu", MinReplicas: 2, ScaleDelaySeconds: 30}
+	minReplicas, maxReplicas, scaleDelaySeconds := int32(2), int32(5), int32(30)
+	req.ScaleSpec = ScaleSpec{Metric: "cpu", MinReplicas: &minReplicas, MaxReplicas: &maxReplicas, ScaleDelaySeconds: &scaleDelaySeconds}
 	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
 	require.NoError(t, err)
 	assert.Equal(t, "cpu", capp.Spec.ScaleSpec.Metric)
-	assert.Equal(t, 2, capp.Spec.ScaleSpec.MinReplicas)
-	assert.Equal(t, 30, capp.Spec.ScaleSpec.ScaleDelaySeconds)
+	require.NotNil(t, capp.Spec.ScaleSpec.MinReplicas)
+	assert.Equal(t, int32(2), *capp.Spec.ScaleSpec.MinReplicas)
+	require.NotNil(t, capp.Spec.ScaleSpec.MaxReplicas)
+	assert.Equal(t, int32(5), *capp.Spec.ScaleSpec.MaxReplicas)
+	require.NotNil(t, capp.Spec.ScaleSpec.ScaleDelaySeconds)
+	assert.Equal(t, int32(30), *capp.Spec.ScaleSpec.ScaleDelaySeconds)
 }
 
 func TestToK8s_WithEnvVars(t *testing.T) {
@@ -207,11 +212,16 @@ func TestFromK8s_WithNFSVolumes(t *testing.T) {
 
 func TestFromK8s_WithScaleSpec(t *testing.T) {
 	capp := minimalCapp()
-	capp.Spec.ScaleSpec = cappv1alpha1.ScaleSpec{Metric: "cpu", MinReplicas: 3, ScaleDelaySeconds: 60}
+	minReplicas, maxReplicas, scaleDelaySeconds := int32(3), int32(8), int32(60)
+	capp.Spec.ScaleSpec = cappv1alpha1.ScaleSpec{Metric: "cpu", MinReplicas: &minReplicas, MaxReplicas: &maxReplicas, ScaleDelaySeconds: &scaleDelaySeconds}
 	resp := FromK8s(capp, config.CappSizes{})
 	assert.Equal(t, "cpu", resp.ScaleSpec.Metric)
-	assert.Equal(t, 3, resp.ScaleSpec.MinReplicas)
-	assert.Equal(t, 60, resp.ScaleSpec.ScaleDelaySeconds)
+	require.NotNil(t, resp.ScaleSpec.MinReplicas)
+	assert.Equal(t, int32(3), *resp.ScaleSpec.MinReplicas)
+	require.NotNil(t, resp.ScaleSpec.MaxReplicas)
+	assert.Equal(t, int32(8), *resp.ScaleSpec.MaxReplicas)
+	require.NotNil(t, resp.ScaleSpec.ScaleDelaySeconds)
+	assert.Equal(t, int32(60), *resp.ScaleSpec.ScaleDelaySeconds)
 }
 
 func TestFromK8s_CreationTimestamp_Formatted(t *testing.T) {

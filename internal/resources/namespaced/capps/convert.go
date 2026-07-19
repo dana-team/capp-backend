@@ -60,6 +60,7 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	capp.Spec.ScaleSpec = cappv1alpha1.ScaleSpec{
 		Metric:            req.ScaleSpec.Metric,
 		MinReplicas:       req.ScaleSpec.MinReplicas,
+		MaxReplicas:       req.ScaleSpec.MaxReplicas,
 		ScaleDelaySeconds: req.ScaleSpec.ScaleDelaySeconds,
 	}
 
@@ -330,6 +331,7 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 		ScaleSpec: ScaleSpec{
 			Metric:            capp.Spec.ScaleSpec.Metric,
 			MinReplicas:       capp.Spec.ScaleSpec.MinReplicas,
+			MaxReplicas:       capp.Spec.ScaleSpec.MaxReplicas,
 			ScaleDelaySeconds: capp.Spec.ScaleSpec.ScaleDelaySeconds,
 		},
 		State: capp.Spec.State,

@@ -52,10 +52,11 @@ func TestGenerateValues_MinimalCapp(t *testing.T) {
 
 func TestGenerateValues_FullCapp(t *testing.T) {
 	timeout := int64(300)
+	minReplicas := int32(2)
 	capp := &cappv1alpha1.Capp{
 		ObjectMeta: metav1.ObjectMeta{Name: "full-app", Namespace: "prod"},
 		Spec: cappv1alpha1.CappSpec{
-			ScaleSpec: cappv1alpha1.ScaleSpec{Metric: "cpu", MinReplicas: 2},
+			ScaleSpec: cappv1alpha1.ScaleSpec{Metric: "cpu", MinReplicas: &minReplicas},
 			State:     "enabled",
 			ConfigurationSpec: knativev1.ConfigurationSpec{
 				Template: knativev1.RevisionTemplateSpec{
@@ -111,7 +112,8 @@ func TestGenerateValues_FullCapp(t *testing.T) {
 	assert.Equal(t, "full-app", vals.Name)
 	assert.Equal(t, "prod", vals.Namespace)
 	assert.Equal(t, "cpu", vals.Spec.ScaleSpec.Metric)
-	assert.Equal(t, 2, vals.Spec.ScaleSpec.MinReplicas)
+	require.NotNil(t, vals.Spec.ScaleSpec.MinReplicas)
+	assert.Equal(t, int32(2), *vals.Spec.ScaleSpec.MinReplicas)
 
 	require.Len(t, vals.Spec.ConfigurationSpec.Template.Spec.Containers, 1)
 	c := vals.Spec.ConfigurationSpec.Template.Spec.Containers[0]

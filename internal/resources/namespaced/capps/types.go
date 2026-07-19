@@ -101,11 +101,15 @@ type ScaleSpec struct {
 	// One of: concurrency, cpu, memory, rps. Default: concurrency.
 	Metric string `json:"metric,omitempty"`
 
-	// MinReplicas sets the minimum replica count. Default: 0.
-	MinReplicas int `json:"minReplicas,omitempty"`
+	// MinReplicas sets the minimum replica count. Optional; nil means unset.
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas sets the maximum replica count. Optional; nil means unset.
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 
 	// ScaleDelaySeconds is the delay before the Autoscaler scales down to zero.
-	ScaleDelaySeconds int `json:"scaleDelaySeconds,omitempty"`
+	// Optional; nil means unset.
+	ScaleDelaySeconds *int32 `json:"scaleDelaySeconds,omitempty"`
 }
 
 // CappRequest is the request body accepted by POST (create) and PUT (update).

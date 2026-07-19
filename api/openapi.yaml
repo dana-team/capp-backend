@@ -600,11 +600,15 @@ components:
           enum: [rps, concurrency, cpu, memory]
           example: concurrency
         minReplicas:
-          type: integer
+          type: [integer, "null"]
           minimum: 0
           example: 1
+        maxReplicas:
+          type: [integer, "null"]
+          minimum: 1
+          example: 5
         scaleDelaySeconds:
-          type: integer
+          type: [integer, "null"]
           minimum: 0
           example: 30
 
