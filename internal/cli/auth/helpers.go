@@ -1,0 +1,128 @@
+package auth
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"html"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/term"
+
+	"github.com/spf13/cobra"
+
+	"github.com/dana-team/capp-backend/internal/cli/client"
+)
+
+// promptCredentials prompts for missing username and/or password interactively.
+func promptCredentials(cmd *cobra.Command, username, password string) (string, string, error) {
+	if username == "" {
+		fmt.Fprint(cmd.OutOrStdout(), "Username: ") //nolint:errcheck
+		scanner := bufio.NewScanner(cmd.InOrStdin())
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", "", fmt.Errorf("reading input: %w", err)
+			}
+			return "", "", fmt.Errorf("unexpected EOF reading input")
+		}
+		username = strings.TrimSpace(scanner.Text())
+	}
+	if password == "" {
+		fmt.Fprint(cmd.OutOrStdout(), "Password: ") //nolint:errcheck
+		pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(cmd.OutOrStdout()) //nolint:errcheck
+		if err != nil {
+			return "", "", fmt.Errorf("reading password: %w", err)
+		}
+		password = string(pw)
+	}
+	return username, password, nil
+}
+
+// loginWithPassword exchanges username+password credentials for a token pair.
+func loginWithPassword(ctx context.Context, c *client.Client, username, password string) (client.TokenPair, error) {
+	var pair client.TokenPair
+	if err := c.Post(ctx, "/api/v1/auth/login", map[string]string{
+		"username": username,
+		"password": password,
+	}, &pair); err != nil {
+		return pair, fmt.Errorf("login failed: %w", err)
+	}
+	return pair, nil
+}
+
+// oauthCallbackPort is the fixed local port used for the OAuth browser callback.
+// The OAuth client (ServiceAccount annotation oauth-redirecturi.cli) must allow
+// http://localhost:18085/callback.
+const oauthCallbackPort = 18085
+
+// oauthCallbackResult holds the code and state received from the OAuth callback.
+type oauthCallbackResult struct {
+	Code  string
+	State string
+}
+
+// startCallbackServer starts a local HTTP server on oauthCallbackPort to receive
+// the OAuth callback. Returns channels for the result/error, the redirect URI,
+// and a stop function. The caller must call stop() when done.
+func startCallbackServer() (<-chan oauthCallbackResult, <-chan error, string, func(), error) {
+	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", oauthCallbackPort))
+	if err != nil {
+		return nil, nil, "", nil, fmt.Errorf("starting local callback server on port %d (must be free): %w", oauthCallbackPort, err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
+
+	resultCh := make(chan oauthCallbackResult, 1)
+	errCh := make(chan error, 1)
+	var once sync.Once
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if errParam := r.URL.Query().Get("error"); errParam != "" {
+			desc := r.URL.Query().Get("error_description")
+			fmt.Fprintf(w, "<html><body><h2>Authentication failed</h2><p>%s: %s</p><p>You may close this tab.</p></body></html>", //nolint:errcheck
+				html.EscapeString(errParam), html.EscapeString(desc))
+			once.Do(func() { errCh <- fmt.Errorf("OAuth error %q: %s", errParam, desc) })
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			fmt.Fprint(w, "<html><body><h2>Authentication failed</h2><p>No authorization code received.</p><p>You may close this tab.</p></body></html>") //nolint:errcheck
+			once.Do(func() { errCh <- fmt.Errorf("no authorization code in callback") })
+			return
+		}
+		fmt.Fprint(w, "<html><body><h2>Login successful</h2><p>You may close this tab and return to the terminal.</p></body></html>") //nolint:errcheck
+		once.Do(func() {
+			resultCh <- oauthCallbackResult{
+				Code:  code,
+				State: r.URL.Query().Get("state"),
+			}
+		})
+	})
+
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go srv.Serve(ln) //nolint:errcheck
+
+	return resultCh, errCh, redirectURI, func() { srv.Close() }, nil //nolint:errcheck
+}
+
+// awaitOAuthCallback waits for the authorization code and state from the
+// callback server, an OAuth error, a timeout, or context cancellation.
+func awaitOAuthCallback(ctx context.Context, resultCh <-chan oauthCallbackResult, errCh <-chan error) (oauthCallbackResult, error) {
+	select {
+	case result := <-resultCh:
+		return result, nil
+	case err := <-errCh:
+		return oauthCallbackResult{}, err
+	case <-time.After(5 * time.Minute):
+		return oauthCallbackResult{}, fmt.Errorf("timed out waiting for browser authentication")
+	case <-ctx.Done():
+		return oauthCallbackResult{}, ctx.Err()
+	}
+}

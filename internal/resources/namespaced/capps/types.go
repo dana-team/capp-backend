@@ -1,0 +1,265 @@
+// Package capps implements the Capp resource handler.
+//
+// It exposes full CRUD for the rcs.dana.io/v1alpha1/Capp custom resource:
+//
+//	GET    /api/v1/clusters/:cluster/capps                               (all namespaces)
+//	GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps
+//	GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
+//	POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps
+//	PUT    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
+//	DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
+//
+// The handler translates between the frontend-facing DTOs defined in this file
+// and the Kubernetes Capp type via convert.go. All K8s API interaction happens
+// through the per-request scoped client injected by the cluster middleware.
+package capps
+
+// ── Request / Response DTOs ───────────────────────────────────────────────────
+// These types are the public API contract between the backend and the frontend.
+// They are intentionally simpler than the raw Kubernetes Capp spec so the
+// frontend does not need to understand K8s conventions.
+
+type CappSize string
+
+const CappSizeSmall CappSize = "small"
+const CappSizeMedium CappSize = "medium"
+const CappSizeLarge CappSize = "large"
+
+// EnvVarSource selects a value from a Secret or ConfigMap key.
+type EnvVarSource struct {
+	SecretKeyRef    *KeySelector `json:"secretKeyRef,omitempty"`
+	ConfigMapKeyRef *KeySelector `json:"configMapKeyRef,omitempty"`
+}
+
+// KeySelector identifies a key within a named Secret or ConfigMap.
+type KeySelector struct {
+	Name string `json:"name" binding:"required"`
+	Key  string `json:"key"  binding:"required"`
+}
+
+// EnvVar represents a single container environment variable.
+type EnvVar struct {
+	Name      string        `json:"name"      binding:"required"`
+	Value     string        `json:"value,omitempty"`
+	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
+}
+
+// VolumeMount maps a volume into a container at a path.
+type VolumeMount struct {
+	Name      string `json:"name"      binding:"required"`
+	MountPath string `json:"mountPath" binding:"required"`
+}
+
+// RouteSpec configures the external HTTP route for a Capp.
+type RouteSpec struct {
+	// Hostname is a custom DNS name for the Capp. Optional.
+	Hostname string `json:"hostname,omitempty"`
+
+	// TLSEnabled determines whether TLS is enabled for the route.
+	TLSEnabled bool `json:"tlsEnabled,omitempty"`
+
+	// RouteTimeoutSeconds is the maximum request duration. Optional.
+	RouteTimeoutSeconds *int64 `json:"routeTimeoutSeconds,omitempty"`
+}
+
+// LogSpec configures log shipping for a Capp.
+type LogSpec struct {
+	// Type is one of "elastic" or "elastic-datastream".
+	// When type is "elastic-datastream", Index is ignored.
+	Type           string `json:"type"`
+	Host           string `json:"host"`
+	Index          string `json:"index,omitempty"`
+	User           string `json:"user"`
+	PasswordSecret string `json:"passwordSecret"`
+}
+
+// NFSVolume describes one NFS volume to be mounted into the Capp containers.
+type NFSVolume struct {
+	Name     string `json:"name"     binding:"required"`
+	Server   string `json:"server"   binding:"required"`
+	Path     string `json:"path"     binding:"required"`
+	Capacity string `json:"capacity" binding:"required"` // e.g. "10Gi"
+}
+
+// SecretVolume mounts a Kubernetes Secret as a volume into the container.
+type SecretVolume struct {
+	Name       string `json:"name"       binding:"required"`
+	SecretName string `json:"secretName" binding:"required"`
+	MountPath  string `json:"mountPath"  binding:"required"`
+}
+
+// ConfigMapVolume mounts a Kubernetes ConfigMap as a volume into the container.
+type ConfigMapVolume struct {
+	Name          string `json:"name"          binding:"required"`
+	ConfigMapName string `json:"configMapName" binding:"required"`
+	MountPath     string `json:"mountPath"     binding:"required"`
+}
+
+// ScaleSpec configures autoscaling for a Capp.
+type ScaleSpec struct {
+	// Metric defines which metric type is watched by the Autoscaler.
+	// One of: concurrency, cpu, memory, rps. Default: concurrency.
+	Metric string `json:"metric,omitempty"`
+
+	// MinReplicas sets the minimum replica count. Default: 0.
+	MinReplicas int `json:"minReplicas,omitempty"`
+
+	// ScaleDelaySeconds is the delay before the Autoscaler scales down to zero.
+	ScaleDelaySeconds int `json:"scaleDelaySeconds,omitempty"`
+}
+
+// CappRequest is the request body accepted by POST (create) and PUT (update).
+// Required fields are validated by Gin's binding:"required" tags.
+type CappRequest struct {
+	// Name is the Kubernetes resource name. Required for create.
+	// For update it is taken from the URL parameter.
+	Name      string `json:"name"      binding:"required"`
+	Namespace string `json:"namespace" binding:"required"`
+
+	// ScaleSpec configures autoscaling. Optional.
+	ScaleSpec ScaleSpec `json:"scaleSpec,omitempty"`
+
+	// State is enabled or disabled. Default: enabled.
+	State string `json:"state,omitempty"`
+
+	// Image is the container image reference. Required.
+	Image string `json:"image" binding:"required"`
+
+	// ContainerName is the optional container name.
+	ContainerName string `json:"containerName,omitempty"`
+
+	// CappSize is a high-level sizing abstraction that maps to specific resource requests/limits.
+	Size CappSize `json:"size,omitempty"`
+
+	// Env is the list of environment variables.
+	Env []EnvVar `json:"env,omitempty"`
+
+	// VolumeMounts maps volumes into the container.
+	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
+
+	// RouteSpec configures external routing. Optional.
+	RouteSpec *RouteSpec `json:"routeSpec,omitempty"`
+
+	// LogSpec configures log shipping. Optional.
+	LogSpec *LogSpec `json:"logSpec,omitempty"`
+
+	// NFSVolumes lists NFS volumes to provision. Optional.
+	NFSVolumes []NFSVolume `json:"nfsVolumes,omitempty"`
+
+	// SecretVolumes lists Kubernetes Secrets to mount as volumes. Optional.
+	SecretVolumes []SecretVolume `json:"secretVolumes,omitempty"`
+
+	// ConfigMapVolumes lists Kubernetes ConfigMaps to mount as volumes. Optional.
+	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
+
+	// EventSourcesSpec lists Knative Eventing sources to attach to the Capp. Optional.
+	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
+}
+
+// ── Event source types ────────────────────────────────────────────────────────
+
+// PingSourceConfig configures a Knative PingSource event source.
+type PingSourceConfig struct {
+	Schedule string `json:"schedule" binding:"required"`
+	Data     string `json:"data,omitempty"`
+}
+
+// KafkaSourceConfig configures a Kafka event source.
+type KafkaSourceConfig struct {
+	BootstrapServers []string `json:"bootstrapServers" binding:"required,min=1"`
+	Topics           []string `json:"topics"           binding:"required,min=1"`
+	ConsumerGroup    string   `json:"consumerGroup,omitempty"`
+	Consumers        *int32   `json:"consumers,omitempty"`
+	SecretRef        string   `json:"secretRef" binding:"required"`
+}
+
+// SourceConfig defines a single Knative Eventing source for a Capp.
+// Exactly one of PingSourceConfig or KafkaSourceConfig must be set.
+type SourceConfig struct {
+	Name              string             `json:"name" binding:"required"`
+	URI               string             `json:"uri,omitempty"`
+	PingSourceConfig  *PingSourceConfig  `json:"pingSourceConfiguration,omitempty"`
+	KafkaSourceConfig *KafkaSourceConfig `json:"kafkaSourceConfiguration,omitempty"`
+}
+
+// EventSourcesSpec lists all event sources attached to a Capp.
+type EventSourcesSpec struct {
+	Sources []SourceConfig `json:"sources,omitempty"`
+}
+
+// ── Response types ────────────────────────────────────────────────────────────
+
+// ConditionResponse is a single status condition flattened for the UI.
+type ConditionResponse struct {
+	// Source identifies which sub-system produced this condition
+	// (e.g. "knative", "logging", "route.certificate").
+	Source             string `json:"source"`
+	Type               string `json:"type"`
+	Status             string `json:"status"`
+	LastTransitionTime string `json:"lastTransitionTime,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	Message            string `json:"message,omitempty"`
+}
+
+// EventSourceStatusResponse is the observed state of a single event source.
+type EventSourceStatusResponse struct {
+	Name    string `json:"name,omitempty"`
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// EventingStatusResponse is the observed state of all event sources linked to a Capp.
+type EventingStatusResponse struct {
+	EventSources []EventSourceStatusResponse `json:"eventSources,omitempty"`
+}
+
+// StateStatusResponse reflects the Capp's current enabled/disabled state.
+type StateStatusResponse struct {
+	State      string `json:"state,omitempty"`
+	LastChange string `json:"lastChange,omitempty"`
+}
+
+// CappStatusResponse is the status sub-object in a CappResponse.
+// It exposes a flattened view of the condition tree that the frontend's
+// Conditions table renders.
+type CappStatusResponse struct {
+	Conditions     []ConditionResponse    `json:"conditions"`
+	EventingStatus EventingStatusResponse `json:"eventingStatus,omitempty"`
+	StateStatus    StateStatusResponse    `json:"stateStatus"`
+}
+
+// CappResponse is returned by all read and write endpoints.
+type CappResponse struct {
+	Name            string            `json:"name"`
+	Namespace       string            `json:"namespace"`
+	CreatedAt       string            `json:"createdAt,omitempty"`
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+
+	ScaleSpec     ScaleSpec     `json:"scaleSpec,omitempty"`
+	State         string        `json:"state,omitempty"`
+	Image         string        `json:"image,omitempty"`
+	ContainerName string        `json:"containerName,omitempty"`
+	Size          CappSize      `json:"size,omitempty"`
+	Env           []EnvVar      `json:"env,omitempty"`
+	VolumeMounts  []VolumeMount `json:"volumeMounts,omitempty"`
+	RouteSpec     *RouteSpec    `json:"routeSpec,omitempty"`
+	LogSpec       *LogSpec      `json:"logSpec,omitempty"`
+	NFSVolumes    []NFSVolume   `json:"nfsVolumes,omitempty"`
+
+	SecretVolumes    []SecretVolume    `json:"secretVolumes,omitempty"`
+	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
+	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
+
+	Status CappStatusResponse `json:"status"`
+}
+
+// CappListResponse is the envelope returned by the list endpoints.
+type CappListResponse struct {
+	Items []CappResponse `json:"items"`
+	Total int            `json:"total"`
+}

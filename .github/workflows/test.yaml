@@ -1,0 +1,187 @@
+# CI: Server test workflow
+# Runs on server/shared code changes. Lint, unit tests, Helm lint, Docker build check.
+name: Test (server)
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "cmd/server/**"
+      - "internal/auth/**"
+      - "internal/apierrors/**"
+      - "internal/cluster/**"
+      - "internal/config/**"
+      - "internal/gitops/**"
+      - "internal/middleware/**"
+      - "internal/resources/**"
+      - "internal/server/**"
+      - "pkg/**"
+      - "api/**"
+      - "helm/**"
+      - "deploy/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/test.yaml"
+  pull_request:
+    branches: ["main", "master"]
+    paths:
+      - "cmd/server/**"
+      - "internal/auth/**"
+      - "internal/apierrors/**"
+      - "internal/cluster/**"
+      - "internal/config/**"
+      - "internal/gitops/**"
+      - "internal/middleware/**"
+      - "internal/resources/**"
+      - "internal/server/**"
+      - "pkg/**"
+      - "api/**"
+      - "helm/**"
+      - "deploy/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/test.yaml"
+  workflow_call:
+    inputs:
+      skip_build_checks:
+        description: "Skip build and docker-build jobs (release workflow builds for real)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Go: lint + test ──────────────────────────────────────────────────────────
+  go:
+    name: Go lint & test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: go vet
+        run: go vet $(go list ./... | grep -v 'internal/cli\|cmd/cappctl')
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.4
+          args: --timeout=5m --skip-dirs=internal/cli
+
+      - name: Unit tests (with race detector)
+        run: |
+          go test -v -race -coverprofile=coverage.out \
+            $(go list ./... | grep -v 'internal/cli\|cmd/cappctl')
+
+      - name: Coverage report
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Go: build check ──────────────────────────────────────────────────────────
+  build:
+    name: Build server binary
+    if: ${{ !inputs.skip_build_checks }}
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o /dev/null ./cmd/server/...
+
+  # ── Helm: lint ───────────────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm chart lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.17.0
+
+      - name: Lint chart (deployment mode)
+        run: |
+          helm lint helm/capp-backend \
+            --set deployAs=deployment \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com
+
+      - name: Lint chart (capp mode)
+        run: |
+          helm lint helm/capp-backend \
+            --set deployAs=capp \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com
+
+      - name: Template chart (deployment mode)
+        run: |
+          helm template capp-backend helm/capp-backend \
+            --set deployAs=deployment \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com \
+            --set secret.jwtSecretKey=test-secret \
+            > /dev/null
+
+      - name: Template chart (capp mode)
+        run: |
+          helm template capp-backend helm/capp-backend \
+            --set deployAs=capp \
+            --set config.clusters[0].name=test \
+            --set config.clusters[0].credential.inline.apiServer=https://example.com \
+            --set secret.jwtSecretKey=test-secret \
+            > /dev/null
+
+  # ── Docker: build check (no push) ────────────────────────────────────────────
+  docker-build:
+    name: Docker build (no push)
+    if: ${{ !inputs.skip_build_checks }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: ghcr.io/dana-team/capp-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

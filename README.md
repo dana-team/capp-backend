@@ -1,0 +1,381 @@
+# capp-backend
+
+`capp-backend` is the REST API server for the [Capp Console](https://github.com/dana-team/capp-frontend). It sits between the frontend and one or more Kubernetes/OpenShift clusters, handling authentication, cluster routing, and lifecycle management of [**Capp**](https://github.com/dana-team/container-app-operator) (ContainerApp) custom resources.
+
+## Features
+
+- **Pluggable authentication** — Five modes: `passthrough`, `jwt`, `static`, `dex` (Dex OIDC username/password), and `openshift` (OpenShift OAuth with K8s impersonation).
+- **Multi-cluster support** — Configure any number of clusters; each is health-checked every 30 seconds.
+- **Capp CRUD** — Full create / read / update / delete for `Capp` resources across namespaces.
+- **Namespace listing** — Returns the namespaces visible to each cluster's credentials.
+- **Interactive API docs** — Embedded [Scalar](https://scalar.com/) UI served at `/docs` alongside a raw OpenAPI 3.1 spec at `/openapi.yaml`. Both work in air-gapped environments (assets are compiled into the binary).
+- **Observability** — Structured JSON logging (zap), Prometheus metrics (`/metrics`), and optional OTLP tracing.
+- **Rate limiting** — Token-bucket rate limiter on all endpoints (configurable; on by default).
+- **cappctl CLI** — Command-line client for the API. Supports all five auth modes, named contexts, token refresh, and `table`/`wide`/`json`/`yaml` output. See [docs/cappctl.md](docs/cappctl.md).
+
+## Prerequisites
+
+- **Go** 1.25 or later (for building from source)
+- One or more Kubernetes/OpenShift clusters with the [`container-app-operator`](https://github.com/dana-team/container-app-operator) installed (provides the `rcs.dana.io/v1alpha1` API group)
+- For `dex` auth mode: a [Dex](https://dexidp.io/) instance with a static client that has `grantTypes: [password]` enabled
+- For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered, and a service account with `impersonate` permissions on each managed cluster
+
+## Getting Started
+
+### Build from source
+
+```bash
+go build -o bin/server ./cmd/server/...
+```
+
+### Run
+
+```bash
+./bin/server --config config/config.yaml
+```
+
+The server listens on port `8080` by default. All configuration can be overridden via environment variables prefixed with `CAPP_` (e.g. `CAPP_SERVER_PORT=9090`).
+
+### Docker
+
+```bash
+docker build -f deploy/Dockerfile -t capp-backend .
+docker run -p 8080:8080 -v $(pwd)/config/config.yaml:/etc/capp/config.yaml capp-backend --config /etc/capp/config.yaml
+```
+
+## Configuration
+
+Configuration is loaded from a YAML file specified with the `--config` flag (e.g. `--config config/config.yaml`). Every field can be overridden by an environment variable — replace dots with underscores and prefix with `CAPP_` (e.g. `auth.jwt.secretKey` → `CAPP_AUTH_JWT_SECRETKEY`). If `--config` is omitted, no config file is read and only environment variables and built-in defaults are used.
+
+### Full reference
+
+```yaml
+server:
+  port: 8080
+  readTimeoutSeconds: 30
+  writeTimeoutSeconds: 30
+  idleTimeoutSeconds: 60
+  corsAllowedOrigins:
+    - "http://localhost:3000"
+
+auth:
+  # Mode: passthrough | jwt | static | dex | openshift
+  mode: passthrough
+
+  jwt:
+    # Required in jwt and dex modes. Inject via CAPP_AUTH_JWT_SECRETKEY.
+    secretKey: ""
+    tokenTTLMinutes: 60        # Access token lifetime
+    refreshTTLMinutes: 1440    # Refresh token lifetime (24 h)
+
+  static:
+    # For development / CI only. List of accepted bearer tokens.
+    apiKeys: []
+
+  dex:
+    endpoint: "https://dex.example.com"   # Dex issuer URL
+    clientId: "capp-backend"
+    # Inject via CAPP_AUTH_DEX_CLIENTSECRET.
+    clientSecret: ""
+    scopes: [openid, profile, email]
+    # Optional: base64-encoded PEM CA bundle for TLS to the Dex server.
+    caCert: ""
+
+  openshift:
+    apiServer: "https://api.my-cluster.example.com:6443"  # External OpenShift API URL
+    caCert: ""                # Optional: base64-encoded PEM CA bundle
+    clientId: "capp-backend"  # OAuthClient name registered in OpenShift
+    # Inject via CAPP_AUTH_OPENSHIFT_CLIENTSECRET.
+    clientSecret: ""
+    redirectUri: "https://console.example.com/auth/callback"
+    scopes: ["user:info", "user:check-access"]
+    tokenCacheTTLSeconds: 60  # How long validated tokens are cached
+
+  rateLimit:
+    enabled: true
+    requestsPerSecond: 20
+    burst: 40
+
+logging:
+  level: info       # debug | info | warn | error
+  format: json      # json | console
+  addCallerInfo: false
+
+metrics:
+  enabled: true
+  path: /metrics
+
+tracing:
+  enabled: false
+  otlpEndpoint: "localhost:4317"
+  serviceName: "capp-backend"
+  sampleRate: 0.1
+
+gitops:
+  enabled: false
+  repoURL: "https://github.com/org/capp-gitops.git"
+  branch: "main"
+  authMethod: "token"    # "token" or "ssh"
+  token: ""              # inject via CAPP_GITOPS_TOKEN
+  sshKeyPath: ""         # path to SSH private key (when authMethod is "ssh")
+  pathPrefix: "sites"    # prefix for values files in the repo
+
+clusters:
+  - name: "local"                 # Used as path parameter in /api/v1/clusters/:cluster
+    displayName: "Local Cluster"  # Human-readable label for the UI
+    allowedNamespaces: []         # Empty = all namespaces allowed
+    gitOpsPath: ""                # Sub-path within gitops.pathPrefix for this cluster
+    credential:
+      # Option A: kubeconfig file
+      kubeconfigPath: "/home/user/.kube/config"
+      # Option B: inline credentials
+      inline:
+        apiServer: "https://my-cluster:6443"
+        caCert: "<base64-encoded PEM>"
+        token: "<service-account-token>"
+
+resources:
+  namespaces:
+    enabled: true
+  capps:
+    enabled: true
+  configmaps:
+    enabled: true
+  secrets:
+    enabled: true
+```
+
+## Authentication Modes
+
+### `passthrough` (default)
+
+The client's `Authorization: Bearer <token>` header is forwarded directly to each Kubernetes API server. No server-side state is created. Suitable for initial deployment and setups where clients already hold cluster tokens.
+
+### `jwt`
+
+Clients POST a cluster name and a raw Kubernetes bearer token to `/api/v1/auth/login`. The backend validates the token against the cluster, issues a short-lived **access JWT** and a long-lived **refresh JWT**, and stores a server-side session. The raw token never travels over the wire again after login.
+
+Requires `auth.jwt.secretKey`.
+
+### `static`
+
+A fixed list of API keys in `auth.static.apiKeys`. All keys grant the same access. Intended for development or CI environments where key management is not needed.
+
+### `dex`
+
+Clients POST a `username` and `password` to `/api/v1/auth/login`. The backend exchanges the credentials for an OIDC ID token from Dex (Resource Owner Password Credentials grant), verifies it, and issues backend-managed JWTs identical to `jwt` mode. Kubernetes API calls use the cluster's **pre-configured service-account token** — user identity is not forwarded to Kubernetes.
+
+Requires `auth.dex.endpoint`, `auth.dex.clientId`, `auth.dex.clientSecret`, and `auth.jwt.secretKey`. The Dex static client must have `grantTypes: [password]` enabled.
+
+### `openshift`
+
+Authenticates users via the OpenShift OAuth server of the cluster where the backend is deployed. The backend is fully stateless — it never issues its own JWTs. Instead, OpenShift-managed tokens are used directly.
+
+**Browser flow:** The frontend redirects the user to the OpenShift OAuth authorize endpoint. After consent, the frontend receives an authorization code and exchanges it via `POST /api/v1/auth/openshift/callback` for an OpenShift access token and refresh token.
+
+**Programmatic flow:** Any valid OpenShift bearer token can be passed directly in the `Authorization: Bearer <token>` header. The backend validates it via the Kubernetes TokenReview API.
+
+On every authenticated request, the backend extracts the user's identity (username + groups) from the token and **impersonates** that user when making requests to managed clusters. Each managed cluster must have a service account token configured (`credential.inline.token`) with `impersonate` permissions on `users` and `groups` resources.
+
+Requires `auth.openshift.apiServer`, `auth.openshift.clientId`, `auth.openshift.clientSecret`, `auth.openshift.redirectUri`, and an inline token for every configured cluster.
+
+### Adding Clusters (openshift mode)
+
+To add a new managed cluster in `openshift` mode:
+
+1. **Create a ServiceAccount** on the target cluster with impersonation permissions:
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRole
+   metadata:
+     name: capp-backend-impersonator
+   rules:
+     - apiGroups: [""]
+       resources: ["users", "groups"]
+       verbs: ["impersonate"]
+     - apiGroups: ["authentication.k8s.io"]
+       resources: ["tokenreviews"]
+       verbs: ["create"]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRoleBinding
+   metadata:
+     name: capp-backend-impersonator
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: ClusterRole
+     name: capp-backend-impersonator
+   subjects:
+     - kind: ServiceAccount
+       name: capp-backend
+       namespace: capp-system
+   ```
+
+2. **Generate a long-lived token** for the ServiceAccount:
+   ```bash
+   kubectl create token capp-backend -n capp-system --duration=8760h
+   ```
+
+3. **Add the cluster** to `config.clusters` and provide the token via the corresponding `secret.clusterTokens[N]` entry or `CAPP_CLUSTERS_N_CREDENTIAL_INLINE_TOKEN` environment variable.
+
+## API Reference
+
+The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
+
+| Endpoint | Description |
+|---|---|
+| `GET /docs` | Interactive Scalar API documentation |
+| `GET /openapi.yaml` | Raw OpenAPI 3.1 spec |
+
+### Endpoint summary
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/auth/mode` | — | Get active auth mode |
+| `POST` | `/api/v1/auth/login` | — | Sign in (jwt / dex / static / openshift modes) |
+| `POST` | `/api/v1/auth/refresh` | — | Refresh access token (jwt / dex / openshift modes) |
+| `GET` | `/api/v1/auth/openshift/authorize` | — | Get OpenShift OAuth authorize URL (openshift mode) |
+| `POST` | `/api/v1/auth/openshift/callback` | — | Exchange OAuth code for tokens (openshift mode) |
+| `GET` | `/api/v1/clusters` | ✓ | List configured clusters |
+| `GET` | `/api/v1/clusters/:cluster` | ✓ | Get cluster metadata |
+| `GET` | `/api/v1/clusters/:cluster/namespaces` | ✓ | List namespaces |
+| `POST` | `/api/v1/clusters/:cluster/namespaces` | ✓ | Create a namespace |
+| `GET` | `/api/v1/clusters/:cluster/capps` | ✓ | List all Capps across namespaces |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps` | ✓ | List Capps in a namespace |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps` | ✓ | Create a Capp |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Get a Capp |
+| `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Update a Capp |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Delete a Capp |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Trigger Capp GitOps sync |
+| `GET` | `/api/v1/clusters/:cluster/configmaps` | ✓ | List all ConfigMaps across namespaces |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | List ConfigMaps in a namespace |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | Create a ConfigMap |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps/:name` | ✓ | Get a ConfigMap |
+| `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps/:name` | ✓ | Update a ConfigMap |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps/:name` | ✓ | Delete a ConfigMap |
+| `GET` | `/api/v1/clusters/:cluster/secrets` | ✓ | List all Secrets across namespaces |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets` | ✓ | List Secrets in a namespace |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets` | ✓ | Create a Secret |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Get a Secret |
+| `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Update a Secret |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Delete a Secret |
+| `GET` | `/healthz` | — | Liveness probe |
+| `GET` | `/readyz` | — | Readiness probe (healthy when ≥1 cluster is reachable) |
+| `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
+
+## cappctl CLI
+
+`cappctl` is the official CLI for the capp-backend API.
+
+### Build
+
+```bash
+make build-cli          # produces bin/cappctl
+# or
+go build -o bin/cappctl ./cmd/cappctl/
+```
+
+### Quick start
+
+```bash
+# Log in and save a named context
+cappctl login --server https://capp.example.com --context prod --cluster my-cluster --token <token>
+
+# List Capps
+cappctl get capps --cluster my-cluster --namespace my-ns
+
+# Create a Capp
+cappctl create capps --name my-app --image nginx:latest --cluster my-cluster --namespace my-ns
+
+# Switch context
+cappctl context use staging
+```
+
+### Auth modes
+
+| Mode | Login command |
+|---|---|
+| `passthrough` / `static` | `--token <raw-token>` |
+| `jwt` | `--token <k8s-token> --cluster <name>` |
+| `dex` | `--username <u>` (password prompted) |
+| `openshift` | `--username <u>` (password prompted) **or** browser flow (URL opened automatically on Linux/Windows) **or** `--token <raw-token>` |
+
+> Auth mode is auto-detected from the server if `--auth-mode` is omitted.
+
+> **OpenShift browser flow:** `cappctl` binds a local callback server on port **18085**. The ServiceAccount used as the OAuth client must have the annotation `serviceaccounts.openshift.io/oauth-redirecturi.cli: "http://localhost:18085/callback"` (set automatically by the Helm chart). Ensure port 18085 is free when running `cappctl login` in OpenShift mode.
+
+### Shell completion
+
+`cappctl` supports tab completion for bash, zsh, fish, and PowerShell. See [docs/cappctl.md](docs/cappctl.md#shell-completion) for setup instructions.
+
+See [docs/cappctl.md](docs/cappctl.md) for the full reference.
+
+## Project Structure
+
+```
+cmd/
+├── server/         # Server entry point — wires config, auth, clusters, and HTTP server
+└── cappctl/        # CLI entry point
+api/                # OpenAPI 3.1 spec (embedded in binary via go:embed)
+config/             # Default config.yaml
+deploy/             # Dockerfile, Kubernetes manifests, Helm chart skeleton
+docs/               # Documentation (cappctl.md, openshift-auth.md)
+internal/
+├── apierrors/      # Canonical error types and Gin response helpers
+├── auth/           # Auth manager interface + passthrough, jwt, static, dex, openshift implementations
+├── cli/            # cappctl CLI packages (no Gin/K8s imports)
+│   ├── auth/       # login, logout, context commands
+│   ├── capps/      # Capp CRUD commands
+│   ├── client/     # HTTP client with token auth and TLS options
+│   ├── config/     # ~/.config/cappctl/config.yaml read/write
+│   ├── output/     # table/wide/json/yaml renderer
+│   ├── resource/   # ResourceCommand interface + registry
+│   └── root/       # Root Cobra command, PersistentPreRunE, token refresh
+├── cluster/        # ClusterManager — multi-cluster routing and health checks
+├── config/         # Config structs, Viper loading, and validation
+├── gitops/         # GitOps client — clone, commit, push per-capp values files
+├── middleware/      # Gin middleware: auth, cluster resolution, CORS, logging, metrics, rate limiting
+├── resources/      # Resource handler registry
+│   ├── cluster/
+│   │   └── namespaces/  # Namespace list + create handler
+│   └── namespaced/
+│       ├── capps/       # Capp CRUD + sync handler
+│       ├── configmaps/  # ConfigMap CRUD handler
+│       └── secrets/     # Secret CRUD handler
+└── server/         # Gin engine setup, route registration, auth endpoints
+pkg/k8s/            # Kubernetes scheme builder (registers CRD types)
+```
+
+## Kubernetes Deployment
+
+A reference `Deployment`, `Service`, `Secret`, and `ConfigMap` are provided in `deploy/deployment.yaml` and `deploy/configmap.yaml`.
+
+The container runs as a non-root user (`UID 65532`) with a read-only root filesystem. Liveness and readiness probes are pre-configured on `/healthz` and `/readyz`.
+
+Sensitive values (`auth.jwt.secretKey`, cluster tokens) should be provided via Kubernetes Secrets and mounted as environment variables:
+
+```bash
+CAPP_AUTH_JWT_SECRETKEY=<secret>
+CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN=<sa-token>
+```
+
+> **Note:** In `jwt` and `dex` modes, sessions are stored in-memory. Running more than one replica requires a shared session store (e.g. Redis). For single-replica deployments, the in-memory store is sufficient.
+>
+> **Note:** In `openshift` mode, the backend is fully stateless — no sessions are stored. Multiple replicas work without shared state. Token validation results are cached in-memory per pod.
+
+## Development
+
+```bash
+# Run tests
+go test ./...
+
+# Lint (requires golangci-lint)
+golangci-lint run
+
+# Build
+go build ./...
+```
+
+## Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request.

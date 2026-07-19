@@ -1,0 +1,1857 @@
+openapi: 3.1.0
+info:
+  title: capp-backend API
+  description: |
+    Multi-cluster API gateway for managing Capp (container-app) resources on
+    Kubernetes / OpenShift clusters.
+
+    ## Authentication
+
+    The backend supports five auth modes configured server-side:
+
+    - **passthrough** — supply a raw Kubernetes `Bearer <token>` on every request.
+    - **jwt** — call `/api/v1/auth/login` with `cluster` + `token` to exchange a
+      cluster token for a short-lived JWT; refresh with `/api/v1/auth/refresh`.
+    - **static** — use a fixed API key configured on the server (dev / CI only).
+    - **dex** — call `/api/v1/auth/login` with `username` + `password`; Dex handles OIDC.
+    - **openshift** — use `/api/v1/auth/openshift/authorize` to get an OAuth URL,
+      then POST the code to `/api/v1/auth/openshift/callback`.
+
+    Use `GET /api/v1/auth/mode` to discover which mode the server is running.
+    All resource endpoints require the `Authorization: Bearer <token>` header.
+  version: "0.1.0"
+  contact:
+    name: dana-team
+    url: https://github.com/dana-team/capp-backend
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: auth
+    description: Authentication — login and token refresh
+  - name: clusters
+    description: Cluster discovery and metadata
+  - name: namespaces
+    description: Namespace listing within a cluster
+  - name: capps
+    description: Capp resource management
+  - name: configmaps
+    description: ConfigMap resource management
+  - name: secrets
+    description: Secret resource management
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        In **passthrough** mode supply the raw Kubernetes ServiceAccount token.
+        In **jwt** / **dex** / **openshift** modes supply the JWT returned by the
+        login or callback endpoint.
+        In **static** mode supply one of the configured API keys.
+
+  schemas:
+    # ── Error ────────────────────────────────────────────────────────────────────
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: NOT_FOUND
+            message:
+              type: string
+              example: resource "my-capp" not found
+            status:
+              type: integer
+              example: 404
+
+    # ── Auth ─────────────────────────────────────────────────────────────────────
+    LoginRequest:
+      description: |
+        - **jwt / passthrough / static** mode: provide `cluster` and `token`.
+        - **dex** mode: provide `username` and `password`.
+        - **openshift** mode: provide `username` and `password` (Resource Owner Password flow).
+      oneOf:
+        - title: ClusterTokenLogin
+          type: object
+          required: [cluster, token]
+          properties:
+            cluster:
+              type: string
+              description: Cluster to authenticate against (jwt/passthrough/static mode).
+              example: production
+            token:
+              type: string
+              description: Raw Kubernetes Bearer token (jwt/passthrough/static mode).
+              example: "eyJhbGci..."
+        - title: DexLogin
+          type: object
+          required: [username, password]
+          properties:
+            username:
+              type: string
+              description: Username (dex mode).
+              example: admin
+            password:
+              type: string
+              description: Password (dex mode).
+              example: "s3cr3t"
+        - title: OpenShiftPasswordLogin
+          type: object
+          required: [username, password]
+          properties:
+            username:
+              type: string
+              description: Username (openshift mode, Resource Owner Password flow).
+              example: admin
+            password:
+              type: string
+              description: Password (openshift mode).
+              example: "s3cr3t"
+
+    TokenPair:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: Short-lived JWT for API requests.
+        refreshToken:
+          type: string
+          description: Long-lived JWT for refreshing the access token.
+        expiresAt:
+          type: string
+          format: date-time
+          description: UTC expiry time of the access token.
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          description: Refresh token obtained from a previous login or refresh.
+
+    AuthModeResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [passthrough, jwt, static, dex, openshift]
+          example: jwt
+
+    OpenShiftAuthorizeResponse:
+      type: object
+      properties:
+        authorizeUrl:
+          type: string
+          description: OAuth authorize URL to redirect the browser to.
+          example: "https://oauth.cluster.example.com/oauth/authorize?..."
+        state:
+          type: string
+          description: CSRF state token to pass back in the callback request.
+          example: "a1b2c3d4e5f6..."
+
+    OpenShiftCallbackRequest:
+      type: object
+      required: [code, state]
+      properties:
+        code:
+          type: string
+          description: OAuth authorization code received from the OpenShift OAuth server.
+        state:
+          type: string
+          description: CSRF state token received from the authorize response.
+
+    # ── Clusters ──────────────────────────────────────────────────────────────────
+    ClusterMeta:
+      type: object
+      properties:
+        name:
+          type: string
+          example: production
+        displayName:
+          type: string
+          example: "Production (us-east-1)"
+        healthy:
+          type: boolean
+          example: true
+        isOpenShift:
+          type: boolean
+          description: True when the cluster exposes the OpenShift API groups.
+          example: false
+        gitOpsPath:
+          type: string
+          description: Directory name used in the GitOps repository path for this cluster.
+          example: example
+        allowedNamespaces:
+          type: array
+          items:
+            type: string
+          description: Empty list means all namespaces are accessible.
+          example: []
+
+    ClusterList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClusterMeta'
+
+    # ── Namespaces ────────────────────────────────────────────────────────────────
+    NamespaceItem:
+      type: object
+      properties:
+        name:
+          type: string
+          example: default
+        status:
+          type: string
+          example: Active
+
+    NamespaceList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NamespaceItem'
+        canCreate:
+          type: boolean
+          description: Whether the authenticated user has permission to create new namespaces in this cluster.
+
+    NamespaceQuota:
+      type: object
+      description: Resource quota limits to enforce on the namespace.
+      properties:
+        cpu:
+          type: string
+          description: CPU limit quota (Kubernetes quantity format).
+          example: "4"
+        memory:
+          type: string
+          description: Memory limit quota (Kubernetes quantity format).
+          example: 8Gi
+        pods:
+          type: integer
+          description: Maximum number of pods allowed in the namespace.
+          example: 50
+
+    CreateNamespaceRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Name of the namespace to create.
+          example: my-namespace
+        users:
+          type: array
+          items:
+            type: string
+          description: |
+            Users to bind to the `capp-user` ClusterRole via a RoleBinding.
+            If omitted, no RoleBinding is created.
+          example: [alice, bob]
+        quota:
+          $ref: '#/components/schemas/NamespaceQuota'
+
+    UpdateNamespaceRequest:
+      type: object
+      description: |
+        Replaces the namespace's ResourceQuota and RoleBinding. Omit a field to
+        leave that resource unchanged. Quota decreases are rejected when current
+        usage exceeds the requested new limit.
+      properties:
+        users:
+          type: array
+          items:
+            type: string
+          description: |
+            Full replacement list of users for the `capp-user` RoleBinding.
+            Creates the RoleBinding if it does not exist.
+          example: [alice, bob]
+        quota:
+          $ref: '#/components/schemas/NamespaceQuota'
+
+    PatchNamespaceRequest:
+      type: object
+      description: Adds new users to the namespace's existing `capp-user` RoleBinding without removing current members.
+      properties:
+        users:
+          type: array
+          items:
+            type: string
+          description: Users to add. Existing users are deduplicated; no user is removed.
+          example: [charlie]
+
+    # ── ConfigMaps ────────────────────────────────────────────────────────────────
+    ConfigMapRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: my-config
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            key1: value1
+            key2: value2
+    ConfigMapUpdateRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            key1: new-value
+            key3: value3
+
+    ConfigMapResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          example: my-config
+        namespace:
+          type: string
+          example: default
+        createdAt:
+          type: string
+          format: date-time
+        uid:
+          type: string
+        resourceVersion:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            key1: value1
+            key2: value2
+
+    ConfigMapList:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int32
+          example: 2
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigMapResponse'
+
+    # ── Secrets ───────────────────────────────────────────────────────────────────
+    SecretRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: my-secret
+        type:
+          type: string
+          description: Kubernetes secret type. Defaults to Opaque if omitted.
+          example: Opaque
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          description: Plain-text key-value pairs. The server handles base64 encoding.
+          example:
+            username: admin
+            password: s3cr3t
+
+    SecretUpdateRequest:
+      type: object
+      properties:
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          description: Plain-text key-value pairs to replace the secret's data with.
+          example:
+            username: admin
+            password: new-s3cr3t
+
+    SecretResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          example: my-secret
+        namespace:
+          type: string
+          example: default
+        type:
+          type: string
+          example: Opaque
+        createdAt:
+          type: string
+          format: date-time
+        uid:
+          type: string
+        resourceVersion:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          description: Base64-decoded key-value pairs.
+          example:
+            username: admin
+            password: s3cr3t
+
+    SecretList:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int32
+          example: 2
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretResponse'
+
+    # ── Capps ─────────────────────────────────────────────────────────────────────
+    CappSize:
+      type: string
+      enum: [small, medium, large]
+      description: |
+        High-level sizing abstraction. Maps to specific CPU/memory requests and
+        limits configured on the server. Mutually exclusive with setting raw
+        resource quantities directly.
+      example: small
+
+    KeySelector:
+      type: object
+      required: [name, key]
+      properties:
+        name:
+          type: string
+          description: Name of the Secret or ConfigMap.
+          example: my-secret
+        key:
+          type: string
+          description: Key within the Secret or ConfigMap.
+          example: password
+
+    EnvVarSource:
+      type: object
+      description: |
+        Selects the value of an env var from a Secret or ConfigMap key.
+        Exactly one of `secretKeyRef` or `configMapKeyRef` must be set.
+      properties:
+        secretKeyRef:
+          $ref: '#/components/schemas/KeySelector'
+        configMapKeyRef:
+          $ref: '#/components/schemas/KeySelector'
+
+    EnvVar:
+      type: object
+      required: [name]
+      description: |
+        `value` and `valueFrom` are mutually exclusive. Set `value` for a literal
+        string or `valueFrom` to reference a Secret/ConfigMap key. Setting both
+        is invalid.
+      properties:
+        name:
+          type: string
+          example: LOG_LEVEL
+        value:
+          type: string
+          example: info
+        valueFrom:
+          $ref: '#/components/schemas/EnvVarSource'
+
+    VolumeMount:
+      type: object
+      required: [name, mountPath]
+      properties:
+        name:
+          type: string
+          example: config-vol
+        mountPath:
+          type: string
+          example: /etc/config
+
+    RouteSpec:
+      type: object
+      properties:
+        hostname:
+          type: string
+          example: my-app.example.com
+        tlsEnabled:
+          type: boolean
+          example: true
+        routeTimeoutSeconds:
+          type: integer
+          format: int64
+          description: Maximum request duration in seconds.
+          example: 30
+
+    LogSpec:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [elastic, elastic-datastream]
+          description: Log destination type. When "elastic-datastream", the index field is ignored.
+          example: elastic
+        host:
+          type: string
+          example: https://elasticsearch.example.com:9200
+        index:
+          type: string
+          description: Index name to write events to. Ignored when type is "elastic-datastream".
+          example: capp-logs
+        user:
+          type: string
+          example: elastic-user
+        passwordSecret:
+          type: string
+          description: Name of the Kubernetes Secret holding the Elasticsearch password.
+          example: elastic-password-secret
+
+    NFSVolume:
+      type: object
+      required: [name, server, path, capacity]
+      properties:
+        name:
+          type: string
+          example: nfs-vol
+        server:
+          type: string
+          example: nfs.example.com
+        path:
+          type: string
+          example: /exports/data
+        capacity:
+          type: string
+          description: Storage capacity, e.g. "10Gi".
+          example: "10Gi"
+
+    SecretVolume:
+      type: object
+      required: [name, secretName, mountPath]
+      properties:
+        name:
+          type: string
+          example: my-secret-vol
+        secretName:
+          type: string
+          description: Name of the Kubernetes Secret to mount.
+          example: my-secret
+        mountPath:
+          type: string
+          example: /etc/secrets
+
+    ConfigMapVolume:
+      type: object
+      required: [name, configMapName, mountPath]
+      properties:
+        name:
+          type: string
+          example: my-cm-vol
+        configMapName:
+          type: string
+          description: Name of the Kubernetes ConfigMap to mount.
+          example: my-config
+        mountPath:
+          type: string
+          example: /etc/config
+
+    ScaleSpec:
+      type: object
+      properties:
+        metric:
+          type: string
+          enum: [rps, concurrency, cpu, memory]
+          example: concurrency
+        minReplicas:
+          type: integer
+          minimum: 0
+          example: 1
+        scaleDelaySeconds:
+          type: integer
+          minimum: 0
+          example: 30
+
+    CappRequest:
+      type: object
+      required: [name, namespace, image]
+      properties:
+        name:
+          type: string
+          example: my-app
+        namespace:
+          type: string
+          example: default
+        scaleSpec:
+          $ref: '#/components/schemas/ScaleSpec'
+        state:
+          type: string
+          enum: [enabled, disabled]
+          example: enabled
+        image:
+          type: string
+          example: ghcr.io/example/my-app:v1.2.3
+        containerName:
+          type: string
+          example: my-app
+        size:
+          $ref: '#/components/schemas/CappSize'
+        env:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        volumeMounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/VolumeMount'
+        routeSpec:
+          $ref: '#/components/schemas/RouteSpec'
+        logSpec:
+          $ref: '#/components/schemas/LogSpec'
+        nfsVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NFSVolume'
+        secretVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretVolume'
+        configMapVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigMapVolume'
+        eventSourcesSpec:
+          $ref: '#/components/schemas/EventSourcesSpec'
+
+    ConditionResponse:
+      type: object
+      properties:
+        source:
+          type: string
+          description: |
+            Sub-system that produced this condition.
+            One of: "capp", "knative", "logging", "route.domainmapping".
+          example: knative
+        type:
+          type: string
+          example: Ready
+        status:
+          type: string
+          enum: ["True", "False", Unknown]
+          example: "True"
+        lastTransitionTime:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          example: RevisionReady
+        message:
+          type: string
+          example: Revision is ready.
+
+    PingSourceConfig:
+      type: object
+      required: [schedule]
+      properties:
+        schedule:
+          type: string
+          description: Cron expression defining when the PingSource fires.
+          example: "*/5 * * * *"
+        data:
+          type: string
+          description: JSON payload sent on each trigger. Must be valid JSON.
+          example: '{"msg":"hello"}'
+
+    KafkaSourceConfig:
+      type: object
+      required: [bootstrapServers, topics, secretRef]
+      properties:
+        bootstrapServers:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          example: ["broker1:9092", "broker2:9092"]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          example: ["topic-a"]
+        consumerGroup:
+          type: string
+          description: Kafka consumer group ID. Optional; operator assigns one when unset.
+          example: my-group
+        consumers:
+          type: integer
+          minimum: 1
+          description: Number of parallel consumers for this source.
+          example: 2
+        secretRef:
+          type: string
+          description: Name of the Secret in the Capp namespace with Kafka credentials.
+          example: kafka-creds
+
+    SourceConfig:
+      type: object
+      required: [name]
+      description: |
+        A single Knative Eventing source attached to the Capp.
+        Exactly one of pingSourceConfiguration or kafkaSourceConfiguration must be set.
+      properties:
+        name:
+          type: string
+          description: Unique logical name for this source within the Capp.
+          example: ping-src
+        uri:
+          type: string
+          description: Relative path appended to the Capp Knative Service address (e.g. "/events").
+          example: /events
+        pingSourceConfiguration:
+          $ref: '#/components/schemas/PingSourceConfig'
+        kafkaSourceConfiguration:
+          $ref: '#/components/schemas/KafkaSourceConfig'
+
+    EventSourcesSpec:
+      type: object
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceConfig'
+
+    EventSourceStatusResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the underlying event source resource.
+          example: ping-src
+        type:
+          type: string
+          description: Condition type from the underlying source resource.
+          example: Ready
+        status:
+          type: string
+          enum: ["True", "False", Unknown]
+          example: "True"
+        reason:
+          type: string
+          example: EventSourceReady
+        message:
+          type: string
+          example: PingSource is ready.
+
+    EventingStatusResponse:
+      type: object
+      properties:
+        eventSources:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventSourceStatusResponse'
+
+    StateStatusResponse:
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [enabled, disabled]
+          example: enabled
+        lastChange:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp of the last state transition.
+
+    CappStatusResponse:
+      type: object
+      properties:
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConditionResponse'
+        eventingStatus:
+          $ref: '#/components/schemas/EventingStatusResponse'
+        stateStatus:
+          $ref: '#/components/schemas/StateStatusResponse'
+
+    CappResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          example: my-app
+        namespace:
+          type: string
+          example: default
+        createdAt:
+          type: string
+          format: date-time
+        uid:
+          type: string
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        resourceVersion:
+          type: string
+          example: "12345"
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+          description: kubectl.kubernetes.io/* annotations are filtered out.
+        scaleSpec:
+          $ref: '#/components/schemas/ScaleSpec'
+        state:
+          type: string
+          enum: [enabled, disabled]
+          example: enabled
+        image:
+          type: string
+          example: ghcr.io/example/my-app:v1.2.3
+        containerName:
+          type: string
+          example: my-app
+        size:
+          $ref: '#/components/schemas/CappSize'
+        env:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        volumeMounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/VolumeMount'
+        routeSpec:
+          $ref: '#/components/schemas/RouteSpec'
+        logSpec:
+          $ref: '#/components/schemas/LogSpec'
+        nfsVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NFSVolume'
+        secretVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretVolume'
+        configMapVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigMapVolume'
+        eventSourcesSpec:
+          $ref: '#/components/schemas/EventSourcesSpec'
+        status:
+          $ref: '#/components/schemas/CappStatusResponse'
+
+    CappList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CappResponse'
+        total:
+          type: integer
+          example: 3
+
+    SyncResponse:
+      type: object
+      properties:
+        commitSha:
+          type: string
+          description: Git commit SHA of the pushed values file.
+          example: "a1b2c3d4e5f6"
+        path:
+          type: string
+          description: Relative path of the values file in the GitOps repository.
+          example: "namespaces/default/my-app/values.yaml"
+
+  parameters:
+    clusterParam:
+      name: cluster
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Cluster name as configured on the backend.
+      example: production
+
+    namespaceParam:
+      name: namespace
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Kubernetes namespace.
+      example: default
+
+    objectNameParam:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Object resource name.
+      example: my-app
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: The caller does not have permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: A resource with this name already exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ── Auth ───────────────────────────────────────────────────────────────────────
+  /api/v1/auth/mode:
+    get:
+      tags: [auth]
+      summary: Get the active authentication mode
+      description: Returns the auth mode the server is currently configured with.
+      security: []
+      responses:
+        "200":
+          description: Current auth mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthModeResponse'
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Log in and obtain a token pair
+      description: |
+        - **jwt / passthrough / static** mode: provide `cluster` and `token`.
+        - **dex** mode: provide `username` and `password`.
+
+        Returns a short-lived access JWT and a long-lived refresh JWT.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        "200":
+          description: Login successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        "400":
+          description: Missing or malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          description: Cluster not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Refresh an expired access token
+      description: |
+        Validates the supplied refresh token, extends the server-side session,
+        and issues a new JWT pair. Not available in passthrough or static mode.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        "200":
+          description: Token refreshed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/openshift/authorize:
+    get:
+      tags: [auth]
+      summary: Get OpenShift OAuth authorize URL
+      description: |
+        Returns the OpenShift OAuth server's authorize URL. The frontend should
+        redirect the browser to this URL to begin the OAuth flow.
+        Only available when `auth.mode` is `openshift`.
+      security: []
+      responses:
+        "200":
+          description: Authorize URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenShiftAuthorizeResponse'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/openshift/callback:
+    post:
+      tags: [auth]
+      summary: Exchange OpenShift OAuth code for tokens
+      description: |
+        Exchanges the OAuth authorization code (received after the browser redirect)
+        for an access/refresh token pair. Only available when `auth.mode` is `openshift`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenShiftCallbackRequest'
+      responses:
+        "200":
+          description: OAuth exchange successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        "400":
+          description: Missing or malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  # ── Clusters ───────────────────────────────────────────────────────────────────
+  /api/v1/clusters:
+    get:
+      tags: [clusters]
+      summary: List all configured clusters
+      description: Returns metadata for every cluster registered in the server config.
+      responses:
+        "200":
+          description: Cluster list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/clusters/{cluster}:
+    get:
+      tags: [clusters]
+      summary: Get a single cluster
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Cluster metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterMeta'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  # ── Namespaces ─────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/namespaces:
+    get:
+      tags: [namespaces]
+      summary: List namespaces in a cluster
+      description: |
+        Returns Kubernetes namespaces (or OpenShift Projects) the authenticated
+        user has access to. Only namespaces labeled `dana.io/capp-ns=true` are
+        returned. On vanilla Kubernetes each namespace is checked via
+        SelfSubjectAccessReview; on OpenShift the Projects API handles access
+        control natively.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Namespace list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [ namespaces ]
+      summary: Create a namespace in a cluster
+      description: |
+        Creates a new Kubernetes namespace (or OpenShift Project) in the specified
+        cluster. The namespace is automatically labeled `dana.io/capp-ns=true` so
+        it is visible in the namespace list endpoint.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNamespaceRequest'
+      responses:
+        "201":
+          description: Namespace created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceItem'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/clusters/{cluster}/namespaces/{name}:
+    put:
+      tags: [namespaces]
+      summary: Replace namespace quota and role binding
+      description: |
+        Full replacement of the namespace's ResourceQuota and `capp-user` RoleBinding.
+        Omit `quota` or `users` to leave that resource unchanged.
+        Quota decreases are rejected when current usage exceeds the new limit.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Namespace name.
+          example: my-namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNamespaceRequest'
+      responses:
+        "200":
+          description: Namespace updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceItem'
+        "400":
+          description: Invalid request body or quota decrease rejected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    patch:
+      tags: [namespaces]
+      summary: Add users to namespace role binding
+      description: |
+        Appends new users to the namespace's existing `capp-user` RoleBinding.
+        Existing members are preserved; duplicate users are silently ignored.
+        The RoleBinding must already exist (created via POST or PUT).
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Namespace name.
+          example: my-namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchNamespaceRequest'
+      responses:
+        "200":
+          description: Role binding updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceItem'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  # ── ConfigMaps ─────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/configmaps:
+    get:
+      tags: [configmaps]
+      summary: List all ConfigMaps across all namespaces
+      description: |
+        Returns capp-managed ConfigMaps from every namespace the authenticated user can access.
+        Useful for cluster-wide views.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: ConfigMap list (all namespaces).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps:
+    get:
+      tags: [configmaps]
+      summary: List ConfigMaps in a namespace
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: ConfigMap list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [configmaps]
+      summary: Create a ConfigMap
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigMapRequest'
+      responses:
+        "201":
+          description: ConfigMap created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/{name}:
+    get:
+      tags: [configmaps]
+      summary: Get a ConfigMap
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: ConfigMap details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [configmaps]
+      summary: Update a ConfigMap
+      description: |
+        Replaces the ConfigMap spec. The backend fetches the current `resourceVersion`
+        before applying the update to avoid optimistic-concurrency conflicts.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigMapUpdateRequest'
+      responses:
+        "200":
+          description: ConfigMap updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [configmaps]
+      summary: Delete a ConfigMap
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "204":
+          description: ConfigMap deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  # ── Secrets ────────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/secrets:
+    get:
+      tags: [secrets]
+      summary: List all Secrets across all namespaces
+      description: |
+        Returns capp-managed Secrets (labeled `dana.io/capp-managed=true`) from
+        every namespace the authenticated user can access. Useful for cluster-wide views.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Secret list (all namespaces).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets:
+    get:
+      tags: [secrets]
+      summary: List Secrets in a namespace
+      description: |
+        Returns only Secrets labeled `dana.io/capp-managed=true`.
+        Secrets not created through this API are not visible.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Secret list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [secrets]
+      summary: Create a Secret
+      description: |
+        Creates a new Secret labeled `dana.io/capp-managed=true`.
+        Data values are plain strings — the server handles base64 encoding.
+        Type defaults to `Opaque` if omitted.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecretRequest'
+      responses:
+        "201":
+          description: Secret created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets/{name}:
+    get:
+      tags: [secrets]
+      summary: Get a Secret
+      description: |
+        Returns a single Secret. Returns 404 if the secret exists in Kubernetes
+        but was not created through this API (i.e. lacks the managed label).
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Secret details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [secrets]
+      summary: Update a Secret
+      description: |
+        Replaces the Secret's data. The backend fetches the current object first
+        to preserve metadata and satisfy Kubernetes optimistic concurrency control.
+        Returns 404 if the secret lacks the managed label.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecretUpdateRequest'
+      responses:
+        "200":
+          description: Secret updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [secrets]
+      summary: Delete a Secret
+      description: |
+        Deletes a Secret. Returns 404 if the secret lacks the managed label.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "204":
+          description: Secret deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  # ── Capps ──────────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/capps:
+    get:
+      tags: [capps]
+      summary: List all Capps across all namespaces
+      description: |
+        Returns Capps from every namespace the authenticated user can access.
+        Useful for cluster-wide dashboards.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Capp list (all namespaces).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps:
+    get:
+      tags: [capps]
+      summary: List Capps in a namespace
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Capp list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [capps]
+      summary: Create a Capp
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CappRequest'
+      responses:
+        "201":
+          description: Capp created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}:
+    get:
+      tags: [capps]
+      summary: Get a Capp
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Capp details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [capps]
+      summary: Update a Capp
+      description: |
+        Replaces the Capp spec. The backend fetches the current `resourceVersion`
+        before applying the update to satisfy Kubernetes optimistic concurrency control.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CappRequest'
+      responses:
+        "200":
+          description: Capp updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [capps]
+      summary: Delete a Capp
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "204":
+          description: Capp deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/sync:
+    post:
+      tags: [capps]
+      summary: Sync a Capp to the GitOps repository
+      description: |
+        Generates a Helm values file from the live Capp spec and pushes it to the
+        configured GitOps repository. Also patches the `rcs.dana.io/backup-to-git=true`
+        label onto the Capp (idempotent on re-calls).
+
+        Returns `501 Not Implemented` when the backend is not configured with a
+        GitOps integration (`gitops.enabled: false`).
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Capp values pushed to GitOps repository.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: GitOps integration is not enabled on this backend.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Observability ──────────────────────────────────────────────────────────────
+  /healthz:
+    get:
+      tags: []
+      summary: Liveness probe
+      description: Returns 200 if the process is alive.
+      security: []
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              example: {"status": "ok"}
+
+  /readyz:
+    get:
+      tags: []
+      summary: Readiness probe
+      description: Returns 200 when at least one cluster is healthy and accepting traffic.
+      security: []
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              example: {"status": "ready"}
+        "503":
+          description: No healthy clusters available.
+          content:
+            application/json:
+              example: {"status": "not ready", "reason": "no healthy clusters available"}

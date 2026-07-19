@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: capp-backend-config
+  namespace: capp-system
+  labels:
+    app.kubernetes.io/name: capp-backend
+    app.kubernetes.io/component: config
+data:
+  # The full config.yaml is embedded here. Sensitive values (tokens, JWT secret)
+  # are NOT stored here — they are injected via Secret-sourced environment
+  # variables in the Deployment (see deployment.yaml).
+  config.yaml: |
+    server:
+      port: 8080
+      readTimeoutSeconds: 30
+      writeTimeoutSeconds: 30
+      idleTimeoutSeconds: 60
+      corsAllowedOrigins:
+        - "https://console.example.com"
+
+    auth:
+      mode: "passthrough"
+      jwt:
+        secretKey: ""         # injected via CAPP_AUTH_JWT_SECRETKEY
+        tokenTTLMinutes: 60
+        refreshTTLMinutes: 1440
+      rateLimit:
+        enabled: true
+        requestsPerSecond: 20
+        burst: 40
+
+    logging:
+      level: "info"
+      format: "json"
+      addCallerInfo: false
+
+    metrics:
+      enabled: true
+      path: "/metrics"
+
+    tracing:
+      enabled: false
+      serviceName: "capp-backend"
+      sampleRate: 0.1
+
+    clusters:
+      - name: "production"
+        displayName: "Production Cluster"
+        credential:
+          inline:
+            apiServer: "https://api.production.example.com:6443"
+            caCert: ""        # base64 PEM or omit for insecure
+            token: ""         # injected via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
+
+    resources:
+      namespaces:
+        enabled: true
+      capps:
+        enabled: true

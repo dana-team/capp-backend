@@ -1,0 +1,315 @@
+# CI: Release workflow
+# Triggered when a semver tag (v*.*.*) is pushed. Builds and pushes the Docker
+# image and the Helm chart OCI artifact, then creates a GitHub Release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write       # create GitHub Release
+  packages: write       # push to GHCR
+  id-token: write       # cosign OIDC signing (optional)
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: dana-team/capp-backend
+  CHART_NAME: capp-backend
+
+jobs:
+  # ── Run tests before releasing ────────────────────────────────────────────────
+  test-server:
+    name: Run server tests
+    uses: ./.github/workflows/test.yaml
+    with:
+      skip_build_checks: true
+
+  test-cli:
+    name: Run CLI tests
+    uses: ./.github/workflows/test-cli.yaml
+    with:
+      skip_build_checks: true
+
+  # ── Build & push Docker image ─────────────────────────────────────────────────
+  docker:
+    name: Build & push Docker image
+    runs-on: ubuntu-latest
+    needs: [test-server, test-cli]
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value={{tag}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  # ── Publish Helm chart to GHCR OCI registry ───────────────────────────────────
+  helm:
+    name: Package & push Helm chart
+    runs-on: ubuntu-latest
+    needs: test-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.17.0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "CHART_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Chart.yaml version
+        run: |
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.CHART_VERSION }}/" helm/${{ env.CHART_NAME }}/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" helm/${{ env.CHART_NAME }}/Chart.yaml
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+          helm registry login ${{ env.REGISTRY }} \
+            --username ${{ github.actor }} \
+            --password-stdin
+
+      - name: Package chart
+        run: |
+          helm package helm/${{ env.CHART_NAME }} \
+            --version ${{ steps.version.outputs.CHART_VERSION }} \
+            --app-version ${{ steps.version.outputs.VERSION }} \
+            --destination /tmp/charts/
+
+      - name: Push chart to GHCR OCI
+        run: |
+          helm push /tmp/charts/${{ env.CHART_NAME }}-${{ steps.version.outputs.CHART_VERSION }}.tgz \
+            oci://${{ env.REGISTRY }}/dana-team/helm-charts
+
+  # ── Build & upload cappctl CLI binaries ───────────────────────────────────────
+  cli:
+    name: Build & upload cappctl binaries
+    runs-on: ubuntu-latest
+    needs: test-cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build cross-platform binaries
+        run: |
+          GOOS=linux   GOARCH=amd64 go build -ldflags "-X main.version=${GITHUB_REF_NAME}" \
+            -o cappctl-linux-amd64   ./cmd/cappctl/
+          GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=${GITHUB_REF_NAME}" \
+            -o cappctl-windows-amd64.exe ./cmd/cappctl/
+
+      - name: Upload linux binary as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cappctl-linux-amd64
+          path: cappctl-linux-amd64
+
+      - name: Upload binaries to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: cappctl-*
+
+  # ── Build & push cappctl Docker image ────────────────────────────────────────
+  docker-cli:
+    name: Build & push cappctl Docker image
+    runs-on: ubuntu-latest
+    needs: [test-cli, cli]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download cappctl binary artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: cappctl-linux-amd64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/dana-team/cappctl
+          tags: |
+            type=raw,value={{tag}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile.cappctl
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  # ── Create GitHub Release ─────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [docker, docker-cli, helm, cli]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: |
+          echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog from commits since last tag
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          ALL=$(git log --no-merges --pretty=format:"%s (%h)" "$RANGE")
+
+          # Each pattern is mutually exclusive — priority order determines bucket
+          CLI_PAT="^(feat|fix|refactor|test|chore)\(cappctl\)|^(feat|fix)\(cli\)|cappctl|^cli:"
+          HELM_PAT="^(feat|fix|chore)\(helm\)|^helm:"
+          DEPS_PAT="^chore\(deps\)|^build\(deps\)|^bump "
+          CI_PAT="^ci:|^chore\(ci\)|^chore\(release\)|^chore:"
+          DOCS_PAT="^docs:"
+          FEAT_PAT="^feat(\([^)]*\))?:"
+          FIX_PAT="^fix(\([^)]*\))?:"
+
+          emit_section() {
+            local header="$1" pat="$2" exclude="$3"
+            local lines
+            if [ -n "$exclude" ]; then
+              lines=$(printf '%s\n' "$ALL" | grep -iE "$pat" | grep -viE "$exclude" || true)
+            else
+              lines=$(printf '%s\n' "$ALL" | grep -iE "$pat" || true)
+            fi
+            if [ -n "$lines" ]; then
+              echo "### $header"
+              printf '%s\n' "$lines" | sed 's/^/- /'
+              echo ""
+            fi
+          }
+
+          {
+            emit_section "cappctl CLI"       "$CLI_PAT"  ""
+            emit_section "Features"          "$FEAT_PAT" "$CLI_PAT|$HELM_PAT"
+            emit_section "Bug Fixes"         "$FIX_PAT"  "$CLI_PAT|$HELM_PAT"
+            emit_section "Helm"              "$HELM_PAT" "$CLI_PAT"
+            emit_section "Dependency Updates" "$DEPS_PAT" ""
+            emit_section "CI / Chore"        "$CI_PAT"   "$DEPS_PAT"
+            emit_section "Documentation"     "$DOCS_PAT" ""
+            # Uncategorised
+            CATCHALL=$(printf '%s\n' "$ALL" | grep -viE "$CLI_PAT|$HELM_PAT|$DEPS_PAT|$CI_PAT|$DOCS_PAT|$FEAT_PAT|$FIX_PAT" || true)
+            if [ -n "$CATCHALL" ]; then
+              echo "### Other"
+              printf '%s\n' "$CATCHALL" | sed 's/^/- /'
+            fi
+          } > /tmp/changelog.md
+
+          DELIM="CHANGELOG_$(openssl rand -hex 8)"
+          echo "CHANGELOG<<$DELIM" >> "$GITHUB_OUTPUT"
+          cat /tmp/changelog.md >> "$GITHUB_OUTPUT"
+          echo "$DELIM" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: "Release ${{ steps.version.outputs.TAG }}"
+          body: |
+            ## capp-backend ${{ steps.version.outputs.TAG }}
+
+            ### Docker image
+            ```
+            docker pull ghcr.io/dana-team/capp-backend:${{ steps.version.outputs.TAG }}
+            ```
+
+            ### cappctl Docker image
+            ```
+            docker pull ghcr.io/dana-team/cappctl:${{ steps.version.outputs.TAG }}
+            ```
+
+            ### Helm chart
+            ```bash
+            helm install capp-backend \
+              oci://ghcr.io/dana-team/helm-charts/capp-backend \
+              --version ${{ steps.version.outputs.TAG }} \
+              --set secret.jwtSecretKey="<your-secret>" \
+              --set config.clusters[0].name="production" \
+              --set config.clusters[0].credential.inline.apiServer="https://api.your-cluster.com" \
+              --set secret.clusterTokens[0]="<your-cluster-token>"
+            ```
+
+            ### cappctl CLI binaries
+            Download the `cappctl-*` assets below for your platform.
+
+            ### What's changed
+            ${{ steps.changelog.outputs.CHANGELOG }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}

@@ -1,0 +1,36 @@
+{{- if .Values.serviceMonitor.enabled }}
+# ServiceMonitor for Prometheus Operator. Enabled when serviceMonitor.enabled: true.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "capp-backend.fullname" . }}
+  namespace: {{ .Values.serviceMonitor.namespace | default .Values.namespace }}
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "capp-backend.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      scheme: {{ .Values.serviceMonitor.scheme }}
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      {{- with .Values.serviceMonitor.interval }}
+      interval: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . | quote }}
+      {{- end }}
+      path: {{ .Values.serviceMonitor.path }}
+      {{- with .Values.serviceMonitor.interval }}
+      interval: {{ . | quote }}
+      {{- end }}
+      tlsConfig:
+        insecureSkipVerify: {{ .Values.serviceMonitor.tls.insecureSkipVerify }}
+        {{- with .Values.serviceMonitor.tls.caFile }}
+        caFile: {{ . | quote }}
+        {{- end }}
+{{- end }}
