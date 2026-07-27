@@ -91,6 +91,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 		cappState         string
 		size              string
 		minReplicas       int
+		maxReplicas       int
 		scaleDelaySeconds int
 		containerName     string
 		envPairs          []string
@@ -126,16 +127,23 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 				cappSize = apitypes.CappSize(size)
 			}
 
+			scaleSpec := apitypes.ScaleSpec{Metric: metric}
+			if cmd.Flags().Changed("min-replicas") {
+				scaleSpec.MinReplicas = int32Ptr(minReplicas)
+			}
+			if cmd.Flags().Changed("max-replicas") {
+				scaleSpec.MaxReplicas = int32Ptr(maxReplicas)
+			}
+			if cmd.Flags().Changed("scale-delay-seconds") {
+				scaleSpec.ScaleDelaySeconds = int32Ptr(scaleDelaySeconds)
+			}
+
 			req := apitypes.CappRequest{
-				Name:      name,
-				Namespace: ns,
-				Image:     image,
-				Size:      cappSize,
-				ScaleSpec: apitypes.ScaleSpec{
-					Metric:            metric,
-					MinReplicas:       minReplicas,
-					ScaleDelaySeconds: scaleDelaySeconds,
-				},
+				Name:          name,
+				Namespace:     ns,
+				Image:         image,
+				Size:          cappSize,
+				ScaleSpec:     scaleSpec,
 				State:         cappState,
 				ContainerName: containerName,
 				Env:           envVars,
@@ -154,8 +162,9 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&image, "image", "", "container image (required)")
 	cmd.Flags().StringVar(&metric, "metric", "", "scale metric: concurrency|cpu|memory|rps")
 	cmd.Flags().StringVar(&cappState, "state", "", "state: enabled|disabled")
-	cmd.Flags().IntVar(&minReplicas, "min-replicas", 0, "minimum replica count")
-	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
+	cmd.Flags().IntVar(&minReplicas, "min-replicas", 0, "minimum replica count (unset if not passed)")
+	cmd.Flags().IntVar(&maxReplicas, "max-replicas", 0, "maximum replica count (unset if not passed)")
+	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero (unset if not passed)")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (repeatable)")
 	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size available values: %s, %s, %s", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge)) // not required, server will default
@@ -169,6 +178,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		cappState         string
 		size              string
 		minReplicas       int
+		maxReplicas       int
 		scaleDelaySeconds int
 		containerName     string
 		envPairs          []string
@@ -222,10 +232,13 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				req.State = cappState
 			}
 			if cmd.Flags().Changed("min-replicas") {
-				req.ScaleSpec.MinReplicas = minReplicas
+				req.ScaleSpec.MinReplicas = int32Ptr(minReplicas)
+			}
+			if cmd.Flags().Changed("max-replicas") {
+				req.ScaleSpec.MaxReplicas = int32Ptr(maxReplicas)
 			}
 			if cmd.Flags().Changed("scale-delay-seconds") {
-				req.ScaleSpec.ScaleDelaySeconds = scaleDelaySeconds
+				req.ScaleSpec.ScaleDelaySeconds = int32Ptr(scaleDelaySeconds)
 			}
 			if cmd.Flags().Changed("container-name") {
 				req.ContainerName = containerName
@@ -254,6 +267,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&metric, "metric", "", "scale metric: concurrency|cpu|memory|rps")
 	cmd.Flags().StringVar(&cappState, "state", "", "state: enabled|disabled")
 	cmd.Flags().IntVar(&minReplicas, "min-replicas", 0, "minimum replica count")
+	cmd.Flags().IntVar(&maxReplicas, "max-replicas", 0, "maximum replica count")
 	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (replaces all env vars)")
@@ -362,6 +376,12 @@ func (h *handler) render(w io.Writer, items []apitypes.CappResponse, raw any) er
 		output.PrintTable(w, tableCols, items, false)
 	}
 	return nil
+}
+
+// int32Ptr returns a pointer to v converted to int32, for optional scale spec flags.
+func int32Ptr(v int) *int32 {
+	i := int32(v)
+	return &i
 }
 
 // parseEnvPairs converts ["KEY=VALUE", ...] into []apitypes.EnvVar.

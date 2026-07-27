@@ -3,8 +3,8 @@ module github.com/dana-team/capp-backend
 go 1.26.0
 
 require (
-	github.com/coreos/go-oidc/v3 v3.20.0
-	github.com/dana-team/container-app-operator v0.9.1
+	github.com/coreos/go-oidc/v3 v3.19.0
+	github.com/dana-team/container-app-operator v0.9.3
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -42,7 +42,7 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
-	github.com/cert-manager/cert-manager v1.20.2 // indirect
+	github.com/cert-manager/cert-manager v1.20.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cisco-open/operator-tools v0.37.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
