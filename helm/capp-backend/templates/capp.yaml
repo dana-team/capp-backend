@@ -34,7 +34,7 @@ spec:
             args:
               - "--config=/etc/capp/config.yaml"
             ports:
-              - name: http
+              - name: http1
                 containerPort: {{ .Values.config.server.port }}
                 protocol: TCP
             env:

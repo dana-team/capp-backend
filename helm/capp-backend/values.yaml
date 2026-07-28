@@ -224,14 +224,14 @@ containerSecurityContext:
 livenessProbe:
   httpGet:
     path: /healthz
-    port: http
+    port: http1
   initialDelaySeconds: 5
   periodSeconds: 15
 
 readinessProbe:
   httpGet:
     path: /readyz
-    port: http
+    port: http1
   initialDelaySeconds: 5
   periodSeconds: 10
 
