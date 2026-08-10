@@ -1,20 +1,21 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-    name: capp-user
-    labels: {{- include "capp-backend.labels" . | nindent 4 }}
+  name: capp-user
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
 rules:
-    - apiGroups: ["rcs.dana.io"]
-      resources: ["capps", "capps/status"]
-      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-    - apiGroups: ["rcs.dana.io"]
-      resources: ["capprevisions", "capprevisions/status"]
-      verbs: ["get", "list", "watch"]
-    - apiGroups: [""]
-      resources: ["configmaps", "secrets", "pods", "pods/exec", "pods/log", "services", "endpoints", "persistentvolumeclaims"]
-      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-    {{- if eq .Values.config.auth.mode "openshift" }}
-    - apiGroups: ["project.openshift.io"]
-      resources: ["projects"]
-      verbs: ["get", "list", "watch"]
-    {{- end }}
+  - apiGroups: ["rcs.dana.io"]
+    resources: ["capps", "capps/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rcs.dana.io"]
+    resources: ["capprevisions", "capprevisions/status"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "pods", "pods/exec", "pods/log", "services", "endpoints", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- if eq .Values.config.auth.mode "openshift" }}
+  - apiGroups: ["project.openshift.io"]
+    resources: ["projects"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
