@@ -74,6 +74,9 @@ func New(
 		c.Data(http.StatusOK, "application/yaml; charset=utf-8", cappapi.Spec)
 	})
 
+	// ── Capp size definitions (no auth required) ────────────────────────────
+	engine.GET("/api/v1/sizes", cappSizes(cfg.Sizes))
+
 	// ── Auth endpoints ────────────────────────────────────────────────────────
 	authGroup := engine.Group("/api/v1/auth")
 	registerAuthRoutes(authGroup, authMgr, cfg.Auth.Mode)
@@ -142,6 +145,13 @@ func readyz(clusterMgr cluster.ClusterManager) gin.HandlerFunc {
 			"status": "not ready",
 			"reason": "no healthy clusters available",
 		})
+	}
+}
+
+// cappSizes returns the configured t-shirt size definitions.
+func cappSizes(sizes config.CappSizes) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, sizes)
 	}
 }
 
