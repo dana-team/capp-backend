@@ -444,6 +444,27 @@ components:
           items:
             $ref: '#/components/schemas/SecretResponse'
 
+    # ── Resource sizing ─────────────────────────────────────────────────────────
+    ResourceQuantitiesDTO:
+      type: object
+      description: CPU and memory as Kubernetes quantity strings.
+      properties:
+        cpu:
+          type: string
+          example: 500m
+        memory:
+          type: string
+          example: 512Mi
+
+    ResourceSpec:
+      type: object
+      description: Container resource requests and limits.
+      properties:
+        requests:
+          $ref: '#/components/schemas/ResourceQuantitiesDTO'
+        limits:
+          $ref: '#/components/schemas/ResourceQuantitiesDTO'
+
     # ── Capps ─────────────────────────────────────────────────────────────────────
     CappSize:
       type: string
@@ -855,6 +876,13 @@ components:
           example: my-app
         size:
           $ref: '#/components/schemas/CappSize'
+        resources:
+          allOf:
+            - $ref: '#/components/schemas/ResourceSpec'
+          description: |
+            Resolved container resource requests and limits. Always populated
+            when the container has resources set, regardless of whether the
+            resources came from a t-shirt size or custom values.
         env:
           type: array
           items:

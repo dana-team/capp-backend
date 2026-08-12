@@ -317,6 +317,36 @@ func sizeFromResources(res corev1.ResourceRequirements, sizes config.CappSizes) 
 	return ""
 }
 
+// resourceSpecFromK8s converts K8s ResourceRequirements into a DTO ResourceSpec.
+// Returns nil when the container has no resources set.
+func resourceSpecFromK8s(res corev1.ResourceRequirements) *ResourceSpec {
+	if len(res.Requests) == 0 && len(res.Limits) == 0 {
+		return nil
+	}
+	spec := &ResourceSpec{}
+	if len(res.Requests) > 0 {
+		rq := &ResourceQuantities{}
+		if cpu, ok := res.Requests[corev1.ResourceCPU]; ok {
+			rq.CPU = cpu.String()
+		}
+		if mem, ok := res.Requests[corev1.ResourceMemory]; ok {
+			rq.Memory = mem.String()
+		}
+		spec.Requests = rq
+	}
+	if len(res.Limits) > 0 {
+		lq := &ResourceQuantities{}
+		if cpu, ok := res.Limits[corev1.ResourceCPU]; ok {
+			lq.CPU = cpu.String()
+		}
+		if mem, ok := res.Limits[corev1.ResourceMemory]; ok {
+			lq.Memory = mem.String()
+		}
+		spec.Limits = lq
+	}
+	return spec
+}
+
 // FromK8s converts a live rcs.dana.io/v1alpha1.Capp into a CappResponse DTO.
 // Status fields are included verbatim from the resource's Status sub-object.
 func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
@@ -350,6 +380,7 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 		if s := sizeFromResources(c.Resources, sizes); s != "" {
 			resp.Size = CappSize(s)
 		}
+		resp.Resources = resourceSpecFromK8s(c.Resources)
 		for _, e := range c.Env {
 			ev := EnvVar{Name: e.Name}
 			if e.ValueFrom != nil {
