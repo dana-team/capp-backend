@@ -25,6 +25,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/utils"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -43,10 +44,12 @@ const (
 )
 
 // Handler implements resources.ResourceHandler for Kubernetes Namespaces.
-type Handler struct{}
+type Handler struct {
+	logger *zap.Logger
+}
 
 // New returns a ready-to-use namespace Handler.
-func New() *Handler { return &Handler{} }
+func New(logger *zap.Logger) *Handler { return &Handler{logger: logger} }
 
 // Name returns the handler's identifier.
 func (h *Handler) Name() string { return "namespaces" }
@@ -87,6 +90,8 @@ func (h *Handler) list(c *gin.Context) {
 	labelSelector := labels.SelectorFromSet(labels.Set{consts.ManagedNameSpaceLabelKey: "true"})
 	listOpts := &client.ListOptions{LabelSelector: labelSelector}
 
+	quotaByNS := listQuotaInfoMap(c.Request.Context(), adminClient, h.logger)
+
 	var items []NamespaceItem
 
 	if meta.IsOpenShift {
@@ -103,7 +108,9 @@ func (h *Handler) list(c *gin.Context) {
 		items = make([]NamespaceItem, 0, len(projectList.Items))
 		for _, p := range projectList.Items {
 			phase, _, _ := unstructured.NestedString(p.Object, "status", "phase")
-			items = append(items, NamespaceItem{Name: p.GetName(), Status: phase})
+			item := NamespaceItem{Name: p.GetName(), Status: phase}
+			item.Quota = quotaByNS[p.GetName()]
+			items = append(items, item)
 		}
 	} else {
 		// On vanilla Kubernetes: admin client lists all CAPP-managed namespaces,
@@ -119,7 +126,9 @@ func (h *Handler) list(c *gin.Context) {
 			if err != nil || !allowed {
 				continue
 			}
-			items = append(items, NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase)})
+			item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase)}
+			item.Quota = quotaByNS[ns.Name]
+			items = append(items, item)
 		}
 	}
 
@@ -475,6 +484,63 @@ func generateResourceList(quota resourceQuota) (corev1.ResourceList, error) {
 		resList[corev1.ResourcePods] = pods
 	}
 	return resList, nil
+}
+
+// listQuotaInfoMap lists all ResourceQuotas cluster-wide and returns a map
+// keyed by namespace. Namespaces without a quota are absent from the map.
+// Errors are logged and result in an empty map rather than failing the request.
+func listQuotaInfoMap(ctx context.Context, adminClient client.Client, logger *zap.Logger) map[string]*QuotaInfo {
+	var quotaList corev1.ResourceQuotaList
+	if err := adminClient.List(ctx, &quotaList); err != nil {
+		logger.Warn("failed to list resource quotas", zap.Error(err))
+		return map[string]*QuotaInfo{}
+	}
+
+	result := make(map[string]*QuotaInfo, len(quotaList.Items))
+	for i := range quotaList.Items {
+		q := &quotaList.Items[i]
+		if _, exists := result[q.Namespace]; exists {
+			continue
+		}
+		result[q.Namespace] = quotaInfoFromK8s(q)
+	}
+	return result
+}
+
+// quotaInfoFromK8s converts a Kubernetes ResourceQuota into a QuotaInfo DTO.
+func quotaInfoFromK8s(quota *corev1.ResourceQuota) *QuotaInfo {
+	info := &QuotaInfo{}
+	if cpu, ok := quota.Spec.Hard[corev1.ResourceLimitsCPU]; ok {
+		info.CPU = cpu.String()
+	}
+	if mem, ok := quota.Spec.Hard[corev1.ResourceLimitsMemory]; ok {
+		info.Memory = mem.String()
+	}
+	if pods, ok := quota.Spec.Hard[corev1.ResourcePods]; ok {
+		v := int(pods.Value())
+		info.Pods = &v
+	}
+
+	used := &UsedQuotaInfo{}
+	hasUsed := false
+	if cpu, ok := quota.Status.Used[corev1.ResourceLimitsCPU]; ok {
+		used.CPU = cpu.String()
+		hasUsed = true
+	}
+	if mem, ok := quota.Status.Used[corev1.ResourceLimitsMemory]; ok {
+		used.Memory = mem.String()
+		hasUsed = true
+	}
+	if pods, ok := quota.Status.Used[corev1.ResourcePods]; ok {
+		v := int(pods.Value())
+		used.Pods = &v
+		hasUsed = true
+	}
+	if hasUsed {
+		info.Used = used
+	}
+
+	return info
 }
 
 // canUpdateQuota checks if the new quota is valid and can be applied to the existing quota.
