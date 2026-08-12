@@ -656,7 +656,16 @@ components:
           type: string
           example: my-app
         size:
-          $ref: '#/components/schemas/CappSize'
+          allOf:
+            - $ref: '#/components/schemas/CappSize'
+          description: |
+            Mutually exclusive with customResources. Set one or the other.
+        customResources:
+          allOf:
+            - $ref: '#/components/schemas/ResourceSpec'
+          description: |
+            Explicit CPU/memory requests and limits. Use when the predefined
+            t-shirt sizes do not fit. Mutually exclusive with size.
         env:
           type: array
           items:

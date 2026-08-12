@@ -202,7 +202,11 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 		return nil, err
 	}
 
-	// resources
+	// resources — size and customResources are mutually exclusive
+	if req.Size != "" && req.CustomResources != nil {
+		return nil, fmt.Errorf("size and customResources are mutually exclusive: set one or the other, not both")
+	}
+
 	if req.Size != "" {
 		var requests, limits config.ResourceQuantities
 		switch req.Size {
@@ -219,35 +223,89 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 			return nil, fmt.Errorf("invalid size %q: must be one of small, medium, or large", req.Size)
 		}
 
-		reqCPU, err := resource.ParseQuantity(requests.CPU)
+		resources, err := parseResourceQuantities(requests, limits)
 		if err != nil {
-			return nil, fmt.Errorf("size %q: invalid requests.cpu %q: %w", req.Size, requests.CPU, err)
+			return nil, fmt.Errorf("size %q: %w", req.Size, err)
 		}
-		reqMem, err := resource.ParseQuantity(requests.Memory)
+		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = resources
+	} else if req.CustomResources != nil {
+		resources, err := parseCustomResources(req.CustomResources)
 		if err != nil {
-			return nil, fmt.Errorf("size %q: invalid requests.memory %q: %w", req.Size, requests.Memory, err)
+			return nil, fmt.Errorf("customResources: %w", err)
 		}
-		limCPU, err := resource.ParseQuantity(limits.CPU)
-		if err != nil {
-			return nil, fmt.Errorf("size %q: invalid limits.cpu %q: %w", req.Size, limits.CPU, err)
-		}
-		limMem, err := resource.ParseQuantity(limits.Memory)
-		if err != nil {
-			return nil, fmt.Errorf("size %q: invalid limits.memory %q: %w", req.Size, limits.Memory, err)
-		}
-		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    reqCPU,
-				corev1.ResourceMemory: reqMem,
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    limCPU,
-				corev1.ResourceMemory: limMem,
-			},
-		}
-
+		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = resources
 	}
 	return capp, nil
+}
+
+// parseResourceQuantities parses config-level quantities into a K8s ResourceRequirements.
+func parseResourceQuantities(requests, limits config.ResourceQuantities) (corev1.ResourceRequirements, error) {
+	reqCPU, err := resource.ParseQuantity(requests.CPU)
+	if err != nil {
+		return corev1.ResourceRequirements{}, fmt.Errorf("invalid requests.cpu %q: %w", requests.CPU, err)
+	}
+	reqMem, err := resource.ParseQuantity(requests.Memory)
+	if err != nil {
+		return corev1.ResourceRequirements{}, fmt.Errorf("invalid requests.memory %q: %w", requests.Memory, err)
+	}
+	limCPU, err := resource.ParseQuantity(limits.CPU)
+	if err != nil {
+		return corev1.ResourceRequirements{}, fmt.Errorf("invalid limits.cpu %q: %w", limits.CPU, err)
+	}
+	limMem, err := resource.ParseQuantity(limits.Memory)
+	if err != nil {
+		return corev1.ResourceRequirements{}, fmt.Errorf("invalid limits.memory %q: %w", limits.Memory, err)
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    reqCPU,
+			corev1.ResourceMemory: reqMem,
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    limCPU,
+			corev1.ResourceMemory: limMem,
+		},
+	}, nil
+}
+
+// parseCustomResources converts a user-supplied ResourceSpec into K8s ResourceRequirements.
+func parseCustomResources(spec *ResourceSpec) (corev1.ResourceRequirements, error) {
+	res := corev1.ResourceRequirements{}
+	if spec.Requests != nil {
+		res.Requests = make(corev1.ResourceList)
+		if spec.Requests.CPU != "" {
+			q, err := resource.ParseQuantity(spec.Requests.CPU)
+			if err != nil {
+				return res, fmt.Errorf("invalid requests.cpu %q: %w", spec.Requests.CPU, err)
+			}
+			res.Requests[corev1.ResourceCPU] = q
+		}
+		if spec.Requests.Memory != "" {
+			q, err := resource.ParseQuantity(spec.Requests.Memory)
+			if err != nil {
+				return res, fmt.Errorf("invalid requests.memory %q: %w", spec.Requests.Memory, err)
+			}
+			res.Requests[corev1.ResourceMemory] = q
+		}
+	}
+	if spec.Limits != nil {
+		res.Limits = make(corev1.ResourceList)
+		if spec.Limits.CPU != "" {
+			q, err := resource.ParseQuantity(spec.Limits.CPU)
+			if err != nil {
+				return res, fmt.Errorf("invalid limits.cpu %q: %w", spec.Limits.CPU, err)
+			}
+			res.Limits[corev1.ResourceCPU] = q
+		}
+		if spec.Limits.Memory != "" {
+			q, err := resource.ParseQuantity(spec.Limits.Memory)
+			if err != nil {
+				return res, fmt.Errorf("invalid limits.memory %q: %w", spec.Limits.Memory, err)
+			}
+			res.Limits[corev1.ResourceMemory] = q
+		}
+	}
+	return res, nil
 }
 
 // eventSourcesSpecToK8s converts the DTO EventSourcesSpec into the K8s type.

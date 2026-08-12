@@ -95,6 +95,10 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 		scaleDelaySeconds int
 		containerName     string
 		envPairs          []string
+		cpuRequest        string
+		cpuLimit          string
+		memoryRequest     string
+		memoryLimit       string
 	)
 
 	cmd := &cobra.Command{
@@ -115,6 +119,12 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 			}
 			if image == "" {
 				return fmt.Errorf("--image is required")
+			}
+
+			hasCustom := cmd.Flags().Changed("cpu-request") || cmd.Flags().Changed("cpu-limit") ||
+				cmd.Flags().Changed("memory-request") || cmd.Flags().Changed("memory-limit")
+			if size != "" && hasCustom {
+				return fmt.Errorf("--size and custom resource flags (--cpu-request, --cpu-limit, --memory-request, --memory-limit) are mutually exclusive")
 			}
 
 			envVars, err := parseEnvPairs(envPairs)
@@ -148,6 +158,9 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 				ContainerName: containerName,
 				Env:           envVars,
 			}
+			if hasCustom {
+				req.CustomResources = buildCustomResources(cpuRequest, cpuLimit, memoryRequest, memoryLimit)
+			}
 
 			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps", cluster, ns)
 			var created apitypes.CappResponse
@@ -167,7 +180,11 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero (unset if not passed)")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (repeatable)")
-	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size available values: %s, %s, %s", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge)) // not required, server will default
+	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size available values: %s, %s, %s (mutually exclusive with custom resource flags)", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge))
+	cmd.Flags().StringVar(&cpuRequest, "cpu-request", "", "custom CPU request (e.g. 250m)")
+	cmd.Flags().StringVar(&cpuLimit, "cpu-limit", "", "custom CPU limit (e.g. 500m)")
+	cmd.Flags().StringVar(&memoryRequest, "memory-request", "", "custom memory request (e.g. 256Mi)")
+	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "custom memory limit (e.g. 512Mi)")
 	parent.AddCommand(cmd)
 }
 
@@ -182,6 +199,10 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		scaleDelaySeconds int
 		containerName     string
 		envPairs          []string
+		cpuRequest        string
+		cpuLimit          string
+		memoryRequest     string
+		memoryLimit       string
 	)
 
 	cmd := &cobra.Command{
@@ -199,6 +220,12 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				return fmt.Errorf("--namespace is required")
 			}
 			cappName := args[0]
+
+			hasCustom := cmd.Flags().Changed("cpu-request") || cmd.Flags().Changed("cpu-limit") ||
+				cmd.Flags().Changed("memory-request") || cmd.Flags().Changed("memory-limit")
+			if cmd.Flags().Changed("size") && hasCustom {
+				return fmt.Errorf("--size and custom resource flags (--cpu-request, --cpu-limit, --memory-request, --memory-limit) are mutually exclusive")
+			}
 
 			getPath := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
 			var current apitypes.CappResponse
@@ -253,7 +280,13 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 
 			if cmd.Flags().Changed("size") {
 				req.Size = apitypes.CappSize(size)
+				req.CustomResources = nil
 			}
+			if hasCustom {
+				req.Size = ""
+				req.CustomResources = buildCustomResources(cpuRequest, cpuLimit, memoryRequest, memoryLimit)
+			}
+
 			putPath := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
 			var updated apitypes.CappResponse
 			if err := h.state.Client.Put(cmd.Context(), putPath, req, &updated); err != nil {
@@ -271,7 +304,11 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (replaces all env vars)")
-	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size, available values: %s, %s, %s", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge))
+	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size, available values: %s, %s, %s (mutually exclusive with custom resource flags)", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge))
+	cmd.Flags().StringVar(&cpuRequest, "cpu-request", "", "custom CPU request (e.g. 250m)")
+	cmd.Flags().StringVar(&cpuLimit, "cpu-limit", "", "custom CPU limit (e.g. 500m)")
+	cmd.Flags().StringVar(&memoryRequest, "memory-request", "", "custom memory request (e.g. 256Mi)")
+	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "custom memory limit (e.g. 512Mi)")
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }
@@ -376,6 +413,22 @@ func (h *handler) render(w io.Writer, items []apitypes.CappResponse, raw any) er
 		output.PrintTable(w, tableCols, items, false)
 	}
 	return nil
+}
+
+// buildCustomResources assembles a ResourceSpec from individual CLI flag values.
+// Returns nil when no values are provided to avoid silently wiping existing resources.
+func buildCustomResources(cpuReq, cpuLim, memReq, memLim string) *apitypes.ResourceSpec {
+	spec := &apitypes.ResourceSpec{}
+	if cpuReq != "" || memReq != "" {
+		spec.Requests = &apitypes.ResourceQuantities{CPU: cpuReq, Memory: memReq}
+	}
+	if cpuLim != "" || memLim != "" {
+		spec.Limits = &apitypes.ResourceQuantities{CPU: cpuLim, Memory: memLim}
+	}
+	if spec.Requests == nil && spec.Limits == nil {
+		return nil
+	}
+	return spec
 }
 
 // int32Ptr returns a pointer to v converted to int32, for optional scale spec flags.

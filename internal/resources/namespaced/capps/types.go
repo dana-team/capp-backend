@@ -145,7 +145,13 @@ type CappRequest struct {
 	ContainerName string `json:"containerName,omitempty"`
 
 	// CappSize is a high-level sizing abstraction that maps to specific resource requests/limits.
+	// Mutually exclusive with CustomResources.
 	Size CappSize `json:"size,omitempty"`
+
+	// CustomResources allows setting explicit CPU/memory requests and limits
+	// when the predefined t-shirt sizes do not fit.
+	// Mutually exclusive with Size.
+	CustomResources *ResourceSpec `json:"customResources,omitempty"`
 
 	// Env is the list of environment variables.
 	Env []EnvVar `json:"env,omitempty"`
