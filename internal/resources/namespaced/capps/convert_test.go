@@ -709,3 +709,53 @@ func TestFilterAnnotations_AllStripped(t *testing.T) {
 	}
 	assert.Nil(t, filterAnnotations(annotations))
 }
+
+// -- Resolved resources in CappResponse --
+
+func TestFromK8s_ResourcesPopulatedFromSize(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("400m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+	resp := FromK8s(capp, minimalSizes())
+	assert.Equal(t, CappSize("medium"), resp.Size)
+	require.NotNil(t, resp.Resources)
+	require.NotNil(t, resp.Resources.Requests)
+	assert.Equal(t, "200m", resp.Resources.Requests.CPU)
+	assert.Equal(t, "256Mi", resp.Resources.Requests.Memory)
+	require.NotNil(t, resp.Resources.Limits)
+	assert.Equal(t, "400m", resp.Resources.Limits.CPU)
+	assert.Equal(t, "512Mi", resp.Resources.Limits.Memory)
+}
+
+func TestFromK8s_ResourcesPopulatedForCustom(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("350m"),
+			corev1.ResourceMemory: resource.MustParse("384Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("700m"),
+			corev1.ResourceMemory: resource.MustParse("768Mi"),
+		},
+	}
+	resp := FromK8s(capp, minimalSizes())
+	assert.Empty(t, resp.Size, "custom resources should not match any t-shirt size")
+	require.NotNil(t, resp.Resources)
+	assert.Equal(t, "350m", resp.Resources.Requests.CPU)
+	assert.Equal(t, "700m", resp.Resources.Limits.CPU)
+}
+
+func TestFromK8s_ResourcesNilWhenNoResources(t *testing.T) {
+	capp := minimalCapp()
+	resp := FromK8s(capp, minimalSizes())
+	assert.Nil(t, resp.Resources)
+}

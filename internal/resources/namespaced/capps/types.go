@@ -25,6 +25,18 @@ const CappSizeSmall CappSize = "small"
 const CappSizeMedium CappSize = "medium"
 const CappSizeLarge CappSize = "large"
 
+// ResourceQuantities holds CPU and memory as Kubernetes quantity strings.
+type ResourceQuantities struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+// ResourceSpec describes the compute resources requested/limited for a container.
+type ResourceSpec struct {
+	Requests *ResourceQuantities `json:"requests,omitempty"`
+	Limits   *ResourceQuantities `json:"limits,omitempty"`
+}
+
 // EnvVarSource selects a value from a Secret or ConfigMap key.
 type EnvVarSource struct {
 	SecretKeyRef    *KeySelector `json:"secretKeyRef,omitempty"`
@@ -249,6 +261,7 @@ type CappResponse struct {
 	Image         string        `json:"image,omitempty"`
 	ContainerName string        `json:"containerName,omitempty"`
 	Size          CappSize      `json:"size,omitempty"`
+	Resources     *ResourceSpec `json:"resources,omitempty"`
 	Env           []EnvVar      `json:"env,omitempty"`
 	VolumeMounts  []VolumeMount `json:"volumeMounts,omitempty"`
 	RouteSpec     *RouteSpec    `json:"routeSpec,omitempty"`
