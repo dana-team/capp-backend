@@ -759,3 +759,87 @@ func TestFromK8s_ResourcesNilWhenNoResources(t *testing.T) {
 	resp := FromK8s(capp, minimalSizes())
 	assert.Nil(t, resp.Resources)
 }
+
+// -- Custom resources tests --
+
+func TestToK8s_CustomResources(t *testing.T) {
+	req := minimalRequest()
+	req.CustomResources = &ResourceSpec{
+		Requests: &ResourceQuantities{CPU: "250m", Memory: "256Mi"},
+		Limits:   &ResourceQuantities{CPU: "500m", Memory: "512Mi"},
+	}
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+	resources := capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources
+	assert.Equal(t, resource.MustParse("250m"), resources.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("256Mi"), resources.Requests[corev1.ResourceMemory])
+	assert.Equal(t, resource.MustParse("500m"), resources.Limits[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("512Mi"), resources.Limits[corev1.ResourceMemory])
+}
+
+func TestToK8s_CustomResources_PartialRequestsOnly(t *testing.T) {
+	req := minimalRequest()
+	req.CustomResources = &ResourceSpec{
+		Requests: &ResourceQuantities{CPU: "100m"},
+	}
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+	resources := capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources
+	assert.Equal(t, resource.MustParse("100m"), resources.Requests[corev1.ResourceCPU])
+	_, hasMemReq := resources.Requests[corev1.ResourceMemory]
+	assert.False(t, hasMemReq, "memory request should not be set")
+	assert.Empty(t, resources.Limits, "limits should be empty when not specified")
+}
+
+func TestToK8s_SizeAndCustomResources_MutualExclusion(t *testing.T) {
+	req := minimalRequest()
+	req.Size = CappSizeSmall
+	req.CustomResources = &ResourceSpec{
+		Requests: &ResourceQuantities{CPU: "100m"},
+	}
+	_, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestToK8s_CustomResources_InvalidQuantity(t *testing.T) {
+	req := minimalRequest()
+	req.CustomResources = &ResourceSpec{
+		Requests: &ResourceQuantities{CPU: "not-a-quantity"},
+	}
+	_, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requests.cpu")
+}
+
+func TestToK8s_CustomResources_PreservedOnUpdateWhenNotSet(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("300m")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("768Mi")},
+	}
+	req := minimalRequest()
+	updated, err := ToK8s(req, existing, "ns1", minimalSizes())
+	require.NoError(t, err)
+	resources := updated.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources
+	assert.Equal(t, resource.MustParse("300m"), resources.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("768Mi"), resources.Limits[corev1.ResourceMemory])
+}
+
+func TestFromK8s_CustomResources_RoundTrip(t *testing.T) {
+	req := minimalRequest()
+	req.CustomResources = &ResourceSpec{
+		Requests: &ResourceQuantities{CPU: "250m", Memory: "256Mi"},
+		Limits:   &ResourceQuantities{CPU: "500m", Memory: "512Mi"},
+	}
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+
+	resp := FromK8s(capp, minimalSizes())
+	assert.Empty(t, resp.Size, "custom resources should not match any t-shirt size")
+	require.NotNil(t, resp.Resources)
+	assert.Equal(t, "250m", resp.Resources.Requests.CPU)
+	assert.Equal(t, "256Mi", resp.Resources.Requests.Memory)
+	assert.Equal(t, "500m", resp.Resources.Limits.CPU)
+	assert.Equal(t, "512Mi", resp.Resources.Limits.Memory)
+}
