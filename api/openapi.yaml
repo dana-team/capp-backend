@@ -465,6 +465,17 @@ components:
         limits:
           $ref: '#/components/schemas/ResourceQuantitiesDTO'
 
+    CappSizesResponse:
+      type: object
+      description: Configured t-shirt size definitions.
+      properties:
+        small:
+          $ref: '#/components/schemas/ResourceSpec'
+        medium:
+          $ref: '#/components/schemas/ResourceSpec'
+        large:
+          $ref: '#/components/schemas/ResourceSpec'
+
     # ── Capps ─────────────────────────────────────────────────────────────────────
     CappSize:
       type: string
@@ -1135,6 +1146,25 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "500":
           $ref: '#/components/responses/InternalError'
+
+  # ── Sizes ─────────────────────────────────────────────────────────────────────
+  /api/v1/sizes:
+    get:
+      tags: [capps]
+      summary: Get configured Capp size definitions
+      description: |
+        Returns the configured t-shirt size definitions (small, medium, large)
+        with their CPU/memory requests and limits. No authentication required.
+        The UI uses this to display what each size maps to and to calculate
+        quota percentage impact.
+      security: []
+      responses:
+        "200":
+          description: Size definitions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappSizesResponse'
 
   # ── Clusters ───────────────────────────────────────────────────────────────────
   /api/v1/clusters:

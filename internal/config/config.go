@@ -298,19 +298,19 @@ type GitOpsConfig struct {
 }
 
 type ResourceQuantities struct {
-	CPU    string `mapstructure:"cpu"`
-	Memory string `mapstructure:"memory"`
+	CPU    string `mapstructure:"cpu"    json:"cpu"`
+	Memory string `mapstructure:"memory" json:"memory"`
 }
 
 type ResourceSize struct {
-	Requests ResourceQuantities `mapstructure:"requests"`
-	Limits   ResourceQuantities `mapstructure:"limits"`
+	Requests ResourceQuantities `mapstructure:"requests" json:"requests"`
+	Limits   ResourceQuantities `mapstructure:"limits"   json:"limits"`
 }
 
 type CappSizes struct {
-	Small  ResourceSize `mapstructure:"small"`
-	Medium ResourceSize `mapstructure:"medium"`
-	Large  ResourceSize `mapstructure:"large"`
+	Small  ResourceSize `mapstructure:"small"  json:"small"`
+	Medium ResourceSize `mapstructure:"medium" json:"medium"`
+	Large  ResourceSize `mapstructure:"large"  json:"large"`
 }
 
 // ResourceConfig holds configuration for all resource handlers,
