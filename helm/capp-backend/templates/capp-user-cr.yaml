@@ -14,8 +14,11 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps", "secrets", "pods", "pods/exec", "pods/log", "services", "endpoints", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
   {{- if eq .Values.config.auth.mode "openshift" }}
-  - apiGroups: ["project.openshift.io"]
+  - apiGroups: ["", "project.openshift.io"]
     resources: ["projects"]
     verbs: ["get", "list", "watch"]
   {{- end }}
