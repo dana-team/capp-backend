@@ -12,6 +12,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -74,7 +75,7 @@ func engine(t *testing.T, meta cluster.ClusterMeta, adminObjects []client.Object
 	return testutil.NewEngineHelperWithAdmin(t,
 		testutil.FakeClientAllowSAR(t, userObjects...),
 		testutil.FakeClientAllowSAR(t, adminObjects...),
-		meta, New())
+		meta, New(zap.NewNop()))
 }
 
 // -- List (vanilla Kubernetes) tests --
@@ -383,4 +384,92 @@ func TestCanUpdateQuota_AllowsDecreaseWhenUnused(t *testing.T) {
 		}},
 	}
 	assert.NoError(t, canUpdateQuota(existing, newQ))
+}
+
+func intPtr(v int) *int { return &v }
+
+func TestQuotaInfoFromK8s(t *testing.T) {
+	tests := []struct {
+		name     string
+		quota    *corev1.ResourceQuota
+		expected *QuotaInfo
+	}{
+		{
+			name: "full hard limits and usage",
+			quota: &corev1.ResourceQuota{
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+					corev1.ResourceLimitsCPU:    resource.MustParse("4"),
+					corev1.ResourceLimitsMemory: resource.MustParse("8Gi"),
+					corev1.ResourcePods:         resource.MustParse("50"),
+				}},
+				Status: corev1.ResourceQuotaStatus{Used: corev1.ResourceList{
+					corev1.ResourceLimitsCPU:    resource.MustParse("1500m"),
+					corev1.ResourceLimitsMemory: resource.MustParse("3Gi"),
+					corev1.ResourcePods:         resource.MustParse("10"),
+				}},
+			},
+			expected: &QuotaInfo{
+				CPU: "4", Memory: "8Gi", Pods: intPtr(50),
+				Used: &UsedQuotaInfo{CPU: "1500m", Memory: "3Gi", Pods: intPtr(10)},
+			},
+		},
+		{
+			name: "hard limits only, no usage",
+			quota: &corev1.ResourceQuota{
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+					corev1.ResourceLimitsCPU:    resource.MustParse("2"),
+					corev1.ResourceLimitsMemory: resource.MustParse("4Gi"),
+				}},
+			},
+			expected: &QuotaInfo{CPU: "2", Memory: "4Gi"},
+		},
+		{
+			name: "pods hard limit of zero serializes correctly",
+			quota: &corev1.ResourceQuota{
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+					corev1.ResourcePods: resource.MustParse("0"),
+				}},
+			},
+			expected: &QuotaInfo{Pods: intPtr(0)},
+		},
+		{
+			name: "partial usage (only cpu)",
+			quota: &corev1.ResourceQuota{
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+					corev1.ResourceLimitsCPU: resource.MustParse("4"),
+				}},
+				Status: corev1.ResourceQuotaStatus{Used: corev1.ResourceList{
+					corev1.ResourceLimitsCPU: resource.MustParse("500m"),
+				}},
+			},
+			expected: &QuotaInfo{
+				CPU:  "4",
+				Used: &UsedQuotaInfo{CPU: "500m"},
+			},
+		},
+		{
+			name: "empty quota spec",
+			quota: &corev1.ResourceQuota{
+				Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{}},
+			},
+			expected: &QuotaInfo{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := quotaInfoFromK8s(tt.quota)
+			assert.Equal(t, tt.expected.CPU, result.CPU)
+			assert.Equal(t, tt.expected.Memory, result.Memory)
+			assert.Equal(t, tt.expected.Pods, result.Pods)
+			if tt.expected.Used == nil {
+				assert.Nil(t, result.Used)
+			} else {
+				require.NotNil(t, result.Used)
+				assert.Equal(t, tt.expected.Used.CPU, result.Used.CPU)
+				assert.Equal(t, tt.expected.Used.Memory, result.Used.Memory)
+				assert.Equal(t, tt.expected.Used.Pods, result.Used.Pods)
+			}
+		})
+	}
 }

@@ -215,6 +215,43 @@ components:
         status:
           type: string
           example: Active
+        quota:
+          $ref: '#/components/schemas/QuotaInfo'
+
+    QuotaInfo:
+      type: object
+      description: Resource quota hard limits and current usage for a namespace. Omitted when no ResourceQuota exists.
+      properties:
+        cpu:
+          type: string
+          description: CPU limit quota (Kubernetes quantity format).
+          example: "4"
+        memory:
+          type: string
+          description: Memory limit quota (Kubernetes quantity format).
+          example: 8Gi
+        pods:
+          type: integer
+          nullable: true
+          description: Maximum number of pods allowed. Null when not set in the quota.
+          example: 50
+        used:
+          $ref: '#/components/schemas/UsedQuotaInfo'
+
+    UsedQuotaInfo:
+      type: object
+      description: Current resource usage within the namespace quota.
+      properties:
+        cpu:
+          type: string
+          example: 1500m
+        memory:
+          type: string
+          example: 3Gi
+        pods:
+          type: integer
+          nullable: true
+          example: 10
 
     NamespaceList:
       type: object

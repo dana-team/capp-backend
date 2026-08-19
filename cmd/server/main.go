@@ -123,7 +123,7 @@ func main() {
 		"secrets":    cfg.Resources.Secrets.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
-	registry.Register(nshandler.New())
+	registry.Register(nshandler.New(logger))
 	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
