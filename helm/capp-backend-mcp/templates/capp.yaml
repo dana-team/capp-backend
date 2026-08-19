@@ -1,0 +1,50 @@
+# Deploys capp-backend-mcp as a rcs.dana.io/v1alpha1 Capp resource.
+apiVersion: rcs.dana.io/v1alpha1
+kind: Capp
+metadata:
+  name: {{ include "capp-backend-mcp.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "capp-backend-mcp.labels" . | nindent 4 }}
+spec:
+  state: {{ .Values.state }}
+  scaleSpec:
+    metric: {{ .Values.scaleSpec.metric }}
+    minReplicas: {{ .Values.scaleSpec.minReplicas }}
+    maxReplicas: {{ .Values.scaleSpec.maxReplicas }}
+    scaleDelaySeconds: {{ .Values.scaleSpec.scaleDelaySeconds }}
+
+  configurationSpec:
+    template:
+      metadata:
+        labels:
+          {{- include "capp-backend-mcp.selectorLabels" . | nindent 10 }}
+      spec:
+        containers:
+          - name: capp-backend-mcp
+            image: {{ include "capp-backend-mcp.image" . }}
+            args:
+              - "--port={{ .Values.server.port }}"
+              - "--backend-url={{ .Values.backend.url }}"
+              {{- if .Values.backend.insecure }}
+              - "--insecure"
+              {{- end }}
+            ports:
+              - name: http1
+                containerPort: {{ .Values.server.port }}
+                protocol: TCP
+            livenessProbe:
+              {{- toYaml .Values.livenessProbe | nindent 14 }}
+            readinessProbe:
+              {{- toYaml .Values.readinessProbe | nindent 14 }}
+            resources:
+              {{- toYaml .Values.resources | nindent 14 }}
+            securityContext:
+              {{- toYaml .Values.containerSecurityContext | nindent 14 }}
+
+  {{- if .Values.route.enabled }}
+  routeSpec:
+    hostname: {{ .Values.route.hostname | quote }}
+    tlsEnabled: {{ .Values.route.tlsEnabled }}
+    routeTimeoutSeconds: {{ .Values.route.routeTimeoutSeconds }}
+  {{- end }}

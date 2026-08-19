@@ -1,0 +1,95 @@
+# Default values for the capp-backend-mcp Helm chart.
+# Override these in a separate values file or with --set on the CLI.
+
+# ── Image ─────────────────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/dana-team/capp-backend-mcp
+  tag: ""        # defaults to .Chart.AppVersion
+  pullPolicy: Always
+
+imagePullSecrets: []
+
+# ── Backend connection ───────────────────────────────────────────────────────
+# The capp-backend API this MCP server proxies to. It holds no credentials of
+# its own — every tool call is executed with the bearer token the connecting
+# MCP client supplies, forwarded as-is to this URL. capp-backend performs all
+# real authentication and authorization.
+backend:
+  url: "http://capp-backend-svc.capp-system.svc:8080"
+  insecure: false
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  port: 8081
+
+# ── Autoscaling (Knative, via the CAPP operator) ─────────────────────────────
+scaleSpec:
+  metric: "concurrency"
+  # minReplicas: keep at least 1 warm instance if agents hold long-lived
+  # Streamable HTTP / SSE sessions — Knative scaling the revision to zero
+  # mid-session drops any in-flight call. Set to 0 only once the deployed
+  # MCP client(s) are confirmed to reconnect/resume cleanly.
+  minReplicas: 1
+  maxReplicas: 5
+  scaleDelaySeconds: 300
+
+# state: enabled | disabled
+state: "enabled"
+
+# ── Route (external hostname + TLS) ──────────────────────────────────────────
+# Required for remote MCP clients to reach this server over HTTPS. Disabled
+# by default so the service is cluster-internal only until a hostname is set.
+route:
+  enabled: false
+  hostname: ""
+  tlsEnabled: true
+  routeTimeoutSeconds: 300
+
+# ── Resource requests/limits ──────────────────────────────────────────────────
+# The MCP server never talks to the Kubernetes API itself — it only proxies
+# HTTP calls to capp-backend — so it runs considerably smaller than
+# capp-backend itself.
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "250m"
+    memory: "128Mi"
+
+# ── Pod security ──────────────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]
+
+# ── Probes ────────────────────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http1
+  initialDelaySeconds: 5
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http1
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# ── Node selection ────────────────────────────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ── Namespace ─────────────────────────────────────────────────────────────────
+# The Kubernetes namespace to deploy into.
+namespace: capp-system

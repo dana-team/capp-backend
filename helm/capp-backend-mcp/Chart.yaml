@@ -1,0 +1,26 @@
+apiVersion: v2
+name: capp-backend-mcp
+description: |
+  Helm chart for capp-backend-mcp — the MCP (Model Context Protocol) server
+  that exposes capp-backend's REST API as tools for LLM agents over
+  Streamable HTTP.
+
+  Deployed as a rcs.dana.io/v1alpha1 Capp resource managed by the CAPP
+  operator, as a standalone service alongside (but independent from) the
+  capp-backend chart. It holds no cluster or backend credentials of its own:
+  every tool call runs with the bearer token the connecting MCP client
+  supplies, forwarded as-is to the capp-backend URL configured in values.yaml.
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+keywords:
+  - capp
+  - dana-team
+  - kubernetes
+  - mcp
+  - model-context-protocol
+home: https://github.com/dana-team/capp-backend
+sources:
+  - https://github.com/dana-team/capp-backend
+maintainers:
+  - name: dana-team

@@ -1,46 +1,37 @@
-# CI: Server test workflow
-# Runs on server/shared code changes. Lint, unit tests, Helm lint, Docker build check.
-name: Test (server)
+# CI: capp-backend-mcp test workflow
+# Runs on capp-backend-mcp code changes. Lint, unit tests, binary build check,
+# Helm lint, Docker build check. Mirrors test-cli.yaml's structure:
+# capp-backend-mcp is architecturally a second standalone client of
+# capp-backend's REST API (like cappctl), so it gets its own workflow and
+# release cadence rather than being bundled into test.yaml (the API server's
+# own workflow).
+name: Test (capp-backend-mcp)
 
 on:
   push:
     branches: ["main", "master"]
     paths:
-      - "cmd/server/**"
-      - "internal/auth/**"
-      - "internal/apierrors/**"
-      - "internal/cluster/**"
-      - "internal/config/**"
-      - "internal/gitops/**"
-      - "internal/middleware/**"
+      - "cmd/mcp/**"
+      - "internal/mcpserver/**"
+      - "internal/cli/client/**"
       - "internal/resources/**"
-      - "internal/server/**"
-      - "pkg/**"
-      - "api/**"
-      - "helm/**"
-      - "deploy/**"
+      - "helm/capp-backend-mcp/**"
+      - "deploy/Dockerfile.capp-backend-mcp"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/test.yaml"
+      - ".github/workflows/test-capp-backend-mcp.yaml"
   pull_request:
     branches: ["main", "master"]
     paths:
-      - "cmd/server/**"
-      - "internal/auth/**"
-      - "internal/apierrors/**"
-      - "internal/cluster/**"
-      - "internal/config/**"
-      - "internal/gitops/**"
-      - "internal/middleware/**"
+      - "cmd/mcp/**"
+      - "internal/mcpserver/**"
+      - "internal/cli/client/**"
       - "internal/resources/**"
-      - "internal/server/**"
-      - "pkg/**"
-      - "api/**"
-      - "helm/**"
-      - "deploy/**"
+      - "helm/capp-backend-mcp/**"
+      - "deploy/Dockerfile.capp-backend-mcp"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/test.yaml"
+      - ".github/workflows/test-capp-backend-mcp.yaml"
   workflow_call:
     inputs:
       skip_build_checks:
@@ -54,7 +45,7 @@ permissions:
 jobs:
   # ── Go: lint + test ──────────────────────────────────────────────────────────
   go:
-    name: Go lint & test
+    name: Go lint & test (capp-backend-mcp)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,24 +60,17 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Verify go.mod is tidy
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
-
       - name: go vet
-        run: go vet $(go list ./... | grep -v 'internal/cli\|cmd/cappctl\|internal/mcpserver\|cmd/mcp')
+        run: go vet ./internal/mcpserver/... ./cmd/mcp/...
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
-          args: --timeout=5m --skip-dirs=internal/cli,internal/mcpserver
+          args: --timeout=5m ./internal/mcpserver/... ./cmd/mcp/...
 
       - name: Unit tests (with race detector)
-        run: |
-          go test -v -race -coverprofile=coverage.out \
-            $(go list ./... | grep -v 'internal/cli\|cmd/cappctl\|internal/mcpserver\|cmd/mcp')
+        run: go test -v -race -coverprofile=coverage.out ./internal/mcpserver/... ./cmd/mcp/...
 
       - name: Coverage report
         run: go tool cover -func=coverage.out
@@ -101,7 +85,7 @@ jobs:
 
   # ── Go: build check ──────────────────────────────────────────────────────────
   build:
-    name: Build server binary
+    name: Build capp-backend-mcp binary
     if: ${{ !inputs.skip_build_checks }}
     runs-on: ubuntu-latest
     needs: go
@@ -116,7 +100,7 @@ jobs:
           cache: true
 
       - name: Build
-        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o /dev/null ./cmd/server/...
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o /dev/null ./cmd/mcp/...
 
   # ── Helm: lint ───────────────────────────────────────────────────────────────
   helm-lint:
@@ -131,36 +115,17 @@ jobs:
         with:
           version: v3.17.0
 
-      - name: Lint chart (deployment mode)
-        run: |
-          helm lint helm/capp-backend \
-            --set deployAs=deployment \
-            --set config.clusters[0].name=test \
-            --set config.clusters[0].credential.inline.apiServer=https://example.com
+      - name: Lint chart
+        run: helm lint helm/capp-backend-mcp
 
-      - name: Lint chart (capp mode)
-        run: |
-          helm lint helm/capp-backend \
-            --set deployAs=capp \
-            --set config.clusters[0].name=test \
-            --set config.clusters[0].credential.inline.apiServer=https://example.com
+      - name: Template chart (Capp route disabled)
+        run: helm template capp-backend-mcp helm/capp-backend-mcp > /dev/null
 
-      - name: Template chart (deployment mode)
+      - name: Template chart (Capp route enabled)
         run: |
-          helm template capp-backend helm/capp-backend \
-            --set deployAs=deployment \
-            --set config.clusters[0].name=test \
-            --set config.clusters[0].credential.inline.apiServer=https://example.com \
-            --set secret.jwtSecretKey=test-secret \
-            > /dev/null
-
-      - name: Template chart (capp mode)
-        run: |
-          helm template capp-backend helm/capp-backend \
-            --set deployAs=capp \
-            --set config.clusters[0].name=test \
-            --set config.clusters[0].credential.inline.apiServer=https://example.com \
-            --set secret.jwtSecretKey=test-secret \
+          helm template capp-backend-mcp helm/capp-backend-mcp \
+            --set route.enabled=true \
+            --set route.hostname=mcp.example.com \
             > /dev/null
 
   # ── Docker: build check (no push) ────────────────────────────────────────────
@@ -180,8 +145,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: deploy/Dockerfile
+          file: deploy/Dockerfile.capp-backend-mcp
           push: false
-          tags: ghcr.io/dana-team/capp-backend:ci
+          tags: ghcr.io/dana-team/capp-backend-mcp:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
