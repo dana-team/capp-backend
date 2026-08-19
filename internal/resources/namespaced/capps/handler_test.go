@@ -232,7 +232,7 @@ func TestSync_ReSync(t *testing.T) {
 		Post("/namespaces/ns1/capps/app1/sync", nil)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	var resp syncResponse
+	var resp SyncResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "abc123", resp.CommitSHA)
 	assert.NotEmpty(t, resp.Path)
@@ -247,7 +247,7 @@ func TestSync_Success(t *testing.T) {
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	var resp syncResponse
+	var resp SyncResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "abc123", resp.CommitSHA)
 	assert.Equal(t, "sites/test/ns1/app1.yaml", resp.Path)
@@ -353,7 +353,7 @@ func TestSync_UsesClusterNameNotGitOpsPath(t *testing.T) {
 			assert.Equal(t, tt.namespace, capturedNS, "should use capp.Namespace from K8s object")
 			assert.Equal(t, tt.cappName, capturedName)
 
-			var resp syncResponse
+			var resp SyncResponse
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 			assert.Equal(t, tt.wantPath, resp.Path)
 		})

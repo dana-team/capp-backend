@@ -218,8 +218,10 @@ func (h *Handler) delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// syncResponse is the JSON body returned by the sync endpoint.
-type syncResponse struct {
+// SyncResponse is the JSON body returned by the sync endpoint. Exported so
+// non-Gin clients (e.g. cappctl, the MCP server) can decode it directly
+// instead of duplicating the shape.
+type SyncResponse struct {
 	CommitSHA string `json:"commitSha,omitempty"`
 	Path      string `json:"path,omitempty"`
 }
@@ -285,7 +287,7 @@ func (h *Handler) sync(c *gin.Context) {
 	}
 
 	relPath := h.gitops.BuildRelPath(meta.Name, capp.Namespace, capp.Name)
-	c.JSON(http.StatusOK, syncResponse{
+	c.JSON(http.StatusOK, SyncResponse{
 		CommitSHA: commitSHA,
 		Path:      relPath,
 	})
