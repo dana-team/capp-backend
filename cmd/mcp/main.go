@@ -39,7 +39,13 @@ func main() {
 
 	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return mcpServer
-	}, &mcp.StreamableHTTPOptions{Logger: logger})
+	}, &mcp.StreamableHTTPOptions{
+		Logger: logger,
+		// A same-pod sidecar forwards via 127.0.0.1 but preserves the external
+		// Host header, so disable the SDK's loopback protection. Tool calls still
+		// require a bearer token validated by capp-backend.
+		DisableLocalhostProtection: true,
+	})
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpserver.AuthMiddleware(streamable))
