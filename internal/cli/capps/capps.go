@@ -150,7 +150,6 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 
 			req := apitypes.CappRequest{
 				Name:          name,
-				Namespace:     ns,
 				Image:         image,
 				Size:          cappSize,
 				ScaleSpec:     scaleSpec,
@@ -236,7 +235,6 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 			// Seed request from current state to preserve all fields.
 			req := apitypes.CappRequest{
 				Name:          cappName,
-				Namespace:     ns,
 				Image:         current.Image,
 				ScaleSpec:     current.ScaleSpec,
 				State:         current.State,

@@ -129,8 +129,6 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 
-	// Override namespace from URL — the URL is authoritative.
-	req.Namespace = namespace
 	capp, err := ToK8s(req, nil, namespace, h.sizes)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))

@@ -129,8 +129,7 @@ type ScaleSpec struct {
 type CappRequest struct {
 	// Name is the Kubernetes resource name. Required for create.
 	// For update it is taken from the URL parameter.
-	Name      string `json:"name"      binding:"required"`
-	Namespace string `json:"namespace" binding:"required"`
+	Name string `json:"name" binding:"required"`
 
 	// ScaleSpec configures autoscaling. Optional.
 	ScaleSpec ScaleSpec `json:"scaleSpec,omitempty"`

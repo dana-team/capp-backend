@@ -26,12 +26,14 @@ type cappGetInput struct {
 }
 
 type cappCreateInput struct {
-	Cluster string `json:"cluster" jsonschema:"the target cluster name"`
+	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
+	Namespace string `json:"namespace" jsonschema:"the namespace where the capp should be created"`
 	capps.CappRequest
 }
 
 type cappUpdateInput struct {
-	Cluster string `json:"cluster" jsonschema:"the target cluster name"`
+	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
+	Namespace string `json:"namespace" jsonschema:"the namespace containing the capp"`
 	capps.CappRequest
 }
 

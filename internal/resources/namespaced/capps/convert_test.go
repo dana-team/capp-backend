@@ -36,9 +36,8 @@ func minimalSizes() config.CappSizes {
 
 func minimalRequest() CappRequest {
 	return CappRequest{
-		Name:      "my-app",
-		Namespace: "ns1",
-		Image:     "nginx:latest",
+		Name:  "my-app",
+		Image: "nginx:latest",
 	}
 }
 
