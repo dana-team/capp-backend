@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: capp-backend
     app.kubernetes.io/component: config
 data:
-  # The full config.yaml is embedded here. Sensitive values (tokens, JWT secret)
+  # The full config.yaml is embedded here. Sensitive values (tokens)
   # are NOT stored here — they are injected via Secret-sourced environment
   # variables in the Deployment (see deployment.yaml).
   config.yaml: |
@@ -21,10 +21,6 @@ data:
 
     auth:
       mode: "passthrough"
-      jwt:
-        secretKey: ""         # injected via CAPP_AUTH_JWT_SECRETKEY
-        tokenTTLMinutes: 60
-        refreshTTLMinutes: 1440
       rateLimit:
         enabled: true
         requestsPerSecond: 20

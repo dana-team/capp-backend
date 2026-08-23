@@ -154,7 +154,7 @@ func (m *defaultClusterManager) ClientFor(cluster *ClusterClient, cred auth.Clus
 
 	// Override the token with the caller's credential when provided.
 	// In passthrough mode, every request carries a different user token.
-	// In jwt / service-account mode, cred may be empty and the base token is used.
+	// In openshift mode, cred may carry impersonation headers while the base cluster token is used for authentication.
 	if cred.BearerToken != "" {
 		reqCfg.BearerToken = cred.BearerToken
 		// Clear any token file path so BearerToken takes precedence.

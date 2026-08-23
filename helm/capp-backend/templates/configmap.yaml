@@ -20,10 +20,6 @@ data:
 
     auth:
       mode: {{ .Values.config.auth.mode | quote }}
-      jwt:
-        secretKey: ""
-        tokenTTLMinutes: {{ .Values.config.auth.jwt.tokenTTLMinutes }}
-        refreshTTLMinutes: {{ .Values.config.auth.jwt.refreshTTLMinutes }}
       {{- if eq .Values.config.auth.mode "openshift" }}
       openshift:
         apiServer: {{ .Values.config.auth.openshift.apiServer | quote }}

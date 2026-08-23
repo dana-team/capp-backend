@@ -9,9 +9,6 @@ import (
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
 var validAuthModes = map[string]struct{}{
 	"passthrough": {},
-	"jwt":         {},
-	"static":      {},
-	"dex":         {},
 	"openshift":   {},
 }
 
@@ -117,7 +114,7 @@ func validateAuth(auth *AuthConfig) []error {
 
 	if _, ok := validAuthModes[auth.Mode]; !ok {
 		errs = append(errs, fmt.Errorf(
-			"config: auth.mode %q is not valid; must be one of: passthrough, jwt, static, dex, openshift",
+			"config: auth.mode %q is not valid; must be one of: passthrough, openshift",
 			auth.Mode,
 		))
 		// Cannot validate mode-specific fields if mode is unknown.
@@ -125,32 +122,6 @@ func validateAuth(auth *AuthConfig) []error {
 	}
 
 	switch auth.Mode {
-	case "jwt":
-		errs = append(errs, validateJWTSecretKey(auth.JWT.SecretKey, "jwt")...)
-	case "static":
-		if len(auth.Static.APIKeys) == 0 {
-			errs = append(errs, errors.New(
-				"config: auth.static.apiKeys must contain at least one key when auth.mode is 'static'",
-			))
-		}
-	case "dex":
-		if auth.Dex.Endpoint == "" {
-			errs = append(errs, errors.New(
-				"config: auth.dex.endpoint is required when auth.mode is 'dex'",
-			))
-		}
-		if auth.Dex.ClientID == "" {
-			errs = append(errs, errors.New(
-				"config: auth.dex.clientId is required when auth.mode is 'dex'",
-			))
-		}
-		if auth.Dex.ClientSecret == "" {
-			errs = append(errs, errors.New(
-				"config: auth.dex.clientSecret is required when auth.mode is 'dex'; "+
-					"set via CAPP_AUTH_DEX_CLIENTSECRET environment variable",
-			))
-		}
-		errs = append(errs, validateJWTSecretKey(auth.JWT.SecretKey, "dex")...)
 	case "openshift":
 		if auth.OpenShift.APIServer == "" {
 			errs = append(errs, errors.New(
@@ -218,30 +189,6 @@ func validateGitOps(g *GitOpsConfig) []error {
 	}
 
 	return errs
-}
-
-// minJWTSecretKeyLen is the minimum required length for the JWT secret key.
-// HMAC-SHA256 keys should be at least 256 bits (32 bytes) per NIST guidance.
-const minJWTSecretKeyLen = 32
-
-// validateJWTSecretKey checks that the JWT secret key is present and meets
-// the minimum entropy requirement for HMAC-SHA256.
-func validateJWTSecretKey(key, mode string) []error {
-	if key == "" {
-		return []error{fmt.Errorf(
-			"config: auth.jwt.secretKey is required when auth.mode is %q; "+
-				"set it via the CAPP_AUTH_JWT_SECRETKEY environment variable",
-			mode,
-		)}
-	}
-	if len(key) < minJWTSecretKeyLen {
-		return []error{fmt.Errorf(
-			"config: auth.jwt.secretKey must be at least %d characters (got %d); "+
-				"HMAC-SHA256 requires a key of at least 256 bits for security",
-			minJWTSecretKeyLen, len(key),
-		)}
-	}
-	return nil
 }
 
 // validateGitOpsPaths checks that every cluster's GitOpsPath (after fallback)

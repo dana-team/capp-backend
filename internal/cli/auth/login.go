@@ -68,9 +68,9 @@ func NewLoginCommand(state *root.State) *cobra.Command {
 	}
 
 	// Only flags not already defined as root persistent flags.
-	cmd.Flags().StringVar(&authMode, "auth-mode", "", "auth mode: jwt|dex|openshift|static|passthrough (auto-detected if omitted)")
-	cmd.Flags().StringVar(&username, "username", "", "username (dex or openshift mode)")
-	cmd.Flags().StringVar(&password, "password", "", "password (dex or openshift mode)")
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "auth mode: openshift|passthrough (auto-detected if omitted)")
+	cmd.Flags().StringVar(&username, "username", "", "username (openshift mode)")
+	cmd.Flags().StringVar(&password, "password", "", "password (openshift mode)")
 	cmd.Flags().MarkHidden("password") //nolint:errcheck
 
 	return cmd
@@ -95,47 +95,11 @@ func login(cmd *cobra.Command, server, authMode, cluster, token, username, passw
 	}
 
 	switch authMode {
-	case "passthrough", "static":
+	case "passthrough":
 		if token == "" {
 			return ctx, fmt.Errorf("--token is required for %s mode", authMode)
 		}
 		ctx.Token = token
-		return ctx, nil
-
-	case "jwt":
-		if token == "" {
-			return ctx, fmt.Errorf("--token is required for %s mode", authMode)
-		}
-		if cluster == "" {
-			return ctx, fmt.Errorf("--cluster is required for %s mode", authMode)
-		}
-		c := client.New(server, "", insecure)
-		var pair client.TokenPair
-		if err := c.Post(cmd.Context(), "/api/v1/auth/login", map[string]string{
-			"cluster": cluster,
-			"token":   token,
-		}, &pair); err != nil {
-			return ctx, fmt.Errorf("login failed: %w", err)
-		}
-		ctx.Token = pair.AccessToken
-		ctx.RefreshToken = pair.RefreshToken
-		ctx.TokenExpiresAt = pair.ExpiresAt
-		return ctx, nil
-
-	case "dex":
-		var err error
-		username, password, err = promptCredentials(cmd, username, password)
-		if err != nil {
-			return ctx, err
-		}
-		c := client.New(server, "", insecure)
-		pair, err := loginWithPassword(cmd.Context(), c, username, password)
-		if err != nil {
-			return ctx, err
-		}
-		ctx.Token = pair.AccessToken
-		ctx.RefreshToken = pair.RefreshToken
-		ctx.TokenExpiresAt = pair.ExpiresAt
 		return ctx, nil
 
 	case "openshift":

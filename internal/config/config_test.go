@@ -8,8 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const authModeJWT = "jwt"
-
 // writeTempConfig writes content to a temp file and returns its path.
 // The caller is responsible for os.Remove when done.
 func writeTempConfig(t *testing.T, content string) string {
@@ -79,8 +77,6 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 30, cfg.Server.WriteTimeoutSeconds)
 	assert.Equal(t, 60, cfg.Server.IdleTimeoutSeconds)
 	assert.Equal(t, "passthrough", cfg.Auth.Mode)
-	assert.Equal(t, 60, cfg.Auth.JWT.TokenTTLMinutes)
-	assert.Equal(t, 1440, cfg.Auth.JWT.RefreshTTLMinutes)
 	assert.True(t, cfg.Auth.RateLimit.Enabled)
 	assert.Equal(t, 20.0, cfg.Auth.RateLimit.RequestsPerSecond)
 	assert.Equal(t, 40, cfg.Auth.RateLimit.Burst)
@@ -101,9 +97,7 @@ server:
   corsAllowedOrigins:
     - "https://example.com"
 auth:
-  mode: jwt
-  jwt:
-    secretKey: "super-secret"
+  mode: passthrough
 clusters:
   - name: dev
     displayName: "Dev Cluster"
@@ -114,8 +108,7 @@ clusters:
 `)
 	assert.Equal(t, 9090, cfg.Server.Port)
 	assert.Equal(t, []string{"https://example.com"}, cfg.Server.CORSAllowedOrigins)
-	assert.Equal(t, authModeJWT, cfg.Auth.Mode)
-	assert.Equal(t, "super-secret", cfg.Auth.JWT.SecretKey)
+	assert.Equal(t, "passthrough", cfg.Auth.Mode)
 	require.Len(t, cfg.Clusters, 1)
 	assert.Equal(t, "dev", cfg.Clusters[0].Name)
 	assert.Equal(t, "Dev Cluster", cfg.Clusters[0].DisplayName)
@@ -190,40 +183,6 @@ func TestValidate_UnknownAuthMode(t *testing.T) {
 	err := Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auth.mode")
-}
-
-func TestValidate_JWTMissingSecretKey(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "prod", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
-	cfg.Auth.Mode = authModeJWT
-	err := Validate(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "auth.jwt.secretKey")
-}
-
-func TestValidate_JWTSecretKeyTooShort(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "prod", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
-	cfg.Auth.Mode = authModeJWT
-	cfg.Auth.JWT.SecretKey = "short"
-	err := Validate(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "at least 32 characters")
-}
-
-func TestValidate_JWTSecretKeyValid(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "prod", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
-	cfg.Auth.Mode = authModeJWT
-	cfg.Auth.JWT.SecretKey = "this-secret-key-is-at-least-32-bytes-long"
-	err := Validate(cfg)
-	assert.NoError(t, err)
-}
-
-func TestValidate_StaticMissingKeys(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "prod", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
-	cfg.Auth.Mode = "static"
-	cfg.Auth.Static = StaticConfig{APIKeys: nil}
-	err := Validate(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "auth.static.apiKeys")
 }
 
 func TestValidate_OpenShift_Valid(t *testing.T) {

@@ -41,7 +41,7 @@ current-context: my-cluster
 contexts:
   - name: my-cluster
     server: https://capp.example.com
-    auth-mode: jwt
+    auth-mode: openshift
     token: eyJ...
     refresh-token: eyJ...
     token-expires-at: "2025-06-01T12:00:00Z"
@@ -59,9 +59,9 @@ Fields per context:
 |-------------------|------------------------------------------------------|
 | `name`            | Unique context identifier                            |
 | `server`          | Backend base URL                                     |
-| `auth-mode`       | One of `passthrough`, `static`, `jwt`, `dex`, `openshift` |
+| `auth-mode`       | One of `passthrough`, `openshift` |
 | `token`           | Bearer access token                                  |
-| `refresh-token`   | Refresh token (jwt/dex/openshift modes)              |
+| `refresh-token`   | Refresh token (openshift mode)                       |
 | `token-expires-at`| RFC3339 expiry time of the access token              |
 | `cluster`         | Target cluster name                                  |
 | `namespace`       | Default namespace                                    |
@@ -112,40 +112,6 @@ The token is used as-is as a bearer token on every API request. No server-side l
 
 ```bash
 cappctl login --server https://capp.example.com --context dev --auth-mode passthrough --token <raw-token>
-```
-
-### static
-
-Same as `passthrough` — the token is stored directly and sent as a bearer token. The server's static auth manager does not support a login endpoint, so no API call is made during login.
-
-```bash
-cappctl login --server https://capp.example.com --context staging --auth-mode static --token <static-token>
-```
-
-### jwt
-
-Logs in via `POST /api/v1/auth/login` with a cluster-scoped token. Returns an access/refresh token pair. Refresh tokens are used transparently (see Token Refresh below).
-
-```bash
-cappctl login \
-  --server https://capp.example.com \
-  --context prod \
-  --auth-mode jwt \
-  --cluster production \
-  --token <k8s-service-account-token>
-```
-
-### dex
-
-Interactive username/password login via `POST /api/v1/auth/login`. The password is read securely (no echo). You can supply credentials via flags for scripted use (the `--password` flag is hidden from `--help` to reduce accidental exposure).
-
-```bash
-# Interactive (prompts for username and password)
-cappctl login --server https://capp.example.com --context prod-dex --auth-mode dex
-
-# Scripted
-cappctl login --server https://capp.example.com --context prod-dex --auth-mode dex \
-  --username alice --password hunter2
 ```
 
 ### openshift
@@ -201,10 +167,10 @@ Authenticates and saves credentials to a named context. The context is set as cu
 | Flag          | Description                                              |
 |---------------|----------------------------------------------------------|
 | `--auth-mode` | Authentication mode (auto-detected if omitted)           |
-| `--token`     | Bearer / service-account token (passthrough/static/jwt)  |
-| `--cluster`   | Target cluster (required for jwt mode)                   |
+| `--token`     | Bearer token (passthrough) or raw OpenShift token        |
+| `--cluster`   | Target cluster (when required by auth mode)              |
 | `--namespace` | Default namespace to store in the context                |
-| `--username`  | Username (dex or openshift password mode)                |
+| `--username`  | Username (openshift password mode)                       |
 | `--insecure`  | Skip TLS certificate verification                        |
 
 **Examples:**
@@ -213,9 +179,9 @@ Authenticates and saves credentials to a named context. The context is set as cu
 # Auto-detect auth mode
 cappctl login --server https://capp.example.com --context prod
 
-# JWT with explicit cluster
+# Passthrough with a bearer token
 cappctl login --server https://capp.example.com --context prod \
-  --auth-mode jwt --cluster mycluster --token $SA_TOKEN
+  --auth-mode passthrough --token $TOKEN
 
 # Store a default namespace
 cappctl login --server https://capp.example.com --context prod \
@@ -250,8 +216,7 @@ cappctl context list
 Prints all configured contexts. The active context is marked with `*`.
 
 ```
-* prod    https://capp.example.com   jwt
-  staging https://staging.example.com dex
+* prod    https://capp.example.com   openshift
   local   http://localhost:8080       passthrough
 ```
 
@@ -279,7 +244,7 @@ Prints the name of the active context, or `(none)` if unset.
 
 ## Token Refresh
 
-For auth modes that return refresh tokens (`jwt`, `dex`, `openshift`), `cappctl` automatically refreshes the access token before every request when the token expires within 30 seconds.
+For auth modes that return refresh tokens (`openshift`), `cappctl` automatically refreshes the access token before every request when the token expires within 30 seconds.
 
 Refresh flow:
 1. `PersistentPreRunE` reads the active context's `token-expires-at`.
@@ -526,7 +491,7 @@ cappctl completion powershell | Out-String | Invoke-Expression
 ```bash
 # 1. Log in
 cappctl login --server https://capp.example.com --context prod \
-  --auth-mode jwt --cluster mycluster --token $SA_TOKEN --namespace my-team
+  --auth-mode passthrough --token $TOKEN --namespace my-team
 
 # 2. Check current context
 cappctl context current

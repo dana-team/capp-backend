@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Pluggable authentication** — Five modes: `passthrough`, `jwt`, `static`, `dex` (Dex OIDC username/password), and `openshift` (OpenShift OAuth with K8s impersonation).
+- **Pluggable authentication** — Two modes: `passthrough` and `openshift` (OpenShift OAuth with K8s impersonation).
 - **Multi-cluster support** — Configure any number of clusters; each is health-checked every 30 seconds.
 - **Capp CRUD** — Full create / read / update / delete for `Capp` resources across namespaces.
 - **Namespace listing** — Returns the namespaces visible to each cluster's credentials.
@@ -18,7 +18,6 @@
 
 - **Go** 1.25 or later (for building from source)
 - One or more Kubernetes/OpenShift clusters with the [`container-app-operator`](https://github.com/dana-team/container-app-operator) installed (provides the `rcs.dana.io/v1alpha1` API group)
-- For `dex` auth mode: a [Dex](https://dexidp.io/) instance with a static client that has `grantTypes: [password]` enabled
 - For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered, and a service account with `impersonate` permissions on each managed cluster
 
 ## Getting Started
@@ -46,7 +45,7 @@ docker run -p 8080:8080 -v $(pwd)/config/config.yaml:/etc/capp/config.yaml capp-
 
 ## Configuration
 
-Configuration is loaded from a YAML file specified with the `--config` flag (e.g. `--config config/config.yaml`). Every field can be overridden by an environment variable — replace dots with underscores and prefix with `CAPP_` (e.g. `auth.jwt.secretKey` → `CAPP_AUTH_JWT_SECRETKEY`). If `--config` is omitted, no config file is read and only environment variables and built-in defaults are used.
+Configuration is loaded from a YAML file specified with the `--config` flag (e.g. `--config config/config.yaml`). Every field can be overridden by an environment variable — replace dots with underscores and prefix with `CAPP_` (e.g. `auth.mode` → `CAPP_AUTH_MODE`). If `--config` is omitted, no config file is read and only environment variables and built-in defaults are used.
 
 ### Full reference
 
@@ -60,27 +59,8 @@ server:
     - "http://localhost:3000"
 
 auth:
-  # Mode: passthrough | jwt | static | dex | openshift
+  # Mode: passthrough | openshift
   mode: passthrough
-
-  jwt:
-    # Required in jwt and dex modes. Inject via CAPP_AUTH_JWT_SECRETKEY.
-    secretKey: ""
-    tokenTTLMinutes: 60        # Access token lifetime
-    refreshTTLMinutes: 1440    # Refresh token lifetime (24 h)
-
-  static:
-    # For development / CI only. List of accepted bearer tokens.
-    apiKeys: []
-
-  dex:
-    endpoint: "https://dex.example.com"   # Dex issuer URL
-    clientId: "capp-backend"
-    # Inject via CAPP_AUTH_DEX_CLIENTSECRET.
-    clientSecret: ""
-    scopes: [openid, profile, email]
-    # Optional: base64-encoded PEM CA bundle for TLS to the Dex server.
-    caCert: ""
 
   openshift:
     apiServer: "https://api.my-cluster.example.com:6443"  # External OpenShift API URL
@@ -152,22 +132,6 @@ resources:
 
 The client's `Authorization: Bearer <token>` header is forwarded directly to each Kubernetes API server. No server-side state is created. Suitable for initial deployment and setups where clients already hold cluster tokens.
 
-### `jwt`
-
-Clients POST a cluster name and a raw Kubernetes bearer token to `/api/v1/auth/login`. The backend validates the token against the cluster, issues a short-lived **access JWT** and a long-lived **refresh JWT**, and stores a server-side session. The raw token never travels over the wire again after login.
-
-Requires `auth.jwt.secretKey`.
-
-### `static`
-
-A fixed list of API keys in `auth.static.apiKeys`. All keys grant the same access. Intended for development or CI environments where key management is not needed.
-
-### `dex`
-
-Clients POST a `username` and `password` to `/api/v1/auth/login`. The backend exchanges the credentials for an OIDC ID token from Dex (Resource Owner Password Credentials grant), verifies it, and issues backend-managed JWTs identical to `jwt` mode. Kubernetes API calls use the cluster's **pre-configured service-account token** — user identity is not forwarded to Kubernetes.
-
-Requires `auth.dex.endpoint`, `auth.dex.clientId`, `auth.dex.clientSecret`, and `auth.jwt.secretKey`. The Dex static client must have `grantTypes: [password]` enabled.
-
 ### `openshift`
 
 Authenticates users via the OpenShift OAuth server of the cluster where the backend is deployed. The backend is fully stateless — it never issues its own JWTs. Instead, OpenShift-managed tokens are used directly.
@@ -233,8 +197,8 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/auth/mode` | — | Get active auth mode |
-| `POST` | `/api/v1/auth/login` | — | Sign in (jwt / dex / static / openshift modes) |
-| `POST` | `/api/v1/auth/refresh` | — | Refresh access token (jwt / dex / openshift modes) |
+| `POST` | `/api/v1/auth/login` | — | Sign in (openshift mode) or return not-supported (passthrough mode) |
+| `POST` | `/api/v1/auth/refresh` | — | Refresh access token (openshift mode) or return not-supported (passthrough mode) |
 | `GET` | `/api/v1/auth/openshift/authorize` | — | Get OpenShift OAuth authorize URL (openshift mode) |
 | `POST` | `/api/v1/auth/openshift/callback` | — | Exchange OAuth code for tokens (openshift mode) |
 | `GET` | `/api/v1/clusters` | ✓ | List configured clusters |
@@ -296,9 +260,7 @@ cappctl context use staging
 
 | Mode | Login command |
 |---|---|
-| `passthrough` / `static` | `--token <raw-token>` |
-| `jwt` | `--token <k8s-token> --cluster <name>` |
-| `dex` | `--username <u>` (password prompted) |
+| `passthrough` | `--token <raw-token>` |
 | `openshift` | `--username <u>` (password prompted) **or** browser flow (URL opened automatically on Linux/Windows) **or** `--token <raw-token>` |
 
 > Auth mode is auto-detected from the server if `--auth-mode` is omitted.
@@ -368,7 +330,7 @@ deploy/             # Dockerfiles, Kubernetes manifests, Helm chart skeleton
 docs/               # Documentation (cappctl.md, openshift-auth.md)
 internal/
 ├── apierrors/      # Canonical error types and Gin response helpers
-├── auth/           # Auth manager interface + passthrough, jwt, static, dex, openshift implementations
+├── auth/           # Auth manager interface + passthrough, openshift implementations
 ├── cli/            # cappctl CLI packages (no Gin/K8s imports)
 │   ├── auth/       # login, logout, context commands
 │   ├── capps/      # Capp CRUD commands
@@ -403,15 +365,13 @@ A reference `Deployment`, `Service`, `Secret`, and `ConfigMap` are provided in `
 
 The container runs as a non-root user (`UID 65532`) with a read-only root filesystem. Liveness and readiness probes are pre-configured on `/healthz` and `/readyz`.
 
-Sensitive values (`auth.jwt.secretKey`, cluster tokens) should be provided via Kubernetes Secrets and mounted as environment variables:
+Sensitive values (cluster tokens, OpenShift client secret) should be provided via Kubernetes Secrets and mounted as environment variables:
 
 ```bash
-CAPP_AUTH_JWT_SECRETKEY=<secret>
 CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN=<sa-token>
+CAPP_AUTH_OPENSHIFT_CLIENTSECRET=<client-secret>
 ```
 
-> **Note:** In `jwt` and `dex` modes, sessions are stored in-memory. Running more than one replica requires a shared session store (e.g. Redis). For single-replica deployments, the in-memory store is sufficient.
->
 > **Note:** In `openshift` mode, the backend is fully stateless — no sessions are stored. Multiple replicas work without shared state. Token validation results are cached in-memory per pod.
 
 ## Development
