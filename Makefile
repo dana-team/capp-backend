@@ -41,16 +41,16 @@ build: fmt vet ## Build the server binary
 build-cli: fmt vet ## Build the cappctl CLI binary
 	go build -o bin/cappctl ./cmd/cappctl/...
 
-.PHONY: build-capp-backend-mcp
-build-capp-backend-mcp: fmt vet ## Build the capp-backend-mcp binary
-	go build -o bin/capp-backend-mcp ./cmd/mcp/...
+.PHONY: build-capp-mcp
+build-capp-mcp: fmt vet ## Build the capp-mcp binary
+	go build -o bin/capp-mcp ./cmd/mcp/...
 
 .PHONY: run
 run: fmt vet ## Run the server locally using the default config file
 	go run ./cmd/server/... --config=config/config.yaml
 
-.PHONY: run-capp-backend-mcp
-run-capp-backend-mcp: fmt vet ## Run capp-backend-mcp locally against a local capp-backend on :8080
+.PHONY: run-capp-mcp
+run-capp-mcp: fmt vet ## Run capp-mcp locally against a local capp-backend on :8080
 	go run ./cmd/mcp/... --backend-url=http://localhost:8080
 
 ##@ Test
@@ -79,9 +79,9 @@ docker-push: ## Push the Docker image to the registry
 docker-build-cli: ## Build the cappctl Docker image (requires cappctl-linux-amd64 binary in repo root)
 	docker build -t ghcr.io/dana-team/cappctl:latest -f deploy/Dockerfile.cappctl .
 
-.PHONY: docker-build-capp-backend-mcp
-docker-build-capp-backend-mcp: ## Build the capp-backend-mcp Docker image
-	docker build -t ghcr.io/dana-team/capp-backend-mcp:latest -f deploy/Dockerfile.capp-backend-mcp .
+.PHONY: docker-build-capp-mcp
+docker-build-capp-mcp: ## Build the capp-mcp Docker image
+	docker build -t ghcr.io/dana-team/capp-mcp:latest -f deploy/Dockerfile.capp-mcp .
 
 ##@ Deployment
 

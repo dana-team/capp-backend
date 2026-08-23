@@ -1,4 +1,4 @@
-// Command capp-backend-mcp exposes capp-backend's REST API as MCP (Model
+// Command capp-mcp exposes capp-backend's REST API as MCP (Model
 // Context Protocol) tools over Streamable HTTP, for use by LLM agents.
 package main
 
@@ -60,7 +60,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("capp-backend-mcp starting", "port", port, "backendURL", backendURL)
+		logger.Info("capp-mcp starting", "port", port, "backendURL", backendURL)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server failed", "error", err)
 			os.Exit(1)
@@ -71,7 +71,7 @@ func main() {
 	defer stop()
 	<-ctx.Done()
 
-	logger.Info("capp-backend-mcp shutting down")
+	logger.Info("capp-mcp shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

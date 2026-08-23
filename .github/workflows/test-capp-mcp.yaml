@@ -1,11 +1,11 @@
-# CI: capp-backend-mcp test workflow
-# Runs on capp-backend-mcp code changes. Lint, unit tests, binary build check,
+# CI: capp-mcp test workflow
+# Runs on capp-mcp code changes. Lint, unit tests, binary build check,
 # Helm lint, Docker build check. Mirrors test-cli.yaml's structure:
-# capp-backend-mcp is architecturally a second standalone client of
+# capp-mcp is architecturally a second standalone client of
 # capp-backend's REST API (like cappctl), so it gets its own workflow and
 # release cadence rather than being bundled into test.yaml (the API server's
 # own workflow).
-name: Test (capp-backend-mcp)
+name: Test (capp-mcp)
 
 on:
   push:
@@ -15,11 +15,11 @@ on:
       - "internal/mcpserver/**"
       - "internal/cli/client/**"
       - "internal/resources/**"
-      - "helm/capp-backend-mcp/**"
-      - "deploy/Dockerfile.capp-backend-mcp"
+      - "helm/capp-mcp/**"
+      - "deploy/Dockerfile.capp-mcp"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/test-capp-backend-mcp.yaml"
+      - ".github/workflows/test-capp-mcp.yaml"
   pull_request:
     branches: ["main", "master"]
     paths:
@@ -27,11 +27,11 @@ on:
       - "internal/mcpserver/**"
       - "internal/cli/client/**"
       - "internal/resources/**"
-      - "helm/capp-backend-mcp/**"
-      - "deploy/Dockerfile.capp-backend-mcp"
+      - "helm/capp-mcp/**"
+      - "deploy/Dockerfile.capp-mcp"
       - "go.mod"
       - "go.sum"
-      - ".github/workflows/test-capp-backend-mcp.yaml"
+      - ".github/workflows/test-capp-mcp.yaml"
   workflow_call:
     inputs:
       skip_build_checks:
@@ -45,7 +45,7 @@ permissions:
 jobs:
   # ── Go: lint + test ──────────────────────────────────────────────────────────
   go:
-    name: Go lint & test (capp-backend-mcp)
+    name: Go lint & test (capp-mcp)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -85,7 +85,7 @@ jobs:
 
   # ── Go: build check ──────────────────────────────────────────────────────────
   build:
-    name: Build capp-backend-mcp binary
+    name: Build capp-mcp binary
     if: ${{ !inputs.skip_build_checks }}
     runs-on: ubuntu-latest
     needs: go
@@ -116,14 +116,14 @@ jobs:
           version: v3.17.0
 
       - name: Lint chart
-        run: helm lint helm/capp-backend-mcp
+        run: helm lint helm/capp-mcp
 
       - name: Template chart (Capp route disabled)
-        run: helm template capp-backend-mcp helm/capp-backend-mcp > /dev/null
+        run: helm template capp-mcp helm/capp-mcp > /dev/null
 
       - name: Template chart (Capp route enabled)
         run: |
-          helm template capp-backend-mcp helm/capp-backend-mcp \
+          helm template capp-mcp helm/capp-mcp \
             --set route.enabled=true \
             --set route.hostname=mcp.example.com \
             > /dev/null
@@ -145,8 +145,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: deploy/Dockerfile.capp-backend-mcp
+          file: deploy/Dockerfile.capp-mcp
           push: false
-          tags: ghcr.io/dana-team/capp-backend-mcp:ci
+          tags: ghcr.io/dana-team/capp-mcp:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

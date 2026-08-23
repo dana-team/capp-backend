@@ -14,7 +14,7 @@ type Config struct {
 // registered. The same *mcp.Server instance is reused for every MCP session.
 func NewServer(cfg Config) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
-		Name:    "capp-backend-mcp",
+		Name:    "capp-mcp",
 		Version: "0.1.0",
 	}, &mcp.ServerOptions{
 		Instructions: "Tools for inspecting and managing Capp resources, namespaces, and ConfigMaps across the clusters known to capp-backend. Every tool call runs with the caller's own bearer token against capp-backend's REST API, so results are scoped by the same RBAC the API already enforces. Secrets are intentionally not exposed here.",
