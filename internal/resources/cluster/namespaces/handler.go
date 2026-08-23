@@ -3,6 +3,7 @@
 // Endpoints:
 //
 //	GET    /api/v1/clusters/:cluster/namespaces          — list CAPP-managed namespaces
+//	GET	   /api/v1/clusters/:cluster/namespaces/:namespace    — get namespace details
 //	POST   /api/v1/clusters/:cluster/namespaces          — create namespace with quota + RoleBinding
 //	PUT    /api/v1/clusters/:cluster/namespaces/:namespace    — replace quota and RoleBinding
 //	PATCH  /api/v1/clusters/:cluster/namespaces/:namespace    — add users to existing RoleBinding
@@ -57,6 +58,7 @@ func (h *Handler) Name() string { return "namespaces" }
 // RegisterRoutes attaches the namespace routes to the cluster router group.
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/namespaces", h.list)
+	rg.GET("/namespaces/:namespace", h.get)
 	rg.POST("/namespaces", h.create)
 	rg.PUT("/namespaces/:namespace", h.update)
 	rg.PATCH("/namespaces/:namespace", h.patch)
@@ -154,6 +156,57 @@ func canCreateCapps(ctx context.Context, userClient client.Client, namespace str
 		return false, err
 	}
 	return sar.Status.Allowed, nil
+}
+
+// get handles GET /api/v1/clusters/:cluster/namespaces/:namespace.
+func (h *Handler) get(c *gin.Context) {
+	namespaceName := c.Param("namespace")
+	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
+		return
+	}
+
+	adminClient, ok := c.MustGet(string(middleware.AdminK8sClientKey)).(client.Client)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("AdminK8sClientKey")))
+		return
+	}
+
+	ns := &corev1.Namespace{}
+	if err := adminClient.Get(c.Request.Context(), client.ObjectKey{Name: namespaceName}, ns); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	allowed, err := canCreateCapps(c.Request.Context(), userClient, namespaceName)
+	if err != nil || !allowed {
+		apierrors.Respond(c, apierrors.NewForbidden(fmt.Sprintf("not allowed to view namespace %s", namespaceName)))
+		return
+	}
+
+	rq := &corev1.ResourceQuota{}
+	err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: fmt.Sprintf("%s-quota", namespaceName), Namespace: namespaceName}, rq)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	rb := &rbacv1.RoleBinding{}
+	err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: fmt.Sprintf("%s-capp-access", namespaceName), Namespace: namespaceName}, rb)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	quota := quotaInfoFromK8s(rq)
+	users := []string{}
+	for _, subject := range rb.Subjects {
+		users = append(users, subject.Name)
+	}
+	item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quota, Users: &users}
+	c.JSON(http.StatusOK, item)
+
 }
 
 // create handles POST /api/v1/clusters/:cluster/namespaces.
