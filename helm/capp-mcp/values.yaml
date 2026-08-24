@@ -25,11 +25,12 @@ server:
 # ── Autoscaling (Knative, via the CAPP operator) ─────────────────────────────
 scaleSpec:
   metric: "concurrency"
-  # minReplicas: keep at least 1 warm instance if agents hold long-lived
-  # Streamable HTTP / SSE sessions — Knative scaling the revision to zero
-  # mid-session drops any in-flight call. Set to 0 only once the deployed
-  # MCP client(s) are confirmed to reconnect/resume cleanly.
-  minReplicas: 1
+  # minReplicas: 0 is safe here — the server runs the MCP Streamable HTTP
+  # transport in stateless mode (no server-side Mcp-Session-Id), so every
+  # request is independently authenticated and any pod can serve it. The
+  # only cost of scaling to zero is cold-start latency on the first request
+  # after an idle period.
+  minReplicas: 0
   maxReplicas: 5
   scaleDelaySeconds: 300
 
