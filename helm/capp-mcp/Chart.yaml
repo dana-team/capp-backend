@@ -1,7 +1,7 @@
 apiVersion: v2
-name: capp-backend-mcp
+name: capp-mcp
 description: |
-  Helm chart for capp-backend-mcp — the MCP (Model Context Protocol) server
+  Helm chart for capp-mcp — the MCP (Model Context Protocol) server
   that exposes capp-backend's REST API as tools for LLM agents over
   Streamable HTTP.
 

@@ -1,9 +1,9 @@
-# Default values for the capp-backend-mcp Helm chart.
+# Default values for the capp-mcp Helm chart.
 # Override these in a separate values file or with --set on the CLI.
 
 # ── Image ─────────────────────────────────────────────────────────────────────
 image:
-  repository: ghcr.io/dana-team/capp-backend-mcp
+  repository: ghcr.io/dana-team/capp-mcp
   tag: ""        # defaults to .Chart.AppVersion
   pullPolicy: Always
 

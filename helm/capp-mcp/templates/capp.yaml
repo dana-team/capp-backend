@@ -1,11 +1,11 @@
-# Deploys capp-backend-mcp as a rcs.dana.io/v1alpha1 Capp resource.
+# Deploys capp-mcp as a rcs.dana.io/v1alpha1 Capp resource.
 apiVersion: rcs.dana.io/v1alpha1
 kind: Capp
 metadata:
-  name: {{ include "capp-backend-mcp.fullname" . }}
+  name: {{ include "capp-mcp.fullname" . }}
   namespace: {{ .Values.namespace }}
   labels:
-    {{- include "capp-backend-mcp.labels" . | nindent 4 }}
+    {{- include "capp-mcp.labels" . | nindent 4 }}
 spec:
   state: {{ .Values.state }}
   scaleSpec:
@@ -18,11 +18,11 @@ spec:
     template:
       metadata:
         labels:
-          {{- include "capp-backend-mcp.selectorLabels" . | nindent 10 }}
+          {{- include "capp-mcp.selectorLabels" . | nindent 10 }}
       spec:
         containers:
-          - name: capp-backend-mcp
-            image: {{ include "capp-backend-mcp.image" . }}
+          - name: capp-mcp
+            image: {{ include "capp-mcp.image" . }}
             args:
               - "--port={{ .Values.server.port }}"
               - "--backend-url={{ .Values.backend.url }}"
