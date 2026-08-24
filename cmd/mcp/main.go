@@ -41,6 +41,10 @@ func main() {
 		return mcpServer
 	}, &mcp.StreamableHTTPOptions{
 		Logger: logger,
+		// Stateless mode: each request is independently authenticated and proxied
+		// to capp-backend. Enables scale-to-zero and horizontal scaling without
+		// sticky routing.
+		Stateless: true,
 		// A same-pod sidecar forwards via 127.0.0.1 but preserves the external
 		// Host header, so disable the SDK's loopback protection. Tool calls still
 		// require a bearer token validated by capp-backend.

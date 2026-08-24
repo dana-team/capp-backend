@@ -6,9 +6,9 @@ import (
 )
 
 // AuthMiddleware extracts the bearer token from the Authorization header
-// and attaches it to the request context. Note: the HTTP transport is
-// stateful, so the token from the "initialize" request applies to the
-// entire session.
+// and attaches it to the request context. The HTTP transport runs in
+// stateless mode, so every request — not just "initialize" — must carry
+// its own Authorization header.
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if token, ok := bearerFromHeader(r.Header.Get("Authorization")); ok {
