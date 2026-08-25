@@ -120,6 +120,7 @@ Binary at `cmd/cappctl/`. Built with Cobra. No Gin or K8s imports — pure Go + 
 ```
 cappctl login / logout
 cappctl context list | use <name> | current
+cappctl mcp-headers
 cappctl get      capps [name]
 cappctl create   capps
 cappctl update   capps <name>
@@ -134,6 +135,8 @@ cappctl sync     capps <name>
 **Config file:** `~/.config/cappctl/config.yaml` (0600, atomic write). Stores named contexts with server URL, auth mode, token pair, cluster, namespace.
 
 **Token refresh:** `PersistentPreRunE` in `internal/cli/root/root.go` checks `token-expires-at` before every request; refreshes transparently if expiry < 30s away.
+
+**MCP integration:** `cappctl mcp-headers` (`internal/cli/auth/headers.go`) prints `{"Authorization": "Bearer <token>"}` after running the normal auth/refresh flow. Wire it up as a Claude Code MCP `headersHelper` so Claude Code re-runs it on every reconnect and on 401/403, picking up a refreshed token without restarting the session — see `claude mcp add-json` with `"headersHelper": "cappctl mcp-headers --context <name>"`.
 
 **Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)` — implement as a no-op if sync is not applicable to the resource.
 

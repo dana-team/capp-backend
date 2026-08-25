@@ -295,6 +295,38 @@ warning: refresh token set but token expiry unknown; skipping refresh
 
 ---
 
+## MCP / Claude Code
+
+`cappctl mcp-headers` prints a JSON object of HTTP headers carrying a valid, auto-refreshed bearer token for the active (or `--context`-named) context. It runs through the same `PersistentPreRunE` flow as every other command, so it refreshes the token first if it expires within 30 seconds (see [Token Refresh](#token-refresh)) before printing.
+
+```
+cappctl mcp-headers [--context <name>]
+```
+
+**Example:**
+
+```bash
+cappctl mcp-headers --context prod
+```
+
+```json
+{"Authorization":"Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."}
+```
+
+This is meant to be wired up as a Claude Code MCP `headersHelper`, not run standalone. Claude Code re-runs the helper on every connection, on reconnect, and automatically on a `401`/`403` response — so a short-lived token (e.g. `openshift` or `jwt` mode) gets refreshed transparently, without restarting the session. There is no `--headers-helper` flag on `claude mcp add`, so configure it via `claude mcp add-json`:
+
+```bash
+claude mcp add-json capp-mcp '{
+  "type": "http",
+  "url": "https://capp-mcp.example.com",
+  "headersHelper": "cappctl mcp-headers --context prod"
+}' --scope user
+```
+
+`--scope user` makes the server available across all your projects without committing anything to a repo. Make sure `cappctl` is on `PATH` so the helper command resolves.
+
+---
+
 ## Output Formats
 
 Controlled by `--output` / `-o`. Valid values:

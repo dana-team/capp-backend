@@ -25,6 +25,7 @@ func main() {
 		auth.NewLoginCommand(state),
 		auth.NewLogoutCommand(state),
 		auth.NewContextCommand(state),
+		auth.NewMCPHeadersCommand(state),
 		completion.NewCompletionCommand(),
 	)
 

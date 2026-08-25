@@ -21,6 +21,7 @@ type State struct {
 	CfgPath   string
 	ActiveCtx *config.Context
 	Client    *client.Client
+	Token     string
 	OutputFmt string
 	Cluster   string
 	Namespace string
@@ -119,6 +120,7 @@ func New(state *State, registry *resource.Registry) *cobra.Command {
 			}
 
 			state.Client = client.New(resolvedServer, resolvedToken, insecure)
+			state.Token = resolvedToken
 			state.OutputFmt = outputFmt
 			state.Cluster = resolvedCluster
 			state.Namespace = resolvedNamespace
