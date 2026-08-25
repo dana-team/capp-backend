@@ -12,6 +12,7 @@
 - **Observability** — Structured JSON logging (zap), Prometheus metrics (`/metrics`), and optional OTLP tracing.
 - **Rate limiting** — Token-bucket rate limiter on all endpoints (configurable; on by default).
 - **cappctl CLI** — Command-line client for the API. Supports all five auth modes, named contexts, token refresh, and `table`/`wide`/`json`/`yaml` output. See [docs/cappctl.md](docs/cappctl.md).
+- **capp-mcp server** — Exposes the REST API as [MCP](https://modelcontextprotocol.io/) tools over Streamable HTTP, so LLM agents can inspect and manage clusters, namespaces, Capps, ConfigMaps, and (read-only) Secret metadata. Every tool call runs with the caller's own bearer token against capp-backend, so results are scoped by the same RBAC the API already enforces.
 
 ## Prerequisites
 
@@ -310,15 +311,60 @@ cappctl context use staging
 
 See [docs/cappctl.md](docs/cappctl.md) for the full reference.
 
+## MCP Server (capp-mcp)
+
+`capp-mcp` is a separate binary that exposes capp-backend's REST API as [MCP](https://modelcontextprotocol.io/) tools over Streamable HTTP, so LLM agents can inspect and manage Capp resources. It holds no credentials of its own — every tool call is executed with the bearer token the connecting MCP client supplies (`Authorization: Bearer <token>`), forwarded as-is to capp-backend, which performs all real authentication and authorization. A session with no bearer token fails tool calls with an explicit "no bearer token on this session" error.
+
+### Build & run
+
+```bash
+make build-capp-mcp                              # produces bin/capp-mcp
+make run-capp-mcp                                 # runs against a local capp-backend on :8080
+# or
+go build -o bin/capp-mcp ./cmd/mcp/...
+./bin/capp-mcp --backend-url http://localhost:8080 --port 8081
+```
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--port` | `CAPP_MCP_PORT` | `8081` | Port to listen on |
+| `--backend-url` | `CAPP_BACKEND_URL` | `http://localhost:8080` | capp-backend base URL to proxy tool calls to |
+| `--insecure` | `CAPP_MCP_INSECURE` | `false` | Skip TLS certificate verification when calling capp-backend |
+
+The server exposes `POST /mcp` (Streamable HTTP transport) and `GET /healthz` (liveness probe). Tool sets can be individually disabled via `mcpserver.Config.Enabled` (see `internal/mcpserver/registry.go`).
+
+### Tool sets
+
+| Tool set | Tools | Notes |
+|---|---|---|
+| `clusters` | `cluster_list`, `cluster_get` | Discover valid `cluster` values for every other tool |
+| `namespaces` | `namespace_list`, `namespace_create`, `namespace_update`, `namespace_add_users` | `namespace_update` is a full replace; use `namespace_add_users` to append without disturbing existing users |
+| `capps` | `capp_list`, `capp_get`, `capp_create`, `capp_update`, `capp_delete`, `capp_sync` | `capp_update` is a full replace, not a patch — call `capp_get` first and send back the full desired state |
+| `configmaps` | `configmap_list`, `configmap_get`, `configmap_create`, `configmap_update`, `configmap_delete` | Only ConfigMaps labeled `dana.io/capp-managed=true` are visible |
+| `secrets` | `secret_list`, `secret_get` | **Read-only.** Returns metadata only (name, type, labels, data key names) — secret values are never exposed |
+
+### Docker & Helm
+
+```bash
+make docker-build-capp-mcp    # builds ghcr.io/dana-team/capp-mcp:latest from deploy/Dockerfile.capp-mcp
+```
+
+A Helm chart is provided at [helm/capp-mcp](helm/capp-mcp), deploying `capp-mcp` as a Knative-autoscaled Capp (via the `container-app-operator`) alongside capp-backend. Key values:
+
+- `backend.url` — the capp-backend URL to proxy to (defaults to the in-cluster service)
+- `scaleSpec.minReplicas` — keep at least `1` warm instance if agents hold long-lived sessions, since scaling to zero mid-session drops any in-flight call
+- `route.enabled` / `route.hostname` — expose the server externally over HTTPS for remote MCP clients; disabled by default (cluster-internal only)
+
 ## Project Structure
 
 ```
 cmd/
 ├── server/         # Server entry point — wires config, auth, clusters, and HTTP server
-└── cappctl/        # CLI entry point
+├── cappctl/        # CLI entry point
+└── mcp/            # capp-mcp entry point
 api/                # OpenAPI 3.1 spec (embedded in binary via go:embed)
 config/             # Default config.yaml
-deploy/             # Dockerfile, Kubernetes manifests, Helm chart skeleton
+deploy/             # Dockerfiles, Kubernetes manifests, Helm chart skeleton
 docs/               # Documentation (cappctl.md, openshift-auth.md)
 internal/
 ├── apierrors/      # Canonical error types and Gin response helpers
@@ -334,6 +380,7 @@ internal/
 ├── cluster/        # ClusterManager — multi-cluster routing and health checks
 ├── config/         # Config structs, Viper loading, and validation
 ├── gitops/         # GitOps client — clone, commit, push per-capp values files
+├── mcpserver/      # capp-mcp: MCP tool sets (clusters, namespaces, capps, configmaps, secrets), auth middleware
 ├── middleware/      # Gin middleware: auth, cluster resolution, CORS, logging, metrics, rate limiting
 ├── resources/      # Resource handler registry
 │   ├── cluster/
@@ -344,6 +391,10 @@ internal/
 │       └── secrets/     # Secret CRUD handler
 └── server/         # Gin engine setup, route registration, auth endpoints
 pkg/k8s/            # Kubernetes scheme builder (registers CRD types)
+helm/
+├── capp-backend/   # Helm chart for the server
+├── capp-mcp/       # Helm chart for the capp-mcp server
+└── capp-template/  # Generic Helm chart for deploying a single Capp resource
 ```
 
 ## Kubernetes Deployment
