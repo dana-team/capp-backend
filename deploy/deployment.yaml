@@ -18,8 +18,6 @@ metadata:
     app.kubernetes.io/component: credentials
 type: Opaque
 stringData:
-  # Used when auth.mode is "jwt".
-  jwtSecretKey: "REPLACE_ME_WITH_A_STRONG_RANDOM_SECRET"
   # Bearer token for clusters[0].credential.inline.token (passthrough mode).
   clusterToken: "REPLACE_ME_WITH_CLUSTER_SERVICE_ACCOUNT_TOKEN"
 ---
@@ -33,8 +31,7 @@ metadata:
     app.kubernetes.io/component: server
 spec:
   # Single replica is sufficient for passthrough mode (stateless).
-  # Scale to ≥2 replicas for HA; jwt mode requires a shared session store
-  # (Redis) when running multiple replicas.
+  # Scale to ≥2 replicas for HA if needed.
   replicas: 1
   selector:
     matchLabels:
@@ -56,12 +53,6 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            # JWT signing secret — only relevant when auth.mode is "jwt".
-            - name: CAPP_AUTH_JWT_SECRETKEY
-              valueFrom:
-                secretKeyRef:
-                  name: capp-backend-secret
-                  key: jwtSecretKey
             # Cluster token for the first cluster entry.
             - name: CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
               valueFrom:

@@ -39,11 +39,6 @@ spec:
               containerPort: {{ .Values.config.server.port }}
               protocol: TCP
           env:
-            - name: CAPP_AUTH_JWT_SECRETKEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "capp-backend.secretName" . }}
-                  key: jwtSecretKey
             {{- range $i, $_ := .Values.secret.clusterTokens }}
             - name: CAPP_CLUSTERS_{{ $i }}_CREDENTIAL_INLINE_TOKEN
               valueFrom:

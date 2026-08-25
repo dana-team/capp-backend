@@ -38,11 +38,6 @@ spec:
                 containerPort: {{ .Values.config.server.port }}
                 protocol: TCP
             env:
-              - name: CAPP_AUTH_JWT_SECRETKEY
-                valueFrom:
-                  secretKeyRef:
-                    name: {{ include "capp-backend.secretName" . }}
-                    key: jwtSecretKey
               {{- if eq .Values.config.auth.mode "openshift" }}
               - name: CAPP_AUTH_OPENSHIFT_CLIENTSECRET
                 valueFrom:

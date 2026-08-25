@@ -9,8 +9,8 @@ import (
 )
 
 // buildTLSTransport returns an *http.Transport that trusts the PEM CA bundle
-// provided as a base64-encoded string. Used by dexManager when DexConfig.CACert
-// is set.
+// provided as a base64-encoded string. Used by openshift auth manager when
+// OpenShiftConfig.CACert is set.
 func buildTLSTransport(caCertB64 string) (*http.Transport, error) {
 	pemBytes, err := base64.StdEncoding.DecodeString(caCertB64)
 	if err != nil {

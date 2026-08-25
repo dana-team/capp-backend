@@ -1,5 +1,5 @@
-// Package auth implements the AuthManager interface and its five concrete
-// modes: passthrough, jwt, static, dex, and openshift.
+// Package auth implements the AuthManager interface and its two concrete
+// modes: passthrough and openshift.
 //
 // Mode selection is determined at startup by the auth.mode config value and
 // never changes at runtime. All implementations are safe for concurrent use.
@@ -10,20 +10,6 @@
 //	              Authorization header and forwarded verbatim to the cluster.
 //	              No server-side state is created. Token validation is lazy:
 //	              the first K8s API call rejects an invalid token with 401.
-//
-//	jwt         — POST /api/v1/auth/login accepts a cluster name + raw token.
-//	              The backend validates the token, stores it server-side keyed
-//	              by a random session ID, and issues short-lived JWTs. The
-//	              cluster token is never sent over the wire again.
-//
-//	static      — a hard-coded list of API keys, for development/CI only.
-//
-//	dex         — POST /api/v1/auth/login accepts username + password, which
-//	              are exchanged for an OIDC ID token via the Resource Owner
-//	              Password Credentials grant against a Dex instance. On success
-//	              a backend-managed JWT session is created and a TokenPair is
-//	              returned. Kubernetes API calls use the cluster's pre-configured
-//	              service-account token.
 //
 //	openshift   — authenticates users via the OpenShift OAuth server of the
 //	              home cluster (browser Authorization Code flow or direct
@@ -50,13 +36,13 @@ var (
 	ErrUnauthenticated = errors.New("request is not authenticated")
 
 	// ErrNotSupported is returned by Login/Refresh when the current auth mode
-	// does not implement token management (passthrough, static).
+	// does not implement token management (passthrough).
 	ErrNotSupported = errors.New("operation not supported in current auth mode")
 
-	// ErrTokenExpired is returned when a JWT or session entry has passed its TTL.
+	// ErrTokenExpired is returned when a token has passed its TTL.
 	ErrTokenExpired = errors.New("token has expired")
 
-	// ErrInvalidToken is returned when a JWT signature or format is invalid.
+	// ErrInvalidToken is returned when a token's signature or format is invalid.
 	ErrInvalidToken = errors.New("token is invalid")
 
 	// ErrBadCredentials is returned by PasswordLogin when the identity provider
@@ -70,8 +56,7 @@ var (
 // a Kubernetes API request on behalf of an incoming user.
 //
 // In passthrough mode BearerToken is taken directly from the Authorization
-// header. In jwt mode it is retrieved from the server-side session store.
-// In static mode it is empty (the cluster uses its configured token).
+// header.
 //
 // In openshift mode BearerToken is empty and the ImpersonateUser/Groups
 // fields are set. The cluster's service-account token is used for
@@ -88,13 +73,13 @@ type ClusterCredential struct {
 	ImpersonateGroups []string
 }
 
-// TokenPair is issued by Login and Refresh in jwt auth mode.
+// TokenPair is issued by Login/PasswordLogin and OAuth exchange in openshift auth mode.
 type TokenPair struct {
-	// AccessToken is the short-lived JWT sent in the Authorization header of
+	// AccessToken is the short-lived bearer token sent in the Authorization header of
 	// subsequent API calls.
 	AccessToken string `json:"accessToken"`
 
-	// RefreshToken is the longer-lived JWT used to obtain a new TokenPair
+	// RefreshToken is the longer-lived token used to obtain a new TokenPair
 	// without re-entering credentials.
 	RefreshToken string `json:"refreshToken"`
 
@@ -114,21 +99,21 @@ type AuthManager interface {
 	Authenticate(ctx context.Context, clusterName string, r *http.Request) (ClusterCredential, error)
 
 	// Login validates a raw Kubernetes bearer token against the named cluster
-	// and, on success, returns a TokenPair (jwt mode only).
+	// and, on success, returns a TokenPair (openshift mode only).
 	//
-	// Returns ErrNotSupported in passthrough and static modes.
+	// Returns ErrNotSupported in passthrough mode.
 	Login(ctx context.Context, clusterName string, token string) (TokenPair, error)
 
 	// PasswordLogin authenticates a user with username and password against an
-	// external identity provider (dex mode only).
+	// external identity provider (openshift mode only).
 	//
-	// Returns ErrNotSupported in passthrough and static modes.
+	// Returns ErrNotSupported in passthrough mode.
 	// Returns ErrBadCredentials if the provider rejects the credentials.
 	PasswordLogin(ctx context.Context, username, password string) (TokenPair, error)
 
-	// Refresh exchanges a valid refresh token for a new TokenPair (jwt mode only).
+	// Refresh exchanges a valid refresh token for a new TokenPair (openshift mode only).
 	//
-	// Returns ErrNotSupported in passthrough and static modes.
+	// Returns ErrNotSupported in passthrough mode.
 	Refresh(ctx context.Context, refreshToken string) (TokenPair, error)
 }
 
@@ -158,34 +143,12 @@ type OAuthAuthorizer interface {
 
 // New instantiates the AuthManager implementation selected by cfg.Auth.Mode.
 //
-// For jwt mode, callers must also invoke the returned manager's StartCleanup
-// method (if the concrete type implements it) to start the background session
-// garbage collector.
+// For openshift mode, callers must also invoke the returned manager's StartCleanup
+// method (if the concrete type implements it) to start background cleanup tasks.
 func New(cfg *config.Config) (AuthManager, error) {
 	switch cfg.Auth.Mode {
 	case "passthrough":
 		return newPassthroughManager(), nil
-
-	case "jwt":
-		// Build a map of clusterName → apiServerURL so the JWT manager can
-		// validate tokens against the correct cluster endpoint.
-		clusterURLs := make(map[string]string, len(cfg.Clusters))
-		for _, c := range cfg.Clusters {
-			if c.Credential.Inline != nil {
-				clusterURLs[c.Name] = c.Credential.Inline.APIServer
-			}
-			// For kubeconfig-based clusters the URL is parsed at runtime by
-			// the cluster loader; jwt validation for those clusters falls back
-			// to skipping the /version probe (the K8s API will reject the
-			// token itself on the first real call).
-		}
-		return newJWTManager(&cfg.Auth.JWT, clusterURLs), nil
-
-	case "static":
-		return newStaticManager(cfg.Auth.Static.APIKeys), nil
-
-	case "dex":
-		return newDexManager(cfg)
 
 	case "openshift":
 		return newOpenShiftManager(cfg)

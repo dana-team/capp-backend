@@ -36,8 +36,8 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// cleanupStarter is implemented by auth managers that run a background
-// session garbage collector (jwt and dex modes).
+// cleanupStarter is implemented by auth managers that run background
+// cleanup tasks.
 type cleanupStarter interface {
 	StartCleanup(context.Context)
 }
@@ -96,7 +96,8 @@ func main() {
 		logger.Fatal("failed to initialise auth manager", zap.Error(err))
 	}
 
-	// In JWT and dex modes, start the session garbage collector.
+	// Start background cleanup if the auth manager implements it
+	// (e.g. openshift's token-validation cache eviction).
 	if cs, ok := authMgr.(cleanupStarter); ok {
 		go cs.StartCleanup(rootCtx)
 	}
@@ -150,7 +151,7 @@ func main() {
 	}
 
 	// ── 10. Graceful shutdown ─────────────────────────────────────────────────
-	rootCancel() // stop health checks and JWT cleanup
+	rootCancel() // stop health checks and auth cleanup
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()

@@ -12,10 +12,8 @@ import (
 
 // loginRequest is the body for POST /api/v1/auth/login.
 type loginRequest struct {
-	// jwt mode fields
-	Cluster string `json:"cluster"`
-	Token   string `json:"token"`
-	// dex mode fields
+	Cluster  string `json:"cluster"`
+	Token    string `json:"token"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
@@ -73,8 +71,8 @@ func loginHandler(mgr auth.AuthManager, mode string) gin.HandlerFunc {
 			return
 		}
 
-		// dex and openshift both support username/password login.
-		if mode == "dex" || (mode == "openshift" && req.Username != "" && req.Password != "") {
+		// openshift supports username/password login.
+		if mode == "openshift" {
 			if req.Username == "" || req.Password == "" {
 				apierrors.Respond(c, apierrors.NewBadRequest("username and password are required"))
 				return
@@ -95,7 +93,7 @@ func loginHandler(mgr auth.AuthManager, mode string) gin.HandlerFunc {
 			return
 		}
 
-		// jwt/passthrough/static mode path
+		// passthrough mode path
 		if req.Cluster == "" || req.Token == "" {
 			apierrors.Respond(c, apierrors.NewBadRequest("cluster and token are required"))
 			return

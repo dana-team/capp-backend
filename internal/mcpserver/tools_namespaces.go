@@ -30,11 +30,9 @@ type namespaceUpdateInput struct {
 }
 
 // namespaceAddUsersInput intentionally does not embed ns.PatchNamespaceRequest:
-// that type also carries a Quota field the PATCH handler silently ignores
-// (quota changes require namespace_update instead), and exposing it here
-// would mislead a caller into thinking it does something.
-//
-// SHOULD BE DELETED WHEN 'Quota' field is removed from ns.PatchNamespaceRequest!!!!
+// Users is required here (the tool's sole purpose), but PatchNamespaceRequest
+// declares it as an optional pointer, which would let a caller omit it and
+// silently no-op.
 type namespaceAddUsersInput struct {
 	Cluster   string   `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string   `json:"namespace" jsonschema:"the namespace to add users to"`
@@ -57,6 +55,21 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 		return nil, out, nil
 	})
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "namespace_get",
+		Description: "Get a CAPP-enabled namespace's details, including its resource quota and list of users granted the capp-user role.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceAddUsersInput) (*mcp.CallToolResult, ns.NamespaceItem, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, ns.NamespaceItem{}, err
+		}
+		var out ns.NamespaceItem
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s", in.Cluster, in.Namespace)
+		if err := c.Get(ctx, path, &out); err != nil {
+			return nil, ns.NamespaceItem{}, err
+		}
+		return nil, out, nil
+	})
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "namespace_create",
 		Description: "Create a CAPP-enabled namespace, optionally with a resource quota and an initial set of users granted the capp-user role. Requires the caller to have permission to create namespaces on the cluster.",

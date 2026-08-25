@@ -137,7 +137,7 @@ func TestGet_NotFound(t *testing.T) {
 
 func TestCreate_Success(t *testing.T) {
 	w := engine(t).PostJSON("/namespaces/ns1/capps",
-		CappRequest{Name: "new-app", Namespace: "ns1", Image: "nginx"})
+		CappRequest{Name: "new-app", Image: "nginx"})
 
 	assert.Equal(t, http.StatusCreated, w.Code)
 	var resp CappResponse
@@ -151,27 +151,17 @@ func TestCreate_BadJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestCreate_NamespaceOverrideFromURL(t *testing.T) {
-	w := engine(t).PostJSON("/namespaces/correct-ns/capps",
-		CappRequest{Name: "app", Namespace: "wrong-ns", Image: "nginx"})
-
-	assert.Equal(t, http.StatusCreated, w.Code)
-	var resp CappResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "correct-ns", resp.Namespace)
-}
-
 // -- Update tests --
 
 func TestUpdate_Success(t *testing.T) {
 	w := engine(t, makeCapp("app1", "ns1")).PutJSON("/namespaces/ns1/capps/app1",
-		CappRequest{Name: "app1", Namespace: "ns1", Image: "nginx:2"})
+		CappRequest{Name: "app1", Image: "nginx:2"})
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestUpdate_NotFound(t *testing.T) {
 	w := engine(t).PutJSON("/namespaces/ns1/capps/missing",
-		CappRequest{Name: "missing", Namespace: "ns1", Image: "nginx"})
+		CappRequest{Name: "missing", Image: "nginx"})
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 

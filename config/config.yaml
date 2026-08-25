@@ -2,7 +2,7 @@
 # All values can be overridden by environment variables prefixed with CAPP_
 # using underscores as separators, e.g.:
 #   server.port          → CAPP_SERVER_PORT
-#   auth.jwt.secretKey   → CAPP_AUTH_JWT_SECRETKEY
+#   auth.mode            → CAPP_AUTH_MODE
 #   clusters[0].credential.inline.token → CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
 
 # ── HTTP Server ───────────────────────────────────────────────────────────────
@@ -26,17 +26,6 @@ server:
     # - "https://console.example.com"
 
 # ── Authentication ────────────────────────────────────────────────────────────
-# Dex OIDC auth mode example:
-# Requires Dex static client with grantTypes: [password] enabled.
-# auth:
-#   mode: dex
-#   dex:
-#     endpoint: https://dex.example.com
-#     clientId: capp-backend
-#     clientSecret: ""  # inject via CAPP_AUTH_DEX_CLIENTSECRET
-#     scopes: [openid, profile, email]
-#   jwt:
-#     secretKey: ""  # inject via CAPP_AUTH_JWT_SECRETKEY
 auth:
   # mode controls how incoming requests are authenticated. Options:
   #
@@ -46,35 +35,11 @@ auth:
   #     created. This preserves the current frontend security model and
   #     requires no key management on the backend.
   #
-  #   jwt (recommended for production multi-tenant deployments)
-  #     POST /api/v1/auth/login accepts a cluster name + raw Kubernetes token.
-  #     The backend validates the token, creates a server-side session, and
-  #     returns a short-lived JWT. Subsequent requests carry only the JWT.
-  #     The cluster token never travels over the wire again after login.
-  #     Requires auth.jwt.secretKey to be set (use the env var).
-  #
-  #   static (development / CI only)
-  #     A fixed list of API keys in auth.static.apiKeys. The backend applies
-  #     no authentication against the cluster — suitable for local dev with
-  #     kind or minikube clusters that don't enforce RBAC.
+  #   openshift (recommended for production deployments with OpenShift OAuth)
+  #     POST /api/v1/auth/login authenticates users via OpenShift OAuth.
+  #     The backend impersonates users on managed clusters using per-cluster
+  #     service-account tokens. Fully stateless.
   mode: "passthrough"
-
-  jwt:
-    # HMAC signing secret for access and refresh JWTs. REQUIRED in jwt mode.
-    # Do NOT put a real value here — inject via CAPP_AUTH_JWT_SECRETKEY.
-    secretKey: ""
-
-    # Lifetime of an access JWT in minutes. Default: 60.
-    tokenTTLMinutes: 60
-
-    # Lifetime of a refresh JWT in minutes. Default: 1440 (24 hours).
-    refreshTTLMinutes: 1440
-
-  static:
-    # List of accepted bearer tokens when mode is "static".
-    apiKeys: []
-    # apiKeys:
-    #   - "local-dev-key"
 
   # OpenShift OAuth auth mode example:
   # Authenticates users via OpenShift OAuth, impersonates them on managed clusters.

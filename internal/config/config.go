@@ -1,12 +1,12 @@
 // Package config loads, parses, and exposes the capp-backend configuration.
 //
 // Configuration is sourced from three places in priority order (highest first):
-//  1. Environment variables prefixed with CAPP_ (e.g. CAPP_SERVER_PORT)
+//  1. Environment variables prefixed with CAPP_ (e.g. CAPP_AUTH_MODE)
 //  2. A YAML config file whose path is passed to Load
 //  3. Hard-coded default values embedded in this package
 //
 // All nested keys are flattened with underscores for env var mapping, e.g.
-// auth.jwt.secretKey → CAPP_AUTH_JWT_SECRETKEY.
+// auth.mode → CAPP_AUTH_MODE.
 package config
 
 import (
@@ -36,51 +36,6 @@ type ServerConfig struct {
 	// cross-origin requests from. Use ["*"] to allow all origins (not
 	// recommended in production).
 	CORSAllowedOrigins []string `mapstructure:"corsAllowedOrigins"`
-}
-
-// JWTConfig holds settings for the JWT auth mode.
-type JWTConfig struct {
-	// SecretKey is the HMAC signing secret. Must be kept private.
-	// Required when auth.mode == "jwt". Inject via CAPP_AUTH_JWT_SECRETKEY.
-	SecretKey string `mapstructure:"secretKey"`
-
-	// TokenTTLMinutes is the lifetime of an access JWT in minutes. Default: 60.
-	TokenTTLMinutes int `mapstructure:"tokenTTLMinutes"`
-
-	// RefreshTTLMinutes is the lifetime of a refresh JWT in minutes. Default: 1440 (24 h).
-	RefreshTTLMinutes int `mapstructure:"refreshTTLMinutes"`
-}
-
-// StaticConfig holds settings for the static API-key auth mode.
-// This mode is intended for development and integration testing only.
-type StaticConfig struct {
-	// APIKeys is the list of accepted bearer tokens.
-	APIKeys []string `mapstructure:"apiKeys"`
-}
-
-// DexConfig holds settings for the Dex OIDC auth mode.
-// This mode exchanges username/password via OIDC ROPC against a Dex instance
-// and issues backend-managed JWT sessions. Kubernetes API calls use the
-// cluster's pre-configured service account — the user's Dex identity is NOT
-// forwarded to K8s.
-type DexConfig struct {
-	// Endpoint is the Dex issuer URL, e.g. "https://dex.example.com".
-	// OIDC discovery is fetched from {Endpoint}/.well-known/openid-configuration.
-	Endpoint string `mapstructure:"endpoint"`
-
-	// ClientID is the OAuth2 client ID registered in Dex for capp-backend.
-	ClientID string `mapstructure:"clientId"`
-
-	// ClientSecret is the OAuth2 client secret. Inject via CAPP_AUTH_DEX_CLIENTSECRET.
-	ClientSecret string `mapstructure:"clientSecret"`
-
-	// Scopes is the list of OIDC scopes requested during login.
-	// Default: ["openid", "profile", "email"].
-	Scopes []string `mapstructure:"scopes"`
-
-	// CACert is a base64-encoded PEM CA bundle for TLS to the Dex server.
-	// If empty, the system root CAs are used.
-	CACert string `mapstructure:"caCert"`
 }
 
 // OpenShiftConfig holds settings for the OpenShift OAuth auth mode.
@@ -135,16 +90,9 @@ type AuthConfig struct {
 	// Mode selects the authentication strategy. One of:
 	//   passthrough — the client's Kubernetes bearer token is forwarded directly
 	//                 to the cluster; no session is created server-side.
-	//   jwt         — a login endpoint issues short-lived JWTs backed by a
-	//                 server-side session store.
-	//   static      — a fixed list of API keys (development only).
-	//   dex         — OIDC ROPC login via a Dex instance; backend issues JWTs.
 	//   openshift   — OpenShift OAuth + K8s impersonation; fully stateless.
 	// Default: "passthrough".
 	Mode      string          `mapstructure:"mode"`
-	JWT       JWTConfig       `mapstructure:"jwt"`
-	Static    StaticConfig    `mapstructure:"static"`
-	Dex       DexConfig       `mapstructure:"dex"`
 	OpenShift OpenShiftConfig `mapstructure:"openshift"`
 	RateLimit RateLimitConfig `mapstructure:"rateLimit"`
 }
@@ -382,9 +330,6 @@ func setDefaults(v *viper.Viper) {
 
 	// Auth
 	v.SetDefault("auth.mode", "passthrough")
-	v.SetDefault("auth.jwt.tokenTTLMinutes", 60)
-	v.SetDefault("auth.jwt.refreshTTLMinutes", 1440)
-	v.SetDefault("auth.dex.scopes", []string{"openid", "profile", "email"})
 	v.SetDefault("auth.openshift.scopes", []string{"user:info", "user:check-access"})
 	v.SetDefault("auth.openshift.tokenCacheTTLSeconds", 60)
 	v.SetDefault("auth.rateLimit.enabled", true)

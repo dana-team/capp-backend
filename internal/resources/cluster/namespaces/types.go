@@ -32,6 +32,10 @@ type NamespaceItem struct {
 	// Quota holds the resource quota hard limits and current usage.
 	// Nil when no ResourceQuota exists for the namespace.
 	Quota *QuotaInfo `json:"quota,omitempty"`
+
+	// Users is the list of users with access to the namespace.
+	// Nil when no RoleBinding exists for the namespace.
+	Users *[]string `json:"users,omitempty"`
 }
 
 type resourceQuota struct {
@@ -52,6 +56,5 @@ type UpdateNamespaceRequest struct {
 }
 
 type PatchNamespaceRequest struct {
-	Users *[]string      `json:"users,omitempty"`
-	Quota *resourceQuota `json:"quota,omitempty"`
+	Users *[]string `json:"users,omitempty"`
 }

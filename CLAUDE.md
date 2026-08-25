@@ -60,7 +60,7 @@ GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list
 
 **ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `namespaces`, `configmaps`, `secrets`. To add a new resource type, implement the interface and register it in `cmd/server/main.go`.
 
-**AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `Refresh`. JWT and Dex modes use an in-memory session store with background cleanup. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. `GET /api/v1/auth/mode` returns the active mode (used by cappctl auto-detection).
+**AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `Refresh`. Passthrough mode forwards the caller's bearer token as-is. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. `GET /api/v1/auth/mode` returns the active mode (used by cappctl auto-detection).
 
 **ClusterManager** (`internal/cluster/manager.go`): Holds connections to all configured clusters, runs health checks every 30s, and creates per-request scoped clients.
 
@@ -68,10 +68,10 @@ GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list
 
 ### Configuration
 
-Loaded from YAML file (`--config` flag) + environment variable overrides with `CAPP_` prefix and `_` separators (e.g., `CAPP_AUTH_MODE=jwt`). Priority: env vars > YAML > code defaults.
+Loaded from YAML file (`--config` flag) + environment variable overrides with `CAPP_` prefix and `_` separators (e.g., `CAPP_AUTH_MODE=openshift`). Priority: env vars > YAML > code defaults.
 
 Default config: `config/config.yaml`. Key settings:
-- `auth.mode`: passthrough | jwt | static | dex | openshift
+- `auth.mode`: passthrough | openshift
 - `clusters[]`: array of cluster connections with credentials
 - `resources.<name>.enabled`: feature flags for resource handlers
 - `server.corsAllowedOrigins`: defaults to `localhost:3000` (capp-frontend dev server)
@@ -85,7 +85,7 @@ cmd/
 internal/
   server/                       # Gin engine setup, route registration, auth route handlers
   config/                       # Config structs, Viper loading, validation
-  auth/                         # AuthManager implementations (passthrough, jwt, static, dex, openshift)
+  auth/                         # AuthManager implementations (passthrough, openshift)
   cluster/                      # ClusterManager, health checks, credential loading
   gitops/                       # GitOps client: clone, commit, push per-capp values files to a remote repo
   middleware/                   # Auth, cluster, logging, metrics, CORS, rate limit, recovery
@@ -145,7 +145,7 @@ cappctl sync     capps <name>
 2. Init zap logger
 3. Build K8s scheme (register CRD types)
 4. Create ClusterManager → connect to clusters → start health checks
-5. Create AuthManager (based on auth.mode) → start session cleanup (jwt/dex)
+5. Create AuthManager (based on auth.mode) → start background cleanup (if the auth manager implements it)
 6. Create GitOps client (if `gitops.enabled`) → clone remote repo
 7. Build resource handler registry
 8. Create Gin server → listen on :8080

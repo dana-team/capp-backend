@@ -45,7 +45,7 @@ ingress:
 
 # ── Backend configuration ─────────────────────────────────────────────────────
 # These values are rendered into the ConfigMap that the server reads at startup.
-# Sensitive values (tokens, JWT secret) go in the secret block below.
+# Sensitive values (tokens, secrets) go in the secret block below.
 config:
   server:
     port: 8080
@@ -56,9 +56,6 @@ config:
 
   auth:
     mode: "passthrough"
-    jwt:
-      tokenTTLMinutes: 60
-      refreshTTLMinutes: 1440
     # OpenShift OAuth settings. Required when mode is "openshift".
     openshift:
       apiServer: ""        # External OpenShift API server URL
@@ -146,10 +143,6 @@ config:
 # These values are placed in a Kubernetes Secret and injected as environment
 # variables. They MUST be overridden at install time — never leave defaults.
 secret:
-  # JWT signing secret. Required when config.auth.mode is "jwt".
-  # Override: --set secret.jwtSecretKey="$(openssl rand -hex 32)"
-  jwtSecretKey: ""
-
   # Cluster bearer tokens. Each entry corresponds to the cluster at the same
   # index in config.clusters[]. Injected as CAPP_CLUSTERS_<N>_CREDENTIAL_INLINE_TOKEN.
   clusterTokens:

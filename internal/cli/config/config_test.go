@@ -29,7 +29,7 @@ func TestSaveAndLoad(t *testing.T) {
 			{
 				Name:           "staging",
 				Server:         "https://capp.example.com",
-				AuthMode:       "jwt",
+				AuthMode:       "passthrough",
 				Token:          "mytoken",
 				RefreshToken:   "myrefresh",
 				TokenExpiresAt: time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC),

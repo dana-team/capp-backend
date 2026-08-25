@@ -30,7 +30,7 @@ func managedNamespace(name string) *corev1.Namespace {
 	}
 }
 
-func existingRoleBinding(nsName string, users []string) *rbacv1.RoleBinding {
+func existingRoleBinding(nsName string, users []string) *rbacv1.RoleBinding { //nolint:unparam
 	subjects := make([]rbacv1.Subject, 0, len(users))
 	for _, u := range users {
 		subjects = append(subjects, rbacv1.Subject{Kind: rbacv1.UserKind, Name: u})
@@ -112,6 +112,46 @@ func TestList_VanillaK8s_ReturnsNamespaceItem(t *testing.T) {
 	require.Len(t, resp.Items, 1)
 	assert.Equal(t, "ns-a", resp.Items[0].Name)
 	assert.Equal(t, "Active", resp.Items[0].Status)
+}
+
+// -- Get tests --
+
+func TestGet_NsNotFound(t *testing.T) {
+	e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
+	w := e.Get("/namespaces/missing-ns")
+
+	assert.True(t, w.Code >= 400)
+}
+
+func TestGet_ExistingNamespace(t *testing.T) {
+	ns := managedNamespace("my-ns")
+	e := engine(t, cluster.ClusterMeta{Name: "prod"}, []client.Object{ns})
+	w := e.Get("/namespaces/my-ns")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp NamespaceItem
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "my-ns", resp.Name)
+	assert.Equal(t, "Active", resp.Status)
+}
+
+func TestGet_ExistingNamespaceWithQuotaAndUsers(t *testing.T) {
+	ns := managedNamespace("my-ns")
+	rq := existingResourceQuota("my-ns", "2", "4Gi")
+	rb := existingRoleBinding("my-ns", []string{"alice", "bob"})
+	e := engine(t, cluster.ClusterMeta{Name: "prod"}, []client.Object{ns, rq, rb})
+	w := e.Get("/namespaces/my-ns")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp NamespaceItem
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "my-ns", resp.Name)
+	assert.Equal(t, "Active", resp.Status)
+	require.NotNil(t, resp.Quota)
+	assert.Equal(t, "2", resp.Quota.CPU)
+	assert.Equal(t, "4Gi", resp.Quota.Memory)
+	require.NotNil(t, resp.Users)
+	assert.ElementsMatch(t, []string{"alice", "bob"}, *resp.Users)
 }
 
 // -- Create tests --
