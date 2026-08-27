@@ -85,11 +85,12 @@ func TestToK8s_WithRoute(t *testing.T) {
 
 func TestToK8s_WithLogSpec(t *testing.T) {
 	req := minimalRequest()
-	req.LogSpec = &LogSpec{Type: "elastic", Host: "es.example.com", Index: "logs", User: "admin", PasswordSecret: "pw-secret"}
+	req.LogSpec = &LogSpec{Type: "elastic", Host: "es.example.com", Index: "logs", User: "admin", PasswordSecret: "pw-secret", PasswordKey: "password"}
 	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
 	require.NoError(t, err)
 	assert.Equal(t, cappv1alpha1.LogType("elastic"), capp.Spec.LogSpec.Type)
 	assert.Equal(t, "es.example.com", capp.Spec.LogSpec.Host)
+	assert.Equal(t, "password", capp.Spec.LogSpec.PasswordKey)
 }
 
 func TestToK8s_WithNFSVolumes(t *testing.T) {
@@ -193,10 +194,11 @@ func TestFromK8s_WithTimeout(t *testing.T) {
 
 func TestFromK8s_WithLogSpec(t *testing.T) {
 	capp := minimalCapp()
-	capp.Spec.LogSpec = cappv1alpha1.LogSpec{Type: "elastic", Host: "es.local"}
+	capp.Spec.LogSpec = cappv1alpha1.LogSpec{Type: "elastic", Host: "es.local", PasswordKey: "password"}
 	resp := FromK8s(capp, config.CappSizes{})
 	require.NotNil(t, resp.LogSpec)
 	assert.Equal(t, "elastic", resp.LogSpec.Type)
+	assert.Equal(t, "password", resp.LogSpec.PasswordKey)
 }
 
 func TestFromK8s_WithNFSVolumes(t *testing.T) {

@@ -3,7 +3,7 @@ module github.com/dana-team/capp-backend
 go 1.26.0
 
 require (
-	github.com/dana-team/container-app-operator v0.9.4
+	github.com/dana-team/container-app-operator v0.9.8
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -48,7 +48,7 @@ require (
 	github.com/crossplane/crossplane-runtime/v2 v2.2.2 // indirect
 	github.com/crossplane/upjet/v2 v2.0.1-0.20251009193737-0b7f640373c8 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
-	github.com/dana-team/nfspvc-operator v0.5.2 // indirect
+	github.com/dana-team/nfspvc-operator v0.5.3 // indirect
 	github.com/dana-team/provider-dns-v2 v1.0.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
