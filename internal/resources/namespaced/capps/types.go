@@ -83,6 +83,7 @@ type LogSpec struct {
 	Index          string `json:"index,omitempty"`
 	User           string `json:"user"`
 	PasswordSecret string `json:"passwordSecret"`
+	PasswordKey    string `json:"passwordKey"`
 }
 
 // NFSVolume describes one NFS volume to be mounted into the Capp containers.

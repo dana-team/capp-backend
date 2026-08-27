@@ -608,6 +608,10 @@ components:
           type: string
           description: Name of the Kubernetes Secret holding the Elasticsearch password.
           example: elastic-password-secret
+        passwordKey:
+          type: string
+          description: Key within the Secret holding the Elasticsearch password.
+          example: password
 
     NFSVolume:
       type: object
