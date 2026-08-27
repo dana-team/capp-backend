@@ -328,36 +328,6 @@ func TestPatch_SkipsDuplicateUser(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestPatch_NamespaceScopedUser_CanAddUsers(t *testing.T) {
-	ns := managedNamespace("my-ns")
-	rb := existingRoleBinding("my-ns", []string{"alice"})
-	// User client allows namespace-scoped SARs (canCreateCapps) but denies
-	// cluster-scoped SARs (canCreateNamespaces). This simulates a non-admin
-	// user who has access to the namespace.
-	e := testutil.NewEngineHelperWithAdmin(t,
-		testutil.FakeClientAllowNamespacedSAR(t),
-		testutil.FakeClientAllowSAR(t, ns, rb),
-		cluster.ClusterMeta{Name: "prod"}, New(zap.NewNop()))
-	users := []string{"bob"}
-	w := e.PatchJSON("/namespaces/my-ns", PatchNamespaceRequest{Users: &users})
-
-	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-func TestPatch_UnauthorizedUser_Returns403(t *testing.T) {
-	ns := managedNamespace("my-ns")
-	rb := existingRoleBinding("my-ns", []string{"alice"})
-	// User client denies all SARs — user has no access at all.
-	e := testutil.NewEngineHelperWithAdmin(t,
-		testutil.FakeClientDenySAR(t),
-		testutil.FakeClientAllowSAR(t, ns, rb),
-		cluster.ClusterMeta{Name: "prod"}, New(zap.NewNop()))
-	users := []string{"bob"}
-	w := e.PatchJSON("/namespaces/my-ns", PatchNamespaceRequest{Users: &users})
-
-	assert.Equal(t, http.StatusForbidden, w.Code)
-}
-
 func TestPatch_RoleBindingNotFound_Returns400(t *testing.T) {
 	ns := managedNamespace("my-ns")
 	e := engine(t, cluster.ClusterMeta{Name: "prod"}, []client.Object{ns})

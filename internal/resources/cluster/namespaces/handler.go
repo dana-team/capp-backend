@@ -336,9 +336,6 @@ func updateNamespaceRoleBinding(ctx context.Context, adminClient client.Client, 
 // patch handles PATCH /api/v1/clusters/:cluster/namespaces/:namespace.
 // This will update the rolebinding based on the request body.
 // To update the resource quota, use the PUT endpoint with the full quota spec.
-//
-// Authorization: any user who can create Capps in the target namespace is
-// allowed to add other users (namespace-scoped access), not just cluster admins.
 func (h *Handler) patch(c *gin.Context) {
 
 	namespaceName := c.Param("namespace")
@@ -347,7 +344,7 @@ func (h *Handler) patch(c *gin.Context) {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
 		return
 	}
-	allowed, err := canCreateCapps(c.Request.Context(), userClient, namespaceName)
+	allowed, err := canCreateNamespaces(c.Request.Context(), userClient)
 	if err != nil || !allowed {
 		apierrors.Respond(c, apierrors.NewForbidden(fmt.Sprintf("not allowed to patch namespace %s", namespaceName)))
 		return
