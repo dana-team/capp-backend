@@ -1342,6 +1342,10 @@ paths:
         Appends new users to the namespace's existing `capp-user` RoleBinding.
         Existing members are preserved; duplicate users are silently ignored.
         The RoleBinding must already exist (created via POST or PUT).
+
+        **Authorization:** any user who can create Capps in the target namespace
+        is allowed to call this endpoint (namespace-scoped access). Cluster-admin
+        permission is not required.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'

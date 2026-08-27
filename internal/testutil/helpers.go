@@ -84,6 +84,44 @@ func FakeClientAllowSAR(t *testing.T, objects ...client.Object) client.Client {
 		}).Build()
 }
 
+// FakeClientAllowNamespacedSAR creates a fake client that allows namespace-scoped
+// SARs (those with a Namespace set) but denies cluster-scoped ones. This simulates
+// a user who has access to a specific namespace but is not a cluster admin.
+func FakeClientAllowNamespacedSAR(t *testing.T, objects ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(TestScheme(t)).
+		WithObjects(objects...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
+					attrs := sar.Spec.ResourceAttributes
+					sar.Status.Allowed = attrs != nil && attrs.Namespace != ""
+					return nil
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+}
+
+// FakeClientDenySAR creates a fake client where all SelfSubjectAccessReview
+// creations return Allowed=false, simulating a user with no permissions.
+func FakeClientDenySAR(t *testing.T, objects ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(TestScheme(t)).
+		WithObjects(objects...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sar, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
+					sar.Status.Allowed = false
+					return nil
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+}
+
 // JSONBody marshals v to JSON and returns it as an *bytes.Buffer suitable for
 // use as an HTTP request body.
 func JSONBody(t *testing.T, v any) *bytes.Buffer {
