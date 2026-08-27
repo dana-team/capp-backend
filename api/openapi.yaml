@@ -204,6 +204,16 @@ components:
           example: Active
         quota:
           $ref: '#/components/schemas/QuotaInfo'
+        users:
+          type: array
+          items:
+            type: string
+          description: Users currently bound via the namespace's `capp-user` RoleBinding. Omitted when no RoleBinding exists.
+          example: [alice, bob]
+        canEdit:
+          type: boolean
+          description: Whether the authenticated user has admin-level permission to modify this namespace's quota and full user list (via PUT).
+          example: false
 
     QuotaInfo:
       type: object
@@ -1298,6 +1308,31 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   /api/v1/clusters/{cluster}/namespaces/{namespace}:
+    get:
+      tags: [namespaces]
+      summary: Get namespace details
+      description: |
+        Returns a single namespace with its resource quota, users, and whether
+        the authenticated user can edit the namespace (admin-level permission).
+        Requires namespace-scoped access (ability to create Capps in the namespace).
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Namespace details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceItem'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
     put:
       tags: [namespaces]
       summary: Replace namespace quota and role binding

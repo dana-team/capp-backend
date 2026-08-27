@@ -93,6 +93,7 @@ func (h *Handler) list(c *gin.Context) {
 	listOpts := &client.ListOptions{LabelSelector: labelSelector}
 
 	quotaByNS := listQuotaInfoMap(c.Request.Context(), adminClient, h.logger)
+	usersByNS := listUsersMap(c.Request.Context(), adminClient, h.logger)
 
 	var items []NamespaceItem
 
@@ -112,6 +113,9 @@ func (h *Handler) list(c *gin.Context) {
 			phase, _, _ := unstructured.NestedString(p.Object, "status", "phase")
 			item := NamespaceItem{Name: p.GetName(), Status: phase}
 			item.Quota = quotaByNS[p.GetName()]
+			if users, ok := usersByNS[p.GetName()]; ok {
+				item.Users = &users
+			}
 			items = append(items, item)
 		}
 	} else {
@@ -130,11 +134,18 @@ func (h *Handler) list(c *gin.Context) {
 			}
 			item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase)}
 			item.Quota = quotaByNS[ns.Name]
+			if users, ok := usersByNS[ns.Name]; ok {
+				item.Users = &users
+			}
 			items = append(items, item)
 		}
 	}
 
 	canCreate, _ := canCreateNamespaces(c.Request.Context(), userClient)
+
+	for i := range items {
+		items[i].CanEdit = canCreate
+	}
 
 	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, CanCreate: canCreate})
 }
@@ -202,9 +213,12 @@ func (h *Handler) get(c *gin.Context) {
 	quota := quotaInfoFromK8s(rq)
 	users := []string{}
 	for _, subject := range rb.Subjects {
-		users = append(users, subject.Name)
+		if subject.Kind == rbacv1.UserKind {
+			users = append(users, subject.Name)
+		}
 	}
-	item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quota, Users: &users}
+	canEdit, _ := canCreateNamespaces(c.Request.Context(), userClient)
+	item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quota, Users: &users, CanEdit: canEdit}
 	c.JSON(http.StatusOK, item)
 
 }
@@ -540,6 +554,34 @@ func generateResourceList(quota resourceQuota) (corev1.ResourceList, error) {
 		resList[corev1.ResourcePods] = pods
 	}
 	return resList, nil
+}
+
+// listUsersMap lists all RoleBindings named <ns>-capp-access cluster-wide and
+// returns a map of namespace -> user list. Namespaces without a RoleBinding are
+// absent from the map. Errors are logged and result in an empty map.
+func listUsersMap(ctx context.Context, adminClient client.Client, logger *zap.Logger) map[string][]string {
+	var rbList rbacv1.RoleBindingList
+	if err := adminClient.List(ctx, &rbList); err != nil {
+		logger.Warn("failed to list role bindings", zap.Error(err))
+		return map[string][]string{}
+	}
+
+	result := make(map[string][]string, len(rbList.Items))
+	for i := range rbList.Items {
+		rb := &rbList.Items[i]
+		expectedName := fmt.Sprintf("%s-capp-access", rb.Namespace)
+		if rb.Name != expectedName {
+			continue
+		}
+		users := make([]string, 0, len(rb.Subjects))
+		for _, s := range rb.Subjects {
+			if s.Kind == rbacv1.UserKind {
+				users = append(users, s.Name)
+			}
+		}
+		result[rb.Namespace] = users
+	}
+	return result
 }
 
 // listQuotaInfoMap lists all ResourceQuotas cluster-wide and returns a map

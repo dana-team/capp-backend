@@ -112,6 +112,39 @@ func TestList_VanillaK8s_ReturnsNamespaceItem(t *testing.T) {
 	require.Len(t, resp.Items, 1)
 	assert.Equal(t, "ns-a", resp.Items[0].Name)
 	assert.Equal(t, "Active", resp.Items[0].Status)
+	assert.True(t, resp.Items[0].CanEdit)
+}
+
+func TestList_VanillaK8s_IncludesUsersFromRoleBinding(t *testing.T) {
+	ns := managedNamespace("ns-a")
+	rb := existingRoleBinding("ns-a", []string{"alice", "bob"})
+	e := engine(t, cluster.ClusterMeta{Name: "prod", IsOpenShift: false},
+		[]client.Object{ns, rb})
+	w := e.Get("/namespaces")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp NamespaceListResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 1)
+	require.NotNil(t, resp.Items[0].Users)
+	assert.ElementsMatch(t, []string{"alice", "bob"}, *resp.Items[0].Users)
+}
+
+func TestList_VanillaK8s_CanEditFalseForNonAdmin(t *testing.T) {
+	ns := managedNamespace("ns-a")
+	// User has namespace access (canCreateCapps) but not admin (canCreateNamespaces)
+	e := testutil.NewEngineHelperWithAdmin(t,
+		testutil.FakeClientAllowNamespacedSAR(t),
+		testutil.FakeClientAllowSAR(t, ns),
+		cluster.ClusterMeta{Name: "prod", IsOpenShift: false}, New(zap.NewNop()))
+	w := e.Get("/namespaces")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp NamespaceListResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 1)
+	assert.False(t, resp.Items[0].CanEdit)
+	assert.False(t, resp.CanCreate)
 }
 
 // -- Get tests --
@@ -152,6 +185,7 @@ func TestGet_ExistingNamespaceWithQuotaAndUsers(t *testing.T) {
 	assert.Equal(t, "4Gi", resp.Quota.Memory)
 	require.NotNil(t, resp.Users)
 	assert.ElementsMatch(t, []string{"alice", "bob"}, *resp.Users)
+	assert.True(t, resp.CanEdit)
 }
 
 // -- Create tests --
