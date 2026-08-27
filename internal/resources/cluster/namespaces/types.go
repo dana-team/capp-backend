@@ -36,6 +36,10 @@ type NamespaceItem struct {
 	// Users is the list of users with access to the namespace.
 	// Nil when no RoleBinding exists for the namespace.
 	Users *[]string `json:"users,omitempty"`
+
+	// CanEdit is true when the authenticated user has admin-level permission
+	// to modify the namespace's quota and full user list (via PUT).
+	CanEdit bool `json:"canEdit"`
 }
 
 type resourceQuota struct {
