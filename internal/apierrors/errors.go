@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/gin-gonic/gin"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -203,7 +204,7 @@ func translateK8sError(err error) *APIError {
 	case k8serrors.IsAlreadyExists(err):
 		return &APIError{Code: CodeConflict, Message: k8sSafeMessage(err, "resource already exists"), Status: http.StatusConflict, cause: err}
 	case k8serrors.IsForbidden(err):
-		return &APIError{Code: CodeForbidden, Message: "access denied", Status: http.StatusForbidden, cause: err}
+		return &APIError{Code: CodeForbidden, Message: k8sForbiddenMessage(err), Status: http.StatusForbidden, cause: err}
 	case k8serrors.IsUnauthorized(err):
 		return &APIError{Code: CodeUnauthorized, Message: "unauthorized", Status: http.StatusUnauthorized, cause: err}
 	case k8serrors.IsInvalid(err):
@@ -218,6 +219,27 @@ func translateK8sError(err error) *APIError {
 		}
 		return nil
 	}
+}
+
+var admissionWebhookDeniedRe = regexp.MustCompile(`^admission webhook "[^"]+" denied the request: (.+)$`)
+var rbacIdentityRe = regexp.MustCompile(`User "[^"]*" `)
+
+// k8sForbiddenMessage returns a safe message for Kubernetes Forbidden errors.
+// Admission webhook denials are returned as-is; RBAC messages lose the
+// caller identity. Falls back to "access denied" when no message is available.
+func k8sForbiddenMessage(err error) string {
+	var statusErr *k8serrors.StatusError
+	if !errors.As(err, &statusErr) {
+		return "access denied"
+	}
+	msg := statusErr.Status().Message
+	if msg == "" {
+		return "access denied"
+	}
+	if match := admissionWebhookDeniedRe.FindStringSubmatch(msg); match != nil {
+		return match[1]
+	}
+	return rbacIdentityRe.ReplaceAllString(msg, "")
 }
 
 // k8sSafeMessage extracts the resource name from a K8s StatusError (if

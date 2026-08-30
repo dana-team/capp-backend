@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -158,20 +159,36 @@ func TestRespond_K8sForbidden(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	e := decodeError(t, w)
 	assert.Equal(t, CodeForbidden, e.Code)
-	assert.Equal(t, "access denied", e.Message)
+	assert.Equal(t, "forbidden: denied", e.Message)
 }
 
-func TestRespond_K8sForbidden_DoesNotLeakDetails(t *testing.T) {
+func TestRespond_K8sForbidden_RBAC_StripsIdentity(t *testing.T) {
 	w := recordResponse(t, func(c *gin.Context) {
 		Respond(c, k8serrors.NewForbidden(
 			schema.GroupResource{Group: "rcs.dana.io", Resource: "capps"},
 			"my-app",
-			fmt.Errorf("user system:serviceaccount:ns:sa cannot get resource"),
+			fmt.Errorf(`User "system:serviceaccount:capp-system:sa" cannot get resource "capps" in API group "rcs.dana.io" in the namespace "ns"`),
 		))
 	})
 	e := decodeError(t, w)
-	assert.Equal(t, "access denied", e.Message)
+	assert.Equal(t, CodeForbidden, e.Code)
 	assert.NotContains(t, e.Message, "serviceaccount")
+	assert.NotContains(t, e.Message, "User ")
+	assert.Contains(t, e.Message, `cannot get resource "capps"`)
+}
+
+func TestRespond_K8sForbidden_AdmissionWebhookDenied(t *testing.T) {
+	w := recordResponse(t, func(c *gin.Context) {
+		Respond(c, &k8serrors.StatusError{ErrStatus: metav1.Status{
+			Status:  metav1.StatusFailure,
+			Code:    http.StatusForbidden,
+			Message: `admission webhook "vcapp.kb.io" denied the request: metadata.name: Invalid value: "Invalid_Name!": must be a valid DNS-1123 label`,
+		}})
+	})
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	e := decodeError(t, w)
+	assert.Equal(t, CodeForbidden, e.Code)
+	assert.Equal(t, `metadata.name: Invalid value: "Invalid_Name!": must be a valid DNS-1123 label`, e.Message)
 }
 
 func TestRespond_GenericError(t *testing.T) {
