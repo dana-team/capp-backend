@@ -99,6 +99,9 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 		cpuLimit          string
 		memoryRequest     string
 		memoryLimit       string
+		routeHostname     string
+		routeTLSEnabled   bool
+		routeTimeoutSecs  int64
 	)
 
 	cmd := &cobra.Command{
@@ -125,6 +128,10 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 				cmd.Flags().Changed("memory-request") || cmd.Flags().Changed("memory-limit")
 			if size != "" && hasCustom {
 				return fmt.Errorf("--size and custom resource flags (--cpu-request, --cpu-limit, --memory-request, --memory-limit) are mutually exclusive")
+			}
+
+			if routeTLSEnabled && routeHostname == "" {
+				return fmt.Errorf("--hostname is required when --tls-enabled is set")
 			}
 
 			envVars, err := parseEnvPairs(envPairs)
@@ -161,6 +168,14 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 				req.CustomResources = buildCustomResources(cpuRequest, cpuLimit, memoryRequest, memoryLimit)
 			}
 
+			if cmd.Flags().Changed("hostname") || cmd.Flags().Changed("tls-enabled") || cmd.Flags().Changed("timeout-seconds") {
+				rs := &apitypes.RouteSpec{Hostname: routeHostname, TLSEnabled: routeTLSEnabled}
+				if cmd.Flags().Changed("timeout-seconds") {
+					rs.RouteTimeoutSeconds = int64Ptr(routeTimeoutSecs)
+				}
+				req.RouteSpec = rs
+			}
+
 			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps", cluster, ns)
 			var created apitypes.CappResponse
 			if err := h.state.Client.Post(cmd.Context(), path, req, &created); err != nil {
@@ -184,6 +199,9 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&cpuLimit, "cpu-limit", "", "custom CPU limit (e.g. 500m)")
 	cmd.Flags().StringVar(&memoryRequest, "memory-request", "", "custom memory request (e.g. 256Mi)")
 	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "custom memory limit (e.g. 512Mi)")
+	cmd.Flags().StringVar(&routeHostname, "hostname", "", "custom DNS hostname for the Capp route")
+	cmd.Flags().BoolVar(&routeTLSEnabled, "tls-enabled", false, "enable TLS for the Capp route (requires --hostname)")
+	cmd.Flags().Int64Var(&routeTimeoutSecs, "timeout-seconds", 0, "maximum request duration for the Capp route, in seconds")
 	parent.AddCommand(cmd)
 }
 
@@ -202,6 +220,9 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		cpuLimit          string
 		memoryRequest     string
 		memoryLimit       string
+		routeHostname     string
+		routeTLSEnabled   bool
+		routeTimeoutSecs  int64
 	)
 
 	cmd := &cobra.Command{
@@ -285,6 +306,26 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				req.CustomResources = buildCustomResources(cpuRequest, cpuLimit, memoryRequest, memoryLimit)
 			}
 
+			if cmd.Flags().Changed("hostname") || cmd.Flags().Changed("tls-enabled") || cmd.Flags().Changed("timeout-seconds") {
+				rs := apitypes.RouteSpec{}
+				if req.RouteSpec != nil {
+					rs = *req.RouteSpec
+				}
+				if cmd.Flags().Changed("hostname") {
+					rs.Hostname = routeHostname
+				}
+				if cmd.Flags().Changed("tls-enabled") {
+					rs.TLSEnabled = routeTLSEnabled
+				}
+				if cmd.Flags().Changed("timeout-seconds") {
+					rs.RouteTimeoutSeconds = int64Ptr(routeTimeoutSecs)
+				}
+				if rs.TLSEnabled && rs.Hostname == "" {
+					return fmt.Errorf("--hostname is required when --tls-enabled is set")
+				}
+				req.RouteSpec = &rs
+			}
+
 			putPath := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
 			var updated apitypes.CappResponse
 			if err := h.state.Client.Put(cmd.Context(), putPath, req, &updated); err != nil {
@@ -307,6 +348,9 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&cpuLimit, "cpu-limit", "", "custom CPU limit (e.g. 500m)")
 	cmd.Flags().StringVar(&memoryRequest, "memory-request", "", "custom memory request (e.g. 256Mi)")
 	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "custom memory limit (e.g. 512Mi)")
+	cmd.Flags().StringVar(&routeHostname, "hostname", "", "custom DNS hostname for the Capp route (immutable once set: only settable while currently unset)")
+	cmd.Flags().BoolVar(&routeTLSEnabled, "tls-enabled", false, "enable TLS for the Capp route (requires --hostname, existing or new)")
+	cmd.Flags().Int64Var(&routeTimeoutSecs, "timeout-seconds", 0, "maximum request duration for the Capp route, in seconds")
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }
@@ -433,6 +477,11 @@ func buildCustomResources(cpuReq, cpuLim, memReq, memLim string) *apitypes.Resou
 func int32Ptr(v int) *int32 {
 	i := int32(v)
 	return &i
+}
+
+// int64Ptr returns a pointer to v, for optional route spec flags.
+func int64Ptr(v int64) *int64 {
+	return &v
 }
 
 // parseEnvPairs converts ["KEY=VALUE", ...] into []apitypes.EnvVar.

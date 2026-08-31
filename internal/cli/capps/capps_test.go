@@ -9,10 +9,53 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/cli/client"
 	"github.com/dana-team/capp-backend/internal/cli/root"
+	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newCreateCmd builds a minimal create cobra tree wired to a test HTTP server.
+func newCreateCmd(t *testing.T, serverURL, cluster, namespace string) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+
+	state := &root.State{
+		Client:    client.New(serverURL, "test-token", false),
+		Cluster:   cluster,
+		Namespace: namespace,
+	}
+
+	h := New(state)
+	parent := &cobra.Command{Use: "create"}
+	h.RegisterCreateCommand(parent)
+
+	buf := &bytes.Buffer{}
+	parent.SetOut(buf)
+	parent.SetErr(buf)
+
+	return parent, buf
+}
+
+// newUpdateCmd builds a minimal update cobra tree wired to a test HTTP server.
+func newUpdateCmd(t *testing.T, serverURL, cluster, namespace string) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+
+	state := &root.State{
+		Client:    client.New(serverURL, "test-token", false),
+		Cluster:   cluster,
+		Namespace: namespace,
+	}
+
+	h := New(state)
+	parent := &cobra.Command{Use: "update"}
+	h.RegisterUpdateCommand(parent)
+
+	buf := &bytes.Buffer{}
+	parent.SetOut(buf)
+	parent.SetErr(buf)
+
+	return parent, buf
+}
 
 // newSyncCmd builds a minimal sync cobra tree wired to a test HTTP server.
 func newSyncCmd(t *testing.T, serverURL, cluster, namespace, outputFmt string) (*cobra.Command, *bytes.Buffer) {
@@ -163,4 +206,43 @@ func TestSync_GitOpsDisabled(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not supported")
+}
+
+func TestCreate_RouteSpec_AllFields(t *testing.T) {
+	var received apitypes.CappRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.CappResponse{Name: received.Name, RouteSpec: received.RouteSpec}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, _ := newCreateCmd(t, srv.URL, "c1", "ns1")
+	cmd.SetArgs([]string{
+		"capps", "--name", "my-app", "--image", "img:latest",
+		"--hostname", "my-app.example.com",
+		"--tls-enabled",
+		"--timeout-seconds", "30",
+	})
+	require.NoError(t, cmd.Execute())
+
+	require.NotNil(t, received.RouteSpec)
+	assert.Equal(t, "my-app.example.com", received.RouteSpec.Hostname)
+	assert.True(t, received.RouteSpec.TLSEnabled)
+	require.NotNil(t, received.RouteSpec.RouteTimeoutSeconds)
+	assert.Equal(t, int64(30), *received.RouteSpec.RouteTimeoutSeconds)
+}
+
+func TestUpdate_RouteSpec_TLSWithoutHostname(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.CappResponse{Name: "my-app"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, _ := newUpdateCmd(t, srv.URL, "c1", "ns1")
+	cmd.SetArgs([]string{"capps", "my-app", "--tls-enabled"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--hostname is required")
 }
