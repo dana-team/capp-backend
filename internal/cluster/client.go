@@ -103,3 +103,8 @@ type ClusterClient struct {
 func (cc *ClusterClient) IsHealthy() bool {
 	return cc.healthy.Load()
 }
+
+// SetHealthy updates the cluster's health status. Safe for concurrent use.
+func (cc *ClusterClient) SetHealthy(v bool) {
+	cc.healthy.Store(v)
+}
