@@ -156,8 +156,8 @@ jobs:
 
       - name: Update Chart.yaml version
         run: |
-          sed -i "s/^appVersion:.*/version: ${{ steps.version.outputs.CHART_VERSION }}/" helm/${{ env.CHART_NAME }}/Chart.yaml
-          sed -i "s/^version:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" helm/${{ env.CHART_NAME }}/Chart.yaml
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.CHART_VERSION }}/" helm/${{ env.CHART_NAME }}/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.CHART_VERSION }}\"/" helm/${{ env.CHART_NAME }}/Chart.yaml
 
       - name: Log in to GHCR
         run: |
@@ -200,8 +200,8 @@ jobs:
 
       - name: Update Chart.yaml version
         run: |
-          sed -i "s/^appVersion:.*/version: ${{ steps.version.outputs.CHART_VERSION }}/" helm/${{ env.MCP_CHART_NAME }}/Chart.yaml
-          sed -i "s/^version:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" helm/${{ env.MCP_CHART_NAME }}/Chart.yaml
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.CHART_VERSION }}/" helm/${{ env.MCP_CHART_NAME }}/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.CHART_VERSION }}\"/" helm/${{ env.MCP_CHART_NAME }}/Chart.yaml
 
       - name: Log in to GHCR
         run: |
