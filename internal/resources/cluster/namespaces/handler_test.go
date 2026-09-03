@@ -153,7 +153,7 @@ func TestGet_NsNotFound(t *testing.T) {
 	e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
 	w := e.Get("/namespaces/missing-ns")
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 func TestGet_ExistingNamespace(t *testing.T) {
@@ -194,7 +194,7 @@ func TestCreate_BadJSON(t *testing.T) {
 	e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
 	w := e.Post("/namespaces", bytes.NewBufferString("{bad"))
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 func TestCreate_MinimalRequest(t *testing.T) {
@@ -245,7 +245,7 @@ func TestCreate_InvalidCPUQuota(t *testing.T) {
 	body := CreateNamespaceRequest{Name: "new-ns", Users: &users, Quota: &quota}
 	w := e.PostJSON("/namespaces", body)
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 func TestCreate_MissingName(t *testing.T) {
@@ -261,7 +261,7 @@ func TestUpdate_NsNotFound(t *testing.T) {
 	e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
 	w := e.PutJSON("/namespaces/missing-ns", UpdateNamespaceRequest{})
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 func TestUpdate_NilQuotaAndUsers_NoOp(t *testing.T) {
@@ -326,7 +326,7 @@ func TestUpdate_InvalidQuota_Returns400(t *testing.T) {
 	quota := resourceQuota{CPU: "not-valid"}
 	w := e.PutJSON("/namespaces/my-ns", UpdateNamespaceRequest{Quota: &quota})
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 // -- Patch tests --
@@ -336,14 +336,14 @@ func TestPatch_BadJSON(t *testing.T) {
 	e := engine(t, cluster.ClusterMeta{Name: "prod"}, []client.Object{ns})
 	w := e.Patch("/namespaces/my-ns", bytes.NewBufferString("{bad"))
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 func TestPatch_NsNotFound(t *testing.T) {
 	e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
 	w := e.PatchJSON("/namespaces/missing", PatchNamespaceRequest{})
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 func TestPatch_NilUsers_ReturnsOK(t *testing.T) {
@@ -420,7 +420,7 @@ func TestPatch_RoleBindingNotFound_Returns400(t *testing.T) {
 	users := []string{"alice"}
 	w := e.PatchJSON("/namespaces/my-ns", PatchNamespaceRequest{Users: &users})
 
-	assert.True(t, w.Code >= 400)
+	assert.GreaterOrEqual(t, w.Code, 400)
 }
 
 // -- generateRoleBinding unit tests --

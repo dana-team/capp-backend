@@ -211,7 +211,7 @@ func TestSync_GitOpsDisabled(t *testing.T) {
 func TestCreate_RouteSpec_AllFields(t *testing.T) {
 	var received apitypes.CappRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(apitypes.CappResponse{Name: received.Name, RouteSpec: received.RouteSpec}) //nolint:errcheck
 	}))

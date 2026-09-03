@@ -60,7 +60,7 @@ func TestIsOpenShift_401_ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	_, err := IsOpenShift(context.Background(), testRestConfig(t, srv.URL))
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected status 401")
 }
 
@@ -71,7 +71,7 @@ func TestIsOpenShift_500_ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	_, err := IsOpenShift(context.Background(), testRestConfig(t, srv.URL))
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected status 500")
 }
 
