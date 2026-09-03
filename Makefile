@@ -6,6 +6,19 @@ help: ## Display this help message
 
 ##@ Development
 
+LOCALBIN ?= $(shell pwd)/bin
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+GOLANGCI_LINT_VERSION ?= v2.11.4
+GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+
+.PHONY: golangci-lint
+golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
+$(GOLANGCI_LINT): | $(LOCALBIN)
+	curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(LOCALBIN) $(GOLANGCI_LINT_VERSION)
+	@mv $(LOCALBIN)/golangci-lint $(GOLANGCI_LINT)
+
 .PHONY: fmt
 fmt: ## Format all Go source files
 	gofmt -w .
@@ -15,8 +28,8 @@ vet: ## Run go vet against code
 	go vet ./...
 
 .PHONY: lint
-lint: ## Run golangci-lint
-	golangci-lint run ./...
+lint: golangci-lint ## Run golangci-lint
+	$(GOLANGCI_LINT) run ./...
 
 .PHONY: tidy
 tidy: ## Tidy go module dependencies
