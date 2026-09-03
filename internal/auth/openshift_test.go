@@ -210,7 +210,7 @@ func TestOpenShift_OAuthExchange_InvalidCode(t *testing.T) {
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
 	_, err := mgr.OAuthExchange(context.Background(), "bad-code", "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
@@ -258,7 +258,7 @@ func TestOpenShift_PasswordLogin_Success(t *testing.T) {
 			return
 		}
 		user, pass, ok := r.BasicAuth()
-		require.True(t, ok)
+		assert.True(t, ok)
 		assert.Equal(t, "user", user)
 		assert.Equal(t, "pass", pass)
 		w.Header().Set("Location", srv.URL+"/oauth/token/implicit#access_token=access-tok&expires_in=3600&token_type=bearer")
@@ -383,7 +383,7 @@ func TestOpenShift_PasswordLogin_ServerErrorInRedirect(t *testing.T) {
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
 	_, err := mgr.PasswordLogin(context.Background(), "user", "pass")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrBadCredentials)
 }
 
@@ -490,7 +490,7 @@ func TestOpenShift_ValidateState_UnknownState(t *testing.T) {
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
 	err := mgr.ValidateState("nonexistent-state")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
 
@@ -505,6 +505,6 @@ func TestOpenShift_ValidateState_Expired(t *testing.T) {
 	state := payload + "." + mgr.stateSignature(payload)
 
 	err := mgr.ValidateState(state)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnauthenticated)
 }

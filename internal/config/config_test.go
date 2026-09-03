@@ -78,7 +78,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 60, cfg.Server.IdleTimeoutSeconds)
 	assert.Equal(t, "passthrough", cfg.Auth.Mode)
 	assert.True(t, cfg.Auth.RateLimit.Enabled)
-	assert.Equal(t, 20.0, cfg.Auth.RateLimit.RequestsPerSecond)
+	assert.InDelta(t, 20.0, cfg.Auth.RateLimit.RequestsPerSecond, 0.0001)
 	assert.Equal(t, 40, cfg.Auth.RateLimit.Burst)
 	assert.Equal(t, 10_000, cfg.Auth.RateLimit.MaxIPTracked)
 	assert.Equal(t, "info", cfg.Logging.Level)
@@ -86,7 +86,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.True(t, cfg.Metrics.Enabled)
 	assert.Equal(t, "/metrics", cfg.Metrics.Path)
 	assert.Equal(t, "capp-backend", cfg.Tracing.ServiceName)
-	assert.Equal(t, 0.1, cfg.Tracing.SampleRate)
+	assert.InDelta(t, 0.1, cfg.Tracing.SampleRate, 0.0001)
 	assert.True(t, cfg.Resources.Namespaces.Enabled)
 	assert.True(t, cfg.Resources.Capps.Enabled)
 }

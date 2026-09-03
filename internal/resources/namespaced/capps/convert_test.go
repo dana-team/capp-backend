@@ -567,7 +567,7 @@ func TestToK8s_WithPingSource(t *testing.T) {
 	assert.Equal(t, "/events", src.URI.String())
 	require.NotNil(t, src.PingSourceConfiguration)
 	assert.Equal(t, "*/5 * * * *", src.PingSourceConfiguration.Schedule)
-	assert.Equal(t, `{"msg":"hello"}`, src.PingSourceConfiguration.Data)
+	assert.JSONEq(t, `{"msg":"hello"}`, src.PingSourceConfiguration.Data)
 	assert.Nil(t, src.KafkaSourceConfiguration)
 }
 
@@ -647,7 +647,7 @@ func TestFromK8s_WithPingSource(t *testing.T) {
 	assert.Equal(t, "ping-src", src.Name)
 	require.NotNil(t, src.PingSourceConfig)
 	assert.Equal(t, "0 * * * *", src.PingSourceConfig.Schedule)
-	assert.Equal(t, `{"key":"val"}`, src.PingSourceConfig.Data)
+	assert.JSONEq(t, `{"key":"val"}`, src.PingSourceConfig.Data)
 	assert.Nil(t, src.KafkaSourceConfig)
 }
 

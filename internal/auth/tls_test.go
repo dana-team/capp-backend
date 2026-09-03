@@ -50,14 +50,14 @@ func TestBuildTLSTransport_ValidCert(t *testing.T) {
 
 func TestBuildTLSTransport_InvalidBase64(t *testing.T) {
 	_, err := buildTLSTransport("not-valid-base64!!!")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decoding CACert")
 }
 
 func TestBuildTLSTransport_InvalidPEM(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString([]byte("this is not a PEM certificate"))
 	_, err := buildTLSTransport(b64)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no valid PEM")
 }
 
