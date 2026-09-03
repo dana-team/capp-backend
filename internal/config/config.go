@@ -83,6 +83,11 @@ type RateLimitConfig struct {
 	// Burst is the maximum number of requests allowed in a burst above the
 	// sustained rate. Default: 40.
 	Burst int `mapstructure:"burst"`
+
+	// MaxIPTracked is the upper bound on tracked unique client IPs. When the
+	// limit is reached, the least-recently-seen entries are evicted.
+	// 10 000 entries × ~200 bytes ≈ 2 MB. Default: 10000.
+	MaxIPTracked int `mapstructure:"maxIPTracked"`
 }
 
 // AuthConfig holds all authentication-related settings.
@@ -335,6 +340,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.rateLimit.enabled", true)
 	v.SetDefault("auth.rateLimit.requestsPerSecond", 20.0)
 	v.SetDefault("auth.rateLimit.burst", 40)
+	v.SetDefault("auth.rateLimit.maxIPTracked", 10_000)
 
 	// Logging
 	v.SetDefault("logging.level", "info")

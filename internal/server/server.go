@@ -50,6 +50,7 @@ func New(
 		engine.Use(middleware.RateLimit(
 			cfg.Auth.RateLimit.RequestsPerSecond,
 			cfg.Auth.RateLimit.Burst,
+			cfg.Auth.RateLimit.MaxIPTracked,
 		))
 	}
 
