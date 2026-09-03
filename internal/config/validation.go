@@ -112,6 +112,13 @@ func validateCredential(prefix string, cred *CredentialConfig) []error {
 func validateAuth(auth *AuthConfig) []error {
 	var errs []error
 
+	if auth.RateLimit.Enabled && auth.RateLimit.MaxIPTracked <= 0 {
+		errs = append(errs, fmt.Errorf(
+			"config: auth.rateLimit.maxIPTracked must be greater than 0, got %d",
+			auth.RateLimit.MaxIPTracked,
+		))
+	}
+
 	if _, ok := validAuthModes[auth.Mode]; !ok {
 		errs = append(errs, fmt.Errorf(
 			"config: auth.mode %q is not valid; must be one of: passthrough, openshift",
