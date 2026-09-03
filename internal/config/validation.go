@@ -121,6 +121,13 @@ func validateAuth(auth *AuthConfig) []error {
 		return errs
 	}
 
+	if auth.RateLimit.Enabled && auth.RateLimit.MaxIPTracked <= 0 {
+		errs = append(errs, fmt.Errorf(
+			"config: auth.rateLimit.maxIPTracked must be greater than 0, got %d",
+			auth.RateLimit.MaxIPTracked,
+		))
+	}
+
 	switch auth.Mode {
 	case "openshift":
 		if auth.OpenShift.APIServer == "" {

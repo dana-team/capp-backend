@@ -80,6 +80,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.True(t, cfg.Auth.RateLimit.Enabled)
 	assert.Equal(t, 20.0, cfg.Auth.RateLimit.RequestsPerSecond)
 	assert.Equal(t, 40, cfg.Auth.RateLimit.Burst)
+	assert.Equal(t, 10_000, cfg.Auth.RateLimit.MaxIPTracked)
 	assert.Equal(t, "info", cfg.Logging.Level)
 	assert.Equal(t, "json", cfg.Logging.Format)
 	assert.True(t, cfg.Metrics.Enabled)
@@ -244,6 +245,14 @@ func TestValidate_OpenShift_Defaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"user:info", "user:check-access"}, cfg.Auth.OpenShift.Scopes)
 	assert.Equal(t, 60, cfg.Auth.OpenShift.TokenCacheTTLSeconds)
+}
+
+func TestValidate_RateLimitMaxIPTrackedZero(t *testing.T) {
+	cfg := passthroughConfig()
+	cfg.Auth.RateLimit = RateLimitConfig{Enabled: true, MaxIPTracked: 0}
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maxIPTracked must be greater than 0")
 }
 
 func TestValidate_MultipleErrors(t *testing.T) {
