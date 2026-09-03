@@ -51,6 +51,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOLANGCI_LINT_VERSION: v2.11.4
+
 jobs:
   # ── Go: lint + test ──────────────────────────────────────────────────────────
   go:
@@ -80,7 +83,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11.4
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m --skip-dirs=internal/cli,internal/mcpserver
 
       - name: Unit tests (with race detector)
