@@ -255,7 +255,9 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, NamespaceItem{Name: ns.Name, Status: "Active"})
+	item := buildNamespaceItem(c.Request.Context(), adminClient, ns.Name, "Active")
+	item.CanEdit = true
+	c.JSON(http.StatusCreated, item)
 }
 
 // update handles PUT /api/v1/clusters/:cluster/namespaces/:name.
@@ -306,7 +308,9 @@ func (h *Handler) update(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase)})
+	item := buildNamespaceItem(c.Request.Context(), adminClient, nsName, string(ns.Status.Phase))
+	item.CanEdit = true
+	c.JSON(http.StatusOK, item)
 }
 
 func updateNamespaceQuota(ctx context.Context, adminClient client.Client, ns *corev1.Namespace, quota resourceQuota) error {
@@ -415,7 +419,35 @@ func (h *Handler) patch(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase)})
+	item := buildNamespaceItem(c.Request.Context(), adminClient, namespaceName, string(ns.Status.Phase))
+	canEdit, _ := canCreateNamespaces(c.Request.Context(), userClient)
+	item.CanEdit = canEdit
+	c.JSON(http.StatusOK, item)
+}
+
+// buildNamespaceItem reads the current ResourceQuota and RoleBinding from the
+// cluster and returns a fully populated NamespaceItem. Missing resources are
+// silently skipped (quota/users will be nil).
+func buildNamespaceItem(ctx context.Context, adminClient client.Client, nsName, phase string) NamespaceItem {
+	item := NamespaceItem{Name: nsName, Status: phase}
+
+	rq := &corev1.ResourceQuota{}
+	if err := adminClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-quota", nsName), Namespace: nsName}, rq); err == nil {
+		item.Quota = quotaInfoFromK8s(rq)
+	}
+
+	rb := &rbacv1.RoleBinding{}
+	if err := adminClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-capp-access", nsName), Namespace: nsName}, rb); err == nil {
+		users := make([]string, 0, len(rb.Subjects))
+		for _, s := range rb.Subjects {
+			if s.Kind == rbacv1.UserKind {
+				users = append(users, s.Name)
+			}
+		}
+		item.Users = &users
+	}
+
+	return item
 }
 
 func canCreateNamespaces(ctx context.Context, userClient client.Client) (bool, error) {

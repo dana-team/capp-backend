@@ -206,6 +206,9 @@ func TestCreate_MinimalRequest(t *testing.T) {
 	var resp NamespaceItem
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "new-ns", resp.Name)
+	assert.True(t, resp.CanEdit)
+	assert.Nil(t, resp.Users)
+	assert.Nil(t, resp.Quota)
 }
 
 func TestCreate_WithUsersAndQuota(t *testing.T) {
@@ -216,6 +219,15 @@ func TestCreate_WithUsersAndQuota(t *testing.T) {
 	w := e.PostJSON("/namespaces", body)
 
 	assert.Equal(t, http.StatusCreated, w.Code)
+	var resp NamespaceItem
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "new-ns", resp.Name)
+	assert.True(t, resp.CanEdit)
+	require.NotNil(t, resp.Users)
+	assert.ElementsMatch(t, []string{"alice", "bob"}, *resp.Users)
+	require.NotNil(t, resp.Quota)
+	assert.Equal(t, "2", resp.Quota.CPU)
+	assert.Equal(t, "4Gi", resp.Quota.Memory)
 }
 
 func TestCreate_NilUsersAndQuota_NoNilDeref(t *testing.T) {
@@ -270,6 +282,13 @@ func TestUpdate_CreatesMissingQuota(t *testing.T) {
 	w := e.PutJSON("/namespaces/my-ns", UpdateNamespaceRequest{Quota: &quota})
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	var resp NamespaceItem
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.True(t, resp.CanEdit)
+	require.NotNil(t, resp.Quota)
+	assert.Equal(t, "4", resp.Quota.CPU)
+	assert.Equal(t, "8Gi", resp.Quota.Memory)
+	assert.Nil(t, resp.Quota.Pods)
 }
 
 func TestUpdate_UpdatesExistingQuota(t *testing.T) {
@@ -350,6 +369,9 @@ func TestPatch_AddsNewUser(t *testing.T) {
 	var resp NamespaceItem
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "my-ns", resp.Name)
+	require.NotNil(t, resp.Users)
+	assert.ElementsMatch(t, []string{"alice", "bob"}, *resp.Users)
+	assert.True(t, resp.CanEdit)
 }
 
 func TestPatch_SkipsDuplicateUser(t *testing.T) {
