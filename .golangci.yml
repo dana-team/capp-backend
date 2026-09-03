@@ -16,6 +16,7 @@ linters:
     - staticcheck
     - prealloc
     - revive
+    - testifylint
     - unconvert
     - unparam
     - unused

@@ -15,7 +15,7 @@ import (
 func TestLoadMissingFile(t *testing.T) {
 	cfg, err := config.Load("/nonexistent/path/config.yaml")
 	require.NoError(t, err)
-	assert.Equal(t, "", cfg.CurrentContext)
+	assert.Empty(t, cfg.CurrentContext)
 	assert.Empty(t, cfg.Contexts)
 }
 
@@ -79,22 +79,28 @@ func TestDeleteContext(t *testing.T) {
 
 	assert.True(t, cfg.DeleteContext("a"))
 	assert.Len(t, cfg.Contexts, 1)
-	assert.Equal(t, "", cfg.CurrentContext)
+	assert.Empty(t, cfg.CurrentContext)
 	assert.False(t, cfg.DeleteContext("nonexistent"))
 }
 
 func TestActiveContext(t *testing.T) {
-	cfg := &config.Config{}
+	t.Run("no current context", func(t *testing.T) {
+		cfg := &config.Config{}
+		_, err := cfg.ActiveContext()
+		require.ErrorContains(t, err, "no current context")
+	})
 
-	_, err := cfg.ActiveContext()
-	assert.ErrorContains(t, err, "no current context")
+	t.Run("context not found", func(t *testing.T) {
+		cfg := &config.Config{CurrentContext: "missing"}
+		_, err := cfg.ActiveContext()
+		require.ErrorContains(t, err, "not found")
+	})
 
-	cfg.CurrentContext = "missing"
-	_, err = cfg.ActiveContext()
-	assert.ErrorContains(t, err, "not found")
-
-	cfg.UpsertContext(config.Context{Name: "missing", Server: "https://x.example.com"})
-	ctx, err := cfg.ActiveContext()
-	require.NoError(t, err)
-	assert.Equal(t, "missing", ctx.Name)
+	t.Run("valid context", func(t *testing.T) {
+		cfg := &config.Config{CurrentContext: "prod"}
+		cfg.UpsertContext(config.Context{Name: "prod", Server: "https://x.example.com"})
+		ctx, err := cfg.ActiveContext()
+		require.NoError(t, err)
+		assert.Equal(t, "prod", ctx.Name)
+	})
 }
