@@ -64,7 +64,13 @@ func Cluster(mgr cluster.ClusterManager) gin.HandlerFunc {
 			))
 			return
 		}
-		cred := credVal.(auth.ClusterCredential)
+		cred, ok := credVal.(auth.ClusterCredential)
+		if !ok {
+			apierrors.Respond(c, apierrors.NewInternal(
+				errors.New("cluster middleware: credential has unexpected type"),
+			))
+			return
+		}
 
 		// Build a per-request scoped Kubernetes client.
 		k8sClient, err := mgr.ClientFor(cc, cred)

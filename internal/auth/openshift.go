@@ -191,7 +191,11 @@ func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Req
 	// Check cache first.
 	cacheKey := sha256Sum(token)
 	if val, ok := m.tokenCache.Load(cacheKey); ok {
-		cached := val.(*cachedIdentity)
+		cached, ok := val.(*cachedIdentity)
+		if !ok {
+			m.tokenCache.Delete(cacheKey)
+			return ClusterCredential{}, ErrUnauthenticated
+		}
 		if time.Now().Before(cached.expiresAt) {
 			// Return a copy of the cached groups so callers cannot mutate the
 			// shared cache entry.

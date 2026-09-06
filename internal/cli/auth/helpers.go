@@ -75,7 +75,12 @@ func startCallbackServer() (<-chan oauthCallbackResult, <-chan error, string, fu
 	if err != nil {
 		return nil, nil, "", nil, fmt.Errorf("starting local callback server on port %d (must be free): %w", oauthCallbackPort, err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = ln.Close()
+		return nil, nil, "", nil, fmt.Errorf("unexpected listener address type %T", ln.Addr())
+	}
+	port := tcpAddr.Port
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
 
 	resultCh := make(chan oauthCallbackResult, 1)

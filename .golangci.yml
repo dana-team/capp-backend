@@ -9,6 +9,7 @@ linters:
     - dupword
     - errcheck
     - errorlint
+    - forcetypeassert
     - goconst
     - gocritic
     - gocyclo

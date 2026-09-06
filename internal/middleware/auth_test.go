@@ -93,7 +93,7 @@ func TestAuth(t *testing.T) {
 			engine.GET("/clusters/:cluster/test", func(c *gin.Context) {
 				val, exists := c.Get(string(middleware.CredentialKey))
 				if exists {
-					capturedCred = val.(auth.ClusterCredential)
+					capturedCred, _ = val.(auth.ClusterCredential)
 					credSet = true
 				}
 				c.Status(http.StatusOK)

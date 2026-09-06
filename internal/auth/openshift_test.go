@@ -24,11 +24,27 @@ const (
 	oAuthAuthorizeURLSuffix = "/oauth/authorize"
 )
 
+// extractTokenReview safely extracts the TokenReview from a reactor action.
+func extractTokenReview(action k8stesting.Action) *authv1.TokenReview {
+	ca, ok := action.(k8stesting.CreateAction)
+	if !ok {
+		return nil
+	}
+	review, ok := ca.GetObject().(*authv1.TokenReview)
+	if !ok {
+		return nil
+	}
+	return review
+}
+
 // tokenReviewReactor returns a reactor that responds to TokenReview create
 // calls with the given authentication result.
 func tokenReviewReactor(authenticated bool, username string, groups []string) k8stesting.ReactionFunc {
 	return func(action k8stesting.Action) (bool, runtime.Object, error) {
-		review := action.(k8stesting.CreateAction).GetObject().(*authv1.TokenReview)
+		review := extractTokenReview(action)
+		if review == nil {
+			return false, nil, nil
+		}
 		review.Status = authv1.TokenReviewStatus{
 			Authenticated: authenticated,
 			User: authv1.UserInfo{
@@ -119,7 +135,10 @@ func TestOpenShift_Authenticate_CacheHit(t *testing.T) {
 	callCount := 0
 	reactor := func(action k8stesting.Action) (bool, runtime.Object, error) {
 		callCount++
-		review := action.(k8stesting.CreateAction).GetObject().(*authv1.TokenReview)
+		review := extractTokenReview(action)
+		if review == nil {
+			return false, nil, nil
+		}
 		review.Status = authv1.TokenReviewStatus{
 			Authenticated: true,
 			User:          authv1.UserInfo{Username: "jane", Groups: []string{"devs"}},
@@ -151,7 +170,10 @@ func TestOpenShift_Authenticate_CacheExpired(t *testing.T) {
 	callCount := 0
 	reactor := func(action k8stesting.Action) (bool, runtime.Object, error) {
 		callCount++
-		review := action.(k8stesting.CreateAction).GetObject().(*authv1.TokenReview)
+		review := extractTokenReview(action)
+		if review == nil {
+			return false, nil, nil
+		}
 		review.Status = authv1.TokenReviewStatus{
 			Authenticated: true,
 			User:          authv1.UserInfo{Username: "jane", Groups: []string{"devs"}},

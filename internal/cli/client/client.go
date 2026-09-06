@@ -46,12 +46,16 @@ type Client struct {
 func New(baseURL, token string, insecure bool) *Client {
 	transport := http.DefaultTransport
 	if insecure {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		if t.TLSClientConfig == nil {
-			t.TLSClientConfig = &tls.Config{}
+		if t, ok := http.DefaultTransport.(*http.Transport); ok {
+			t = t.Clone()
+			if t.TLSClientConfig == nil {
+				t.TLSClientConfig = &tls.Config{}
+			}
+			t.TLSClientConfig.InsecureSkipVerify = true
+			transport = t
+		} else {
+			transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec
 		}
-		t.TLSClientConfig.InsecureSkipVerify = true
-		transport = t
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
