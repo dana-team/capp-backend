@@ -9,10 +9,9 @@ import (
 )
 
 // writeTempConfig writes content to a temp file and returns its path.
-// The caller is responsible for os.Remove when done.
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
-	f, err := os.CreateTemp("", "capp-backend-config-*.yaml")
+	f, err := os.CreateTemp(t.TempDir(), "capp-backend-config-*.yaml")
 	require.NoError(t, err)
 	_, err = f.WriteString(content)
 	require.NoError(t, err)
@@ -23,7 +22,6 @@ func writeTempConfig(t *testing.T, content string) string {
 func loadTempConfig(t *testing.T, yaml string) *Config {
 	t.Helper()
 	path := writeTempConfig(t, yaml)
-	defer func() { _ = os.Remove(path) }()
 	cfg, err := Load(path)
 	require.NoError(t, err)
 	return cfg
