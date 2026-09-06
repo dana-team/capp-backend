@@ -71,7 +71,7 @@ type oauthCallbackResult struct {
 // the OAuth callback. Returns channels for the result/error, the redirect URI,
 // and a stop function. The caller must call stop() when done.
 func startCallbackServer() (<-chan oauthCallbackResult, <-chan error, string, func(), error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", oauthCallbackPort))
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", fmt.Sprintf("localhost:%d", oauthCallbackPort))
 	if err != nil {
 		return nil, nil, "", nil, fmt.Errorf("starting local callback server on port %d (must be free): %w", oauthCallbackPort, err)
 	}

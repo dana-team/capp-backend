@@ -18,6 +18,7 @@ linters:
     - intrange
     - misspell
     - nakedret
+    - noctx
     - staticcheck
     - prealloc
     - revive
@@ -43,6 +44,12 @@ linters:
       - linters:
             - dupl
         path: test/*
+      - linters:
+          - noctx
+        path: _test\.go$
+      - linters:
+          - noctx
+        path: internal/testutil/
     paths:
       - third_party$
       - builtin$
