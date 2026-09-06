@@ -65,7 +65,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "capp-backend: failed to initialise logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer logger.Sync() //nolint:errcheck
 
 	logger.Info("capp-backend starting",
 		zap.String("authMode", cfg.Auth.Mode),
@@ -87,7 +86,6 @@ func main() {
 	// Start background health checks. The goroutine stops when the root
 	// context is cancelled on shutdown.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
 	go clusterMgr.StartHealthChecks(rootCtx, 30)
 
 	// ── 5. Build AuthManager ──────────────────────────────────────────────────
@@ -154,14 +152,17 @@ func main() {
 	rootCancel() // stop health checks and auth cleanup
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
 
 	if err := srv.Stop(shutdownCtx); err != nil {
 		logger.Error("error during graceful shutdown", zap.Error(err))
+		shutdownCancel()
+		_ = logger.Sync()
 		os.Exit(1)
 	}
 
+	shutdownCancel()
 	logger.Info("capp-backend stopped")
+	_ = logger.Sync()
 }
 
 // buildLogger constructs a zap.Logger from the logging config.

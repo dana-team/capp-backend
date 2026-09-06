@@ -128,8 +128,7 @@ func validateAuth(auth *AuthConfig) []error {
 		return errs
 	}
 
-	switch auth.Mode {
-	case "openshift":
+	if auth.Mode == "openshift" {
 		if auth.OpenShift.APIServer == "" {
 			errs = append(errs, errors.New(
 				"config: auth.openshift.apiServer is required when auth.mode is 'openshift'",
