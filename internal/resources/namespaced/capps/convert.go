@@ -268,42 +268,42 @@ func parseResourceQuantities(requests, limits config.ResourceQuantities) (corev1
 	}, nil
 }
 
+// parseResourceList parses CPU and memory quantities into a ResourceList.
+func parseResourceList(cpu, memory, label string) (corev1.ResourceList, error) {
+	list := make(corev1.ResourceList)
+	if cpu != "" {
+		q, err := resource.ParseQuantity(cpu)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s.cpu %q: %w", label, cpu, err)
+		}
+		list[corev1.ResourceCPU] = q
+	}
+	if memory != "" {
+		q, err := resource.ParseQuantity(memory)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s.memory %q: %w", label, memory, err)
+		}
+		list[corev1.ResourceMemory] = q
+	}
+	return list, nil
+}
+
 // parseCustomResources converts a user-supplied ResourceSpec into K8s ResourceRequirements.
 func parseCustomResources(spec *ResourceSpec) (corev1.ResourceRequirements, error) {
-	res := corev1.ResourceRequirements{}
+	var res corev1.ResourceRequirements
 	if spec.Requests != nil {
-		res.Requests = make(corev1.ResourceList)
-		if spec.Requests.CPU != "" {
-			q, err := resource.ParseQuantity(spec.Requests.CPU)
-			if err != nil {
-				return res, fmt.Errorf("invalid requests.cpu %q: %w", spec.Requests.CPU, err)
-			}
-			res.Requests[corev1.ResourceCPU] = q
+		list, err := parseResourceList(spec.Requests.CPU, spec.Requests.Memory, "requests")
+		if err != nil {
+			return res, err
 		}
-		if spec.Requests.Memory != "" {
-			q, err := resource.ParseQuantity(spec.Requests.Memory)
-			if err != nil {
-				return res, fmt.Errorf("invalid requests.memory %q: %w", spec.Requests.Memory, err)
-			}
-			res.Requests[corev1.ResourceMemory] = q
-		}
+		res.Requests = list
 	}
 	if spec.Limits != nil {
-		res.Limits = make(corev1.ResourceList)
-		if spec.Limits.CPU != "" {
-			q, err := resource.ParseQuantity(spec.Limits.CPU)
-			if err != nil {
-				return res, fmt.Errorf("invalid limits.cpu %q: %w", spec.Limits.CPU, err)
-			}
-			res.Limits[corev1.ResourceCPU] = q
+		list, err := parseResourceList(spec.Limits.CPU, spec.Limits.Memory, "limits")
+		if err != nil {
+			return res, err
 		}
-		if spec.Limits.Memory != "" {
-			q, err := resource.ParseQuantity(spec.Limits.Memory)
-			if err != nil {
-				return res, fmt.Errorf("invalid limits.memory %q: %w", spec.Limits.Memory, err)
-			}
-			res.Limits[corev1.ResourceMemory] = q
-		}
+		res.Limits = list
 	}
 	return res, nil
 }
@@ -375,6 +375,42 @@ func sizeFromResources(res corev1.ResourceRequirements, sizes config.CappSizes) 
 	return ""
 }
 
+// envVarsFromK8s converts K8s EnvVars into DTO EnvVars.
+func envVarsFromK8s(envs []corev1.EnvVar) []EnvVar {
+	result := make([]EnvVar, 0, len(envs))
+	for _, e := range envs {
+		ev := EnvVar{Name: e.Name}
+		if e.ValueFrom != nil {
+			ev.ValueFrom = envVarSourceFromK8s(e.ValueFrom)
+		} else {
+			ev.Value = e.Value
+		}
+		result = append(result, ev)
+	}
+	return result
+}
+
+// envVarSourceFromK8s converts a K8s EnvVarSource into a DTO EnvVarSource.
+func envVarSourceFromK8s(src *corev1.EnvVarSource) *EnvVarSource {
+	out := &EnvVarSource{}
+	if src.SecretKeyRef != nil {
+		out.SecretKeyRef = &KeySelector{Name: src.SecretKeyRef.Name, Key: src.SecretKeyRef.Key}
+	}
+	if src.ConfigMapKeyRef != nil {
+		out.ConfigMapKeyRef = &KeySelector{Name: src.ConfigMapKeyRef.Name, Key: src.ConfigMapKeyRef.Key}
+	}
+	return out
+}
+
+// volumeMountsFromK8s converts K8s VolumeMounts into DTO VolumeMounts.
+func volumeMountsFromK8s(mounts []corev1.VolumeMount) []VolumeMount {
+	result := make([]VolumeMount, 0, len(mounts))
+	for _, vm := range mounts {
+		result = append(result, VolumeMount{Name: vm.Name, MountPath: vm.MountPath})
+	}
+	return result
+}
+
 // resourceSpecFromK8s converts K8s ResourceRequirements into a DTO ResourceSpec.
 // Returns nil when the container has no resources set.
 func resourceSpecFromK8s(res corev1.ResourceRequirements) *ResourceSpec {
@@ -439,34 +475,8 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 			resp.Size = CappSize(s)
 		}
 		resp.Resources = resourceSpecFromK8s(c.Resources)
-		for _, e := range c.Env {
-			ev := EnvVar{Name: e.Name}
-			if e.ValueFrom != nil {
-				src := &EnvVarSource{}
-				if e.ValueFrom.SecretKeyRef != nil {
-					src.SecretKeyRef = &KeySelector{
-						Name: e.ValueFrom.SecretKeyRef.Name,
-						Key:  e.ValueFrom.SecretKeyRef.Key,
-					}
-				}
-				if e.ValueFrom.ConfigMapKeyRef != nil {
-					src.ConfigMapKeyRef = &KeySelector{
-						Name: e.ValueFrom.ConfigMapKeyRef.Name,
-						Key:  e.ValueFrom.ConfigMapKeyRef.Key,
-					}
-				}
-				ev.ValueFrom = src
-			} else {
-				ev.Value = e.Value
-			}
-			resp.Env = append(resp.Env, ev)
-		}
-		for _, vm := range c.VolumeMounts {
-			resp.VolumeMounts = append(resp.VolumeMounts, VolumeMount{
-				Name:      vm.Name,
-				MountPath: vm.MountPath,
-			})
-		}
+		resp.Env = envVarsFromK8s(c.Env)
+		resp.VolumeMounts = volumeMountsFromK8s(c.VolumeMounts)
 	}
 
 	// Secret and ConfigMap volumes.

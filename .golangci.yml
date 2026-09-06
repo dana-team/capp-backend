@@ -18,6 +18,7 @@ linters:
     - intrange
     - misspell
     - nakedret
+    - nestif
     - noctx
     - staticcheck
     - prealloc
