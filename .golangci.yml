@@ -6,11 +6,14 @@ linters:
   enable:
     - copyloopvar
     - dupl
+    - dupword
     - errcheck
+    - errorlint
     - goconst
     - gocyclo
     - govet
     - ineffassign
+    - intrange
     - misspell
     - nakedret
     - staticcheck
