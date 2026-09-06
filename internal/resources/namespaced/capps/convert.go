@@ -26,7 +26,6 @@ import (
 //   - resourceVersion is NOT set here; the update handler reads it from the
 //     live object and sets it before calling Update.
 func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes config.CappSizes) (*cappv1alpha1.Capp, error) {
-
 	capp := &cappv1alpha1.Capp{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "rcs.dana.io/v1alpha1",

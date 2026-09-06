@@ -20,6 +20,7 @@ linters:
     - unconvert
     - unparam
     - unused
+    - whitespace
   settings:
     revive:
       rules:

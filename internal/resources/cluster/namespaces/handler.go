@@ -220,7 +220,6 @@ func (h *Handler) get(c *gin.Context) {
 	canEdit, _ := canCreateNamespaces(c.Request.Context(), userClient)
 	item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quota, Users: &users, CanEdit: canEdit}
 	c.JSON(http.StatusOK, item)
-
 }
 
 // create handles POST /api/v1/clusters/:cluster/namespaces.
@@ -358,7 +357,6 @@ func updateNamespaceRoleBinding(ctx context.Context, adminClient client.Client, 
 // Authorization: any user who can create Capps in the target namespace is
 // allowed to add other users (namespace-scoped access), not just cluster admins.
 func (h *Handler) patch(c *gin.Context) {
-
 	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
@@ -496,7 +494,6 @@ func createNamespace(ctx context.Context, adminClient client.Client, request Cre
 func createNSResources(ctx context.Context, users []string, quota resourceQuota, ns *corev1.Namespace, adminClient client.Client) error {
 	// Create quota before RB so that if it fails, users don't get permissions to an unlimited namespace.
 	if quota.CPU != "" || quota.Memory != "" || quota.Pods != 0 {
-
 		quota, err := generateResourceQuota(quota, ns)
 		if err != nil {
 			return err
