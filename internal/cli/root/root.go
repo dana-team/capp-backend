@@ -72,36 +72,12 @@ func New(state *State, registry *resource.Registry) *cobra.Command {
 			resolvedNamespace := firstNonEmpty(namespace, os.Getenv("CAPP_NAMESPACE"))
 
 			if resolvedServer == "" || resolvedToken == "" {
-				var activeCtx *config.Context
-				if ctxName != "" {
-					ctx, ok := cfg.GetContext(ctxName)
-					if !ok {
-						return fmt.Errorf("context %q not found", ctxName)
-					}
-					activeCtx = ctx
-				} else {
-					ctx, err := cfg.ActiveContext()
-					if err != nil {
-						return err
-					}
-					activeCtx = ctx
-				}
-				state.ActiveCtx = activeCtx
-
-				if resolvedServer == "" {
-					resolvedServer = activeCtx.Server
-				}
-				if resolvedCluster == "" {
-					resolvedCluster = activeCtx.Cluster
-				}
-				if resolvedNamespace == "" {
-					resolvedNamespace = activeCtx.Namespace
-				}
-				if resolvedToken == "" {
-					resolvedToken, err = maybeRefresh(cmd, cfg, state.CfgPath, activeCtx, insecure)
-					if err != nil {
-						return err
-					}
+				var err error
+				resolvedServer, resolvedToken, resolvedCluster, resolvedNamespace, err =
+					resolveFromContext(cmd, cfg, state, ctxName, insecure,
+						resolvedServer, resolvedToken, resolvedCluster, resolvedNamespace)
+				if err != nil {
+					return err
 				}
 			}
 
@@ -164,6 +140,47 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// resolveFromContext fills missing server/token/cluster/namespace from the active or named context.
+func resolveFromContext(
+	cmd *cobra.Command, cfg *config.Config, state *State, ctxName string, insecure bool,
+	server, token, cluster, namespace string,
+) (string, string, string, string, error) {
+	activeCtx, err := lookupContext(cfg, ctxName)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	state.ActiveCtx = activeCtx
+
+	if server == "" {
+		server = activeCtx.Server
+	}
+	if cluster == "" {
+		cluster = activeCtx.Cluster
+	}
+	if namespace == "" {
+		namespace = activeCtx.Namespace
+	}
+	if token == "" {
+		token, err = maybeRefresh(cmd, cfg, state.CfgPath, activeCtx, insecure)
+		if err != nil {
+			return "", "", "", "", err
+		}
+	}
+	return server, token, cluster, namespace, nil
+}
+
+// lookupContext returns the named context or the active context from config.
+func lookupContext(cfg *config.Config, ctxName string) (*config.Context, error) {
+	if ctxName != "" {
+		ctx, ok := cfg.GetContext(ctxName)
+		if !ok {
+			return nil, fmt.Errorf("context %q not found", ctxName)
+		}
+		return ctx, nil
+	}
+	return cfg.ActiveContext()
 }
 
 // maybeRefresh returns the context token, auto-refreshing it if it expires
