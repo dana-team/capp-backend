@@ -9,11 +9,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// maxIPLimiters is the upper bound on tracked unique client IPs. When the
-// limit is reached, the least-recently-seen entries are evicted to make room.
-// 10 000 entries × ~200 bytes ≈ 2 MB — well within acceptable memory usage.
-const maxIPLimiters = 10_000
-
 // RateLimit returns a Gin middleware that enforces a per-client-IP token-bucket
 // rate limit. Each unique client IP gets its own independent limiter, so a
 // single slow client cannot starve others.
@@ -21,11 +16,8 @@ const maxIPLimiters = 10_000
 // Requests that exceed the limit receive a 429 Too Many Requests response with
 // a Retry-After: 1 header. Requests from clients that have never been seen
 // before always pass (the limiter starts with a full bucket).
-//
-// rps is the sustained request rate (tokens/second). burst is the maximum
-// burst capacity above that rate.
-func RateLimit(rps float64, burst int) gin.HandlerFunc {
-	limiters := newIPLimiterStore(rps, burst, maxIPLimiters)
+func RateLimit(rps float64, burst, maxIPTracked int) gin.HandlerFunc {
+	limiters := newIPLimiterStore(rps, burst, maxIPTracked)
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
 		limiter := limiters.get(ip)
