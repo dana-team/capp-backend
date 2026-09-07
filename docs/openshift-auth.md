@@ -58,7 +58,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: capp-backend
-  namespace: capp-system
+  namespace: capp-platform-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -83,13 +83,13 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: capp-backend
-    namespace: capp-system
+    namespace: capp-platform-system
 ```
 
 Then generate a long-lived token:
 
 ```bash
-kubectl create token capp-backend -n capp-system --duration=8760h
+kubectl create token capp-backend -n capp-platform-system --duration=8760h
 ```
 
 > The Helm chart creates this service account and RBAC automatically on the **cluster where the backend is deployed**. For any **additional managed clusters** you must create them manually as shown above.
@@ -133,7 +133,7 @@ secret:
 
 ```bash
 helm install capp-backend oci://ghcr.io/dana-team/helm-charts/capp-backend \
-  --namespace capp-system \
+  --namespace capp-platform-system \
   --create-namespace \
   --values values-openshift.yaml
 ```
@@ -142,7 +142,7 @@ Or pass sensitive values directly on the CLI to avoid storing secrets in a file:
 
 ```bash
 helm install capp-backend oci://ghcr.io/dana-team/helm-charts/capp-backend \
-  --namespace capp-system \
+  --namespace capp-platform-system \
   --create-namespace \
   --values values-openshift.yaml \
   --set secret.openshiftClientSecret="<client-secret>" \
@@ -171,7 +171,7 @@ To add a cluster after initial deployment:
 
 2. Generate a long-lived token:
    ```bash
-   kubectl create token capp-backend -n capp-system --duration=8760h --context=<target-cluster>
+   kubectl create token capp-backend -n capp-platform-system --duration=8760h --context=<target-cluster>
    ```
 
 3. Add the cluster to your values and upgrade:
@@ -201,7 +201,7 @@ To add a cluster after initial deployment:
 
    ```bash
    helm upgrade capp-backend oci://ghcr.io/dana-team/helm-charts/capp-backend \
-     --namespace capp-system \
+     --namespace capp-platform-system \
      --values values-openshift.yaml
    ```
 
@@ -253,8 +253,8 @@ To add a cluster after initial deployment:
 
 1. **Check the backend is running:**
    ```bash
-   kubectl get pods -n capp-system
-   kubectl logs -n capp-system deploy/capp-backend
+   kubectl get pods -n capp-platform-system
+   kubectl logs -n capp-platform-system deploy/capp-backend
    ```
 
 2. **Query the auth mode endpoint:**
@@ -293,19 +293,19 @@ The service account token may have expired or lack impersonation permissions. Ve
 
 ```bash
 # Check token validity
-kubectl auth can-i impersonate users --as=system:serviceaccount:capp-system:capp-backend
+kubectl auth can-i impersonate users --as=system:serviceaccount:capp-platform-system:capp-backend
 
 # Re-generate if needed
-kubectl create token capp-backend -n capp-system --duration=8760h
+kubectl create token capp-backend -n capp-platform-system --duration=8760h
 ```
 
 Then update the secret and restart the deployment:
 
 ```bash
-kubectl patch secret capp-backend -n capp-system \
+kubectl patch secret capp-backend -n capp-platform-system \
   --type=json \
   -p='[{"op":"replace","path":"/data/clusterToken-0","value":"'$(echo -n "<new-token>" | base64)'"}]'
-kubectl rollout restart deploy/capp-backend -n capp-system
+kubectl rollout restart deploy/capp-backend -n capp-platform-system
 ```
 
 ### `x509: certificate signed by unknown authority`
@@ -323,7 +323,7 @@ Paste the output as the value of `config.auth.openshift.caCert` in your values f
 Check the logs for config validation errors:
 
 ```bash
-kubectl logs -n capp-system deploy/capp-backend
+kubectl logs -n capp-platform-system deploy/capp-backend
 ```
 
 Common causes:

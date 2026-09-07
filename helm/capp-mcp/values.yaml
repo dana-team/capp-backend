@@ -15,7 +15,7 @@ imagePullSecrets: []
 # MCP client supplies, forwarded as-is to this URL. capp-backend performs all
 # real authentication and authorization.
 backend:
-  url: "http://capp-backend-svc.capp-system.svc:8080"
+  url: "http://capp-backend-svc.capp-platform-system.svc:8080"
   insecure: false
 
 # ── Server ────────────────────────────────────────────────────────────────────
@@ -93,4 +93,4 @@ affinity: {}
 
 # ── Namespace ─────────────────────────────────────────────────────────────────
 # The Kubernetes namespace to deploy into.
-namespace: capp-system
+namespace: capp-platform-system

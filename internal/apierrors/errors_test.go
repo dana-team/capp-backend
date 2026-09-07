@@ -167,7 +167,7 @@ func TestRespond_K8sForbidden_RBAC_StripsIdentity(t *testing.T) {
 		Respond(c, k8serrors.NewForbidden(
 			schema.GroupResource{Group: "rcs.dana.io", Resource: "capps"},
 			"my-app",
-			fmt.Errorf(`User "system:serviceaccount:capp-system:sa" cannot get resource "capps" in API group "rcs.dana.io" in the namespace "ns"`),
+			fmt.Errorf(`User "system:serviceaccount:capp-platform-system:sa" cannot get resource "capps" in API group "rcs.dana.io" in the namespace "ns"`),
 		))
 	})
 	e := decodeError(t, w)

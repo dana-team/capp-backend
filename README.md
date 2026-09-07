@@ -173,12 +173,12 @@ To add a new managed cluster in `openshift` mode:
    subjects:
      - kind: ServiceAccount
        name: capp-backend
-       namespace: capp-system
+       namespace: capp-platform-system
    ```
 
 2. **Generate a long-lived token** for the ServiceAccount:
    ```bash
-   kubectl create token capp-backend -n capp-system --duration=8760h
+   kubectl create token capp-backend -n capp-platform-system --duration=8760h
    ```
 
 3. **Add the cluster** to `config.clusters` and provide the token via the corresponding `secret.clusterTokens[N]` entry or `CAPP_CLUSTERS_N_CREDENTIAL_INLINE_TOKEN` environment variable.

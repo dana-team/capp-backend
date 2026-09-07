@@ -248,4 +248,4 @@ affinity: {}
 
 # ── Namespace ─────────────────────────────────────────────────────────────────
 # The Kubernetes namespace to deploy into.
-namespace: capp-system
+namespace: capp-platform-system

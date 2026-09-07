@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: capp-backend-config
-  namespace: capp-system
+  namespace: capp-platform-system
   labels:
     app.kubernetes.io/name: capp-backend
     app.kubernetes.io/component: config

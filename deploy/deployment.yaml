@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: capp-system
+  name: capp-platform-system
   labels:
     app.kubernetes.io/name: capp-backend
 ---
@@ -12,7 +12,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: capp-backend-secret
-  namespace: capp-system
+  namespace: capp-platform-system
   labels:
     app.kubernetes.io/name: capp-backend
     app.kubernetes.io/component: credentials
@@ -25,7 +25,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: capp-backend
-  namespace: capp-system
+  namespace: capp-platform-system
   labels:
     app.kubernetes.io/name: capp-backend
     app.kubernetes.io/component: server
@@ -103,7 +103,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: capp-backend
-  namespace: capp-system
+  namespace: capp-platform-system
   labels:
     app.kubernetes.io/name: capp-backend
     app.kubernetes.io/component: server

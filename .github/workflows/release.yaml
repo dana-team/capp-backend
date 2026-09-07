@@ -415,7 +415,7 @@ jobs:
             helm install capp-mcp \
               oci://ghcr.io/dana-team/helm-charts/capp-mcp \
               --version ${{ steps.version.outputs.TAG }} \
-              --set backend.url="http://capp-backend-svc.capp-system.svc:8080"
+              --set backend.url="http://capp-backend-svc.capp-platform-system.svc:8080"
             ```
 
             ### cappctl CLI binaries
