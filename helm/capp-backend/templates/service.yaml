@@ -1,5 +1,4 @@
-{{/* The Service is created for both deployAs modes so Ingress and
-     ServiceMonitor can always reference the same DNS name. */}}
+{{- if eq .Values.deployAs "deployment" }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,3 +15,4 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: {{ .Values.config.server.port }}
       protocol: TCP
+{{- end }}
