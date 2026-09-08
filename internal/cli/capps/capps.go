@@ -306,24 +306,8 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				req.CustomResources = buildCustomResources(cpuRequest, cpuLimit, memoryRequest, memoryLimit)
 			}
 
-			if cmd.Flags().Changed("hostname") || cmd.Flags().Changed("tls-enabled") || cmd.Flags().Changed("timeout-seconds") {
-				rs := apitypes.RouteSpec{}
-				if req.RouteSpec != nil {
-					rs = *req.RouteSpec
-				}
-				if cmd.Flags().Changed("hostname") {
-					rs.Hostname = routeHostname
-				}
-				if cmd.Flags().Changed("tls-enabled") {
-					rs.TLSEnabled = routeTLSEnabled
-				}
-				if cmd.Flags().Changed("timeout-seconds") {
-					rs.RouteTimeoutSeconds = int64Ptr(routeTimeoutSecs)
-				}
-				if rs.TLSEnabled && rs.Hostname == "" {
-					return fmt.Errorf("--hostname is required when --tls-enabled is set")
-				}
-				req.RouteSpec = &rs
+			if err := applyRouteFlags(cmd, &req, routeHostname, routeTLSEnabled, routeTimeoutSecs); err != nil {
+				return err
 			}
 
 			putPath := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
@@ -482,6 +466,31 @@ func int32Ptr(v int) *int32 {
 // int64Ptr returns a pointer to v, for optional route spec flags.
 func int64Ptr(v int64) *int64 {
 	return &v
+}
+
+// applyRouteFlags merges route-related CLI flags into the request when any are set.
+func applyRouteFlags(cmd *cobra.Command, req *apitypes.CappRequest, hostname string, tlsEnabled bool, timeoutSecs int64) error {
+	if !cmd.Flags().Changed("hostname") && !cmd.Flags().Changed("tls-enabled") && !cmd.Flags().Changed("timeout-seconds") {
+		return nil
+	}
+	rs := apitypes.RouteSpec{}
+	if req.RouteSpec != nil {
+		rs = *req.RouteSpec
+	}
+	if cmd.Flags().Changed("hostname") {
+		rs.Hostname = hostname
+	}
+	if cmd.Flags().Changed("tls-enabled") {
+		rs.TLSEnabled = tlsEnabled
+	}
+	if cmd.Flags().Changed("timeout-seconds") {
+		rs.RouteTimeoutSeconds = int64Ptr(timeoutSecs)
+	}
+	if rs.TLSEnabled && rs.Hostname == "" {
+		return fmt.Errorf("--hostname is required when --tls-enabled is set")
+	}
+	req.RouteSpec = &rs
+	return nil
 }
 
 // parseEnvPairs converts ["KEY=VALUE", ...] into []apitypes.EnvVar.

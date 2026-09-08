@@ -45,15 +45,16 @@ func BuildRestConfig(cfg config.ClusterConfig) (*rest.Config, error) {
 			BearerToken: inline.Token,
 		}
 
-		if inline.CACert != "" {
+		switch {
+		case inline.CACert != "":
 			caData, err := base64.StdEncoding.DecodeString(inline.CACert)
 			if err != nil {
 				return nil, fmt.Errorf("cluster %q: decoding base64 CA cert: %w", cfg.Name, err)
 			}
 			restCfg.TLSClientConfig = rest.TLSClientConfig{CAData: caData}
-		} else if inline.Insecure {
+		case inline.Insecure:
 			restCfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
-		} else {
+		default:
 			return nil, fmt.Errorf("cluster %q: inline credentials require either caCert or explicit insecure: true", cfg.Name)
 		}
 

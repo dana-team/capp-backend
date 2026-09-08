@@ -214,11 +214,11 @@ func TestClusterSuccess(t *testing.T) {
 	engine.Use(middleware.Cluster(mgr))
 	engine.GET("/clusters/:cluster/test", func(c *gin.Context) {
 		val, _ := c.Get(string(middleware.K8sClientKey))
-		gotUser = val.(client.Client)
+		gotUser, _ = val.(client.Client)
 		val, _ = c.Get(string(middleware.AdminK8sClientKey))
-		gotAdmin = val.(client.Client)
+		gotAdmin, _ = val.(client.Client)
 		val, _ = c.Get(string(middleware.ClusterMetaKey))
-		gotMeta = val.(cluster.ClusterMeta)
+		gotMeta, _ = val.(cluster.ClusterMeta)
 		c.Status(http.StatusOK)
 	})
 

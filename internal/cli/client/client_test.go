@@ -58,7 +58,7 @@ func TestPostSuccess(t *testing.T) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		var body map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, "myapp", body["name"])
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(body) //nolint:errcheck

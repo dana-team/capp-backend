@@ -115,7 +115,7 @@ func TestSyncValues(t *testing.T) {
 
 	written, err := os.ReadFile(filepath.Join(cloneDir, "sites", "test1", "production", "my-capp.yaml"))
 	require.NoError(t, err)
-	assert.Equal(t, valuesYAML, written)
+	assert.YAMLEq(t, string(valuesYAML), string(written))
 }
 
 func TestSyncValues_Overwrite(t *testing.T) {
@@ -214,7 +214,7 @@ func TestBuildAuth_TokenMissing(t *testing.T) {
 		AuthMethod: "token",
 		Token:      "",
 	})
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "token is required")
 }
 
@@ -222,6 +222,6 @@ func TestBuildAuth_UnsupportedMethod(t *testing.T) {
 	_, err := buildAuth(config.GitOpsConfig{
 		AuthMethod: "magic",
 	})
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported authMethod")
 }

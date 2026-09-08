@@ -24,11 +24,27 @@ const (
 	oAuthAuthorizeURLSuffix = "/oauth/authorize"
 )
 
+// extractTokenReview safely extracts the TokenReview from a reactor action.
+func extractTokenReview(action k8stesting.Action) *authv1.TokenReview {
+	ca, ok := action.(k8stesting.CreateAction)
+	if !ok {
+		return nil
+	}
+	review, ok := ca.GetObject().(*authv1.TokenReview)
+	if !ok {
+		return nil
+	}
+	return review
+}
+
 // tokenReviewReactor returns a reactor that responds to TokenReview create
 // calls with the given authentication result.
 func tokenReviewReactor(authenticated bool, username string, groups []string) k8stesting.ReactionFunc {
 	return func(action k8stesting.Action) (bool, runtime.Object, error) {
-		review := action.(k8stesting.CreateAction).GetObject().(*authv1.TokenReview)
+		review := extractTokenReview(action)
+		if review == nil {
+			return false, nil, nil
+		}
 		review.Status = authv1.TokenReviewStatus{
 			Authenticated: authenticated,
 			User: authv1.UserInfo{
@@ -119,7 +135,10 @@ func TestOpenShift_Authenticate_CacheHit(t *testing.T) {
 	callCount := 0
 	reactor := func(action k8stesting.Action) (bool, runtime.Object, error) {
 		callCount++
-		review := action.(k8stesting.CreateAction).GetObject().(*authv1.TokenReview)
+		review := extractTokenReview(action)
+		if review == nil {
+			return false, nil, nil
+		}
 		review.Status = authv1.TokenReviewStatus{
 			Authenticated: true,
 			User:          authv1.UserInfo{Username: "jane", Groups: []string{"devs"}},
@@ -151,7 +170,10 @@ func TestOpenShift_Authenticate_CacheExpired(t *testing.T) {
 	callCount := 0
 	reactor := func(action k8stesting.Action) (bool, runtime.Object, error) {
 		callCount++
-		review := action.(k8stesting.CreateAction).GetObject().(*authv1.TokenReview)
+		review := extractTokenReview(action)
+		if review == nil {
+			return false, nil, nil
+		}
 		review.Status = authv1.TokenReviewStatus{
 			Authenticated: true,
 			User:          authv1.UserInfo{Username: "jane", Groups: []string{"devs"}},
@@ -210,7 +232,7 @@ func TestOpenShift_OAuthExchange_InvalidCode(t *testing.T) {
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
 	_, err := mgr.OAuthExchange(context.Background(), "bad-code", "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
@@ -258,7 +280,7 @@ func TestOpenShift_PasswordLogin_Success(t *testing.T) {
 			return
 		}
 		user, pass, ok := r.BasicAuth()
-		require.True(t, ok)
+		assert.True(t, ok)
 		assert.Equal(t, "user", user)
 		assert.Equal(t, "pass", pass)
 		w.Header().Set("Location", srv.URL+"/oauth/token/implicit#access_token=access-tok&expires_in=3600&token_type=bearer")
@@ -383,7 +405,7 @@ func TestOpenShift_PasswordLogin_ServerErrorInRedirect(t *testing.T) {
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
 	_, err := mgr.PasswordLogin(context.Background(), "user", "pass")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrBadCredentials)
 }
 
@@ -490,7 +512,7 @@ func TestOpenShift_ValidateState_UnknownState(t *testing.T) {
 
 	mgr := newTestOpenShiftManager(t, srv, nil)
 	err := mgr.ValidateState("nonexistent-state")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
 
@@ -505,6 +527,6 @@ func TestOpenShift_ValidateState_Expired(t *testing.T) {
 	state := payload + "." + mgr.stateSignature(payload)
 
 	err := mgr.ValidateState(state)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnauthenticated)
 }

@@ -96,49 +96,16 @@ func (h *Handler) list(c *gin.Context) {
 	usersByNS := listUsersMap(c.Request.Context(), adminClient, h.logger)
 
 	var items []NamespaceItem
+	var err error
 
 	if meta.IsOpenShift {
-		// On OpenShift, the Projects API automatically returns only the projects
-		// the user has access to — no per-namespace SAR filtering needed.
-		projectList := &unstructured.UnstructuredList{}
-		projectList.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "project.openshift.io", Version: "v1", Kind: "ProjectList",
-		})
-		if err := userClient.List(c.Request.Context(), projectList, listOpts); err != nil {
-			apierrors.Respond(c, err)
-			return
-		}
-		items = make([]NamespaceItem, 0, len(projectList.Items))
-		for _, p := range projectList.Items {
-			phase, _, _ := unstructured.NestedString(p.Object, "status", "phase")
-			item := NamespaceItem{Name: p.GetName(), Status: phase}
-			item.Quota = quotaByNS[p.GetName()]
-			if users, ok := usersByNS[p.GetName()]; ok {
-				item.Users = &users
-			}
-			items = append(items, item)
-		}
+		items, err = listOpenShiftProjects(c.Request.Context(), userClient, listOpts, quotaByNS, usersByNS)
 	} else {
-		// On vanilla Kubernetes: admin client lists all CAPP-managed namespaces,
-		// then filter to only those the user can create Capps in.
-		var nsList corev1.NamespaceList
-		if err := adminClient.List(c.Request.Context(), &nsList, listOpts); err != nil {
-			apierrors.Respond(c, err)
-			return
-		}
-		items = make([]NamespaceItem, 0, len(nsList.Items))
-		for _, ns := range nsList.Items {
-			allowed, err := canCreateCapps(c.Request.Context(), userClient, ns.Name)
-			if err != nil || !allowed {
-				continue
-			}
-			item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase)}
-			item.Quota = quotaByNS[ns.Name]
-			if users, ok := usersByNS[ns.Name]; ok {
-				item.Users = &users
-			}
-			items = append(items, item)
-		}
+		items, err = listK8sNamespaces(c.Request.Context(), userClient, adminClient, listOpts, quotaByNS, usersByNS)
+	}
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
 	}
 
 	canCreate, _ := canCreateNamespaces(c.Request.Context(), userClient)
@@ -167,6 +134,56 @@ func canCreateCapps(ctx context.Context, userClient client.Client, namespace str
 		return false, err
 	}
 	return sar.Status.Allowed, nil
+}
+
+// listOpenShiftProjects lists namespaces via the OpenShift Projects API,
+// which automatically filters to projects the user has access to.
+func listOpenShiftProjects(
+	ctx context.Context, userClient client.Client, opts *client.ListOptions,
+	quotaByNS map[string]*QuotaInfo, usersByNS map[string][]string,
+) ([]NamespaceItem, error) {
+	projectList := &unstructured.UnstructuredList{}
+	projectList.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "project.openshift.io", Version: "v1", Kind: "ProjectList",
+	})
+	if err := userClient.List(ctx, projectList, opts); err != nil {
+		return nil, err
+	}
+	items := make([]NamespaceItem, 0, len(projectList.Items))
+	for _, p := range projectList.Items {
+		phase, _, _ := unstructured.NestedString(p.Object, "status", "phase")
+		item := NamespaceItem{Name: p.GetName(), Status: phase, Quota: quotaByNS[p.GetName()]}
+		if users, ok := usersByNS[p.GetName()]; ok {
+			item.Users = &users
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// listK8sNamespaces lists all CAPP-managed namespaces and filters to those
+// the user can create Capps in via SelfSubjectAccessReview.
+func listK8sNamespaces(
+	ctx context.Context, userClient, adminClient client.Client, opts *client.ListOptions,
+	quotaByNS map[string]*QuotaInfo, usersByNS map[string][]string,
+) ([]NamespaceItem, error) {
+	var nsList corev1.NamespaceList
+	if err := adminClient.List(ctx, &nsList, opts); err != nil {
+		return nil, err
+	}
+	items := make([]NamespaceItem, 0, len(nsList.Items))
+	for _, ns := range nsList.Items {
+		allowed, err := canCreateCapps(ctx, userClient, ns.Name)
+		if err != nil || !allowed {
+			continue
+		}
+		item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quotaByNS[ns.Name]}
+		if users, ok := usersByNS[ns.Name]; ok {
+			item.Users = &users
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 // get handles GET /api/v1/clusters/:cluster/namespaces/:namespace.
@@ -220,7 +237,6 @@ func (h *Handler) get(c *gin.Context) {
 	canEdit, _ := canCreateNamespaces(c.Request.Context(), userClient)
 	item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quota, Users: &users, CanEdit: canEdit}
 	c.JSON(http.StatusOK, item)
-
 }
 
 // create handles POST /api/v1/clusters/:cluster/namespaces.
@@ -358,7 +374,6 @@ func updateNamespaceRoleBinding(ctx context.Context, adminClient client.Client, 
 // Authorization: any user who can create Capps in the target namespace is
 // allowed to add other users (namespace-scoped access), not just cluster admins.
 func (h *Handler) patch(c *gin.Context) {
-
 	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
@@ -496,7 +511,6 @@ func createNamespace(ctx context.Context, adminClient client.Client, request Cre
 func createNSResources(ctx context.Context, users []string, quota resourceQuota, ns *corev1.Namespace, adminClient client.Client) error {
 	// Create quota before RB so that if it fails, users don't get permissions to an unlimited namespace.
 	if quota.CPU != "" || quota.Memory != "" || quota.Pods != 0 {
-
 		quota, err := generateResourceQuota(quota, ns)
 		if err != nil {
 			return err

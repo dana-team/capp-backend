@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +17,7 @@ func TestPassthrough_Authenticate_MissingHeader(t *testing.T) {
 	m := newPassthroughManager()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	_, err := m.Authenticate(context.Background(), "prod", r)
-	assert.True(t, errors.Is(err, ErrUnauthenticated))
+	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
 
 func TestPassthrough_Authenticate_MalformedHeader(t *testing.T) {
@@ -26,7 +25,7 @@ func TestPassthrough_Authenticate_MalformedHeader(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 	_, err := m.Authenticate(context.Background(), "prod", r)
-	assert.True(t, errors.Is(err, ErrUnauthenticated))
+	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
 
 func TestPassthrough_Authenticate_EmptyToken(t *testing.T) {
@@ -34,7 +33,7 @@ func TestPassthrough_Authenticate_EmptyToken(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Authorization", "Bearer ")
 	_, err := m.Authenticate(context.Background(), "prod", r)
-	assert.True(t, errors.Is(err, ErrUnauthenticated))
+	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
 
 func TestPassthrough_Authenticate_Valid(t *testing.T) {
@@ -49,13 +48,13 @@ func TestPassthrough_Authenticate_Valid(t *testing.T) {
 func TestPassthrough_Login_NotSupported(t *testing.T) {
 	m := newPassthroughManager()
 	_, err := m.Login(context.Background(), "prod", "tok")
-	assert.True(t, errors.Is(err, ErrNotSupported))
+	assert.ErrorIs(t, err, ErrNotSupported)
 }
 
 func TestPassthrough_Refresh_NotSupported(t *testing.T) {
 	m := newPassthroughManager()
 	_, err := m.Refresh(context.Background(), "tok")
-	assert.True(t, errors.Is(err, ErrNotSupported))
+	assert.ErrorIs(t, err, ErrNotSupported)
 }
 
 // ── Factory tests ─────────────────────────────────────────────────────────────

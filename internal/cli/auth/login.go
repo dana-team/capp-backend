@@ -192,9 +192,9 @@ func openBrowser(rawURL string) bool {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
-		cmd = exec.Command("xdg-open", rawURL)
+		cmd = exec.CommandContext(context.Background(), "xdg-open", rawURL)
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+		cmd = exec.CommandContext(context.Background(), "rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
 		return false
 	}

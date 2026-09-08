@@ -6,19 +6,29 @@ linters:
   enable:
     - copyloopvar
     - dupl
+    - dupword
     - errcheck
+    - errorlint
+    - forcetypeassert
     - goconst
+    - gocritic
     - gocyclo
     - govet
     - ineffassign
+    - intrange
     - misspell
     - nakedret
+    - nestif
+    - noctx
     - staticcheck
     - prealloc
     - revive
+    - testifylint
     - unconvert
     - unparam
     - unused
+    - usetesting
+    - whitespace
   settings:
     revive:
       rules:
@@ -35,6 +45,12 @@ linters:
       - linters:
             - dupl
         path: test/*
+      - linters:
+          - noctx
+        path: _test\.go$
+      - linters:
+          - noctx
+        path: internal/testutil/
     paths:
       - third_party$
       - builtin$

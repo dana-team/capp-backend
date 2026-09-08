@@ -5,6 +5,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -228,7 +229,7 @@ func (c *Client) pullCtx(ctx context.Context) error {
 		SingleBranch:  true,
 		Force:         true,
 	})
-	if err != nil && err != git.NoErrAlreadyUpToDate {
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return wrapSSHError(err)
 	}
 
