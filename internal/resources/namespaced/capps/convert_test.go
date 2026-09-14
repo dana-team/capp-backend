@@ -85,7 +85,7 @@ func TestToK8s_WithRoute(t *testing.T) {
 
 func TestToK8s_WithLogSpec(t *testing.T) {
 	req := minimalRequest()
-	req.LogSpec = &LogSpec{Type: "elastic", Host: "es.example.com", Index: "logs", User: "admin", PasswordSecret: "pw-secret", PasswordKey: "password"}
+	req.LogSpec = &LogSpec{Type: "elastic", Host: "es.example.com", Target: "logs", User: "admin", PasswordSecret: "pw-secret", PasswordKey: "password"}
 	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
 	require.NoError(t, err)
 	assert.Equal(t, cappv1alpha1.LogType("elastic"), capp.Spec.LogSpec.Type)
