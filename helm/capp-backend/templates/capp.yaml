@@ -105,8 +105,9 @@ spec:
   logSpec:
     type: {{ .Values.capp.log.type | quote }}
     host: {{ .Values.capp.log.host | quote }}
-    index: {{ .Values.capp.log.index | quote }}
+    target: {{ .Values.capp.log.target | quote }}
     user: {{ .Values.capp.log.user | quote }}
     passwordSecret: {{ .Values.capp.log.passwordSecret | quote }}
+    passwordKey: {{ .Values.capp.log.passwordKey | quote }}
   {{- end }}
 {{- end }}
