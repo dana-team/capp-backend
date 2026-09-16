@@ -231,6 +231,7 @@ func (c *Client) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappNa
 	return hash.String(), nil
 }
 
+
 // pullCtx fetches and fast-forwards the local branch to match the remote.
 // It respects the provided context for cancellation and timeouts.
 func (c *Client) pullCtx(ctx context.Context) error {
