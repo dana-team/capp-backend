@@ -128,7 +128,7 @@ func (ConfigMapToolSet) Register(s *mcp.Server, be *Backend) {
 			return nil, configMapDeleteOutput{}, err
 		}
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/configmaps/%s", in.Cluster, in.Namespace, in.Name)
-		if err := c.Delete(ctx, path); err != nil {
+		if err := c.Delete(ctx, path, nil); err != nil {
 			return nil, configMapDeleteOutput{}, err
 		}
 		return nil, configMapDeleteOutput{Deleted: true, Cluster: in.Cluster, Namespace: in.Namespace, Name: in.Name}, nil

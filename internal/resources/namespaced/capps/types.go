@@ -278,6 +278,19 @@ type CappResponse struct {
 	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
 
 	Status CappStatusResponse `json:"status"`
+
+	// Warnings reports side effects that failed while the requested cluster operation succeeded. for example, capp gitops backup operation failure.
+	Warnings []Warning `json:"warnings,omitempty"`
+}
+
+// Warning is a non-fatal problem attached to a successful response.
+type Warning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type DeleteResponse struct {
+	Warnings []Warning `json:"warnings,omitempty"`
 }
 
 // CappListResponse is the envelope returned by the list endpoints.

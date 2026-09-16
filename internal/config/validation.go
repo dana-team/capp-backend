@@ -169,6 +169,13 @@ func validateGitOps(g *GitOpsConfig) []error {
 		))
 	}
 
+	if g.TimeoutSeconds <= 0 {
+		errs = append(errs, fmt.Errorf(
+			"config: gitops.timeoutSeconds must be greater than 0, got %d",
+			g.TimeoutSeconds,
+		))
+	}
+
 	if _, ok := validGitOpsAuthMethods[g.AuthMethod]; !ok {
 		errs = append(errs, fmt.Errorf(
 			"config: gitops.authMethod %q is not valid; must be one of: token, ssh",

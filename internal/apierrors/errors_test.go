@@ -110,6 +110,15 @@ func TestNewNotSupported(t *testing.T) {
 	assert.Equal(t, http.StatusNotImplemented, e.Status)
 }
 
+func TestNewGitopsFailed(t *testing.T) {
+	cause := errors.New("push rejected: https://git.example.com/org/repo.git")
+	e := NewGitopsFailed(cause)
+	assert.Equal(t, CodeGitopsFailed, e.Code)
+	assert.Equal(t, http.StatusBadGateway, e.Status)
+	require.ErrorIs(t, e, cause)
+	assert.NotContains(t, e.Message, "git.example.com", "cause must not leak to clients")
+}
+
 func TestAPIError_ErrorString(t *testing.T) {
 	e := NewNotFound("capp", "foo")
 	assert.Contains(t, e.Error(), CodeNotFound)

@@ -51,6 +51,9 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 
 	// Copy unmanaged fields from the existing object to preserve them across updates.
 	if existing != nil {
+		capp.ObjectMeta = *existing.ObjectMeta.DeepCopy()
+		capp.Name = req.Name
+		capp.Namespace = namespace
 		capp.Spec = *existing.Spec.DeepCopy()
 	}
 

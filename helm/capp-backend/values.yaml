@@ -138,6 +138,7 @@ config:
     sshKeyPath: "/etc/capp/ssh/id_rsa"  # path to SSH key file when authMethod is "ssh"
     insecureHostKey: false # skip SSH host key verification (required in containers without known_hosts)
     pathPrefix: "sites"   # directory prefix: <pathPrefix>/<gitOpsPath>/<ns>/<capp>.yaml
+    timeoutSeconds: 20    # timeout for each git sync/delete operation
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # These values are placed in a Kubernetes Secret and injected as environment
