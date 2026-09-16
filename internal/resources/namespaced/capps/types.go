@@ -77,10 +77,9 @@ type RouteSpec struct {
 // LogSpec configures log shipping for a Capp.
 type LogSpec struct {
 	// Type is one of "elastic" or "elastic-datastream".
-	// When type is "elastic-datastream", Index is ignored.
 	Type           string `json:"type"`
 	Host           string `json:"host"`
-	Index          string `json:"index,omitempty"`
+	Target         string `json:"target"`
 	User           string `json:"user"`
 	PasswordSecret string `json:"passwordSecret"`
 	PasswordKey    string `json:"passwordKey"`

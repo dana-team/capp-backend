@@ -187,9 +187,10 @@ capp:
     enabled: false
     type: "elastic"
     host: ""
-    index: ""
+    target: ""
     user: ""
     passwordSecret: ""
+    passwordKey: "password"
 
 # ── Resource requests/limits ──────────────────────────────────────────────────
 resources:

@@ -86,7 +86,7 @@ func TestGenerateValues_FullCapp(t *testing.T) {
 			LogSpec: cappv1alpha1.LogSpec{
 				Type:           "elastic",
 				Host:           "es.example.com",
-				Index:          "app-logs",
+				Target:         "app-logs",
 				User:           "logger",
 				PasswordSecret: "es-secret",
 			},
@@ -132,7 +132,7 @@ func TestGenerateValues_FullCapp(t *testing.T) {
 
 	assert.Equal(t, cappv1alpha1.LogType("elastic"), vals.Spec.LogSpec.Type)
 	assert.Equal(t, "es.example.com", vals.Spec.LogSpec.Host)
-	assert.Equal(t, "app-logs", vals.Spec.LogSpec.Index)
+	assert.Equal(t, "app-logs", vals.Spec.LogSpec.Target)
 
 	require.Len(t, vals.Spec.VolumesSpec.NFSVolumes, 1)
 	nfs := vals.Spec.VolumesSpec.NFSVolumes[0]

@@ -39,7 +39,7 @@ func fullCappRequest() CappRequest {
 		},
 		VolumeMounts:     []VolumeMount{{Name: "data", MountPath: "/data"}},
 		RouteSpec:        &RouteSpec{Hostname: "app.example.com", TLSEnabled: true, RouteTimeoutSeconds: &timeout},
-		LogSpec:          &LogSpec{Type: "elastic", Host: "es:9200", Index: "logs", User: "admin", PasswordSecret: "pw", PasswordKey: "password"},
+		LogSpec:          &LogSpec{Type: "elastic", Host: "es.example.com", Target: "logs", User: "admin", PasswordSecret: "pw", PasswordKey: "password"},
 		NFSVolumes:       []NFSVolume{{Name: "nfs1", Server: "nfs.local", Path: "/export", Capacity: "10Gi"}},
 		SecretVolumes:    []SecretVolume{{Name: "sec-vol", SecretName: "my-secret", MountPath: "/secrets"}},
 		ConfigMapVolumes: []ConfigMapVolume{{Name: "cm-vol", ConfigMapName: "my-cm", MountPath: "/config"}},
@@ -96,7 +96,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.RouteSpec.RouteTimeoutSeconds, capp.Spec.RouteSpec.RouteTimeoutSeconds, "RouteSpec.RouteTimeoutSeconds not written by ToK8s")
 		assert.Equal(t, req.LogSpec.Type, string(capp.Spec.LogSpec.Type), "LogSpec.Type not written by ToK8s")
 		assert.Equal(t, req.LogSpec.Host, capp.Spec.LogSpec.Host, "LogSpec.Host not written by ToK8s")
-		assert.Equal(t, req.LogSpec.Index, capp.Spec.LogSpec.Index, "LogSpec.Index not written by ToK8s")
+		assert.Equal(t, req.LogSpec.Target, capp.Spec.LogSpec.Target, "LogSpec.Target not written by ToK8s")
 		assert.Equal(t, req.LogSpec.User, capp.Spec.LogSpec.User, "LogSpec.User not written by ToK8s")
 		assert.Equal(t, req.LogSpec.PasswordSecret, capp.Spec.LogSpec.PasswordSecret, "LogSpec.PasswordSecret not written by ToK8s")
 		assert.Equal(t, req.LogSpec.PasswordKey, capp.Spec.LogSpec.PasswordKey, "LogSpec.PasswordKey not written by ToK8s")
@@ -125,7 +125,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.RouteSpec.RouteTimeoutSeconds, resp.RouteSpec.RouteTimeoutSeconds, "RouteSpec.RouteTimeoutSeconds not read by FromK8s")
 		assert.Equal(t, req.LogSpec.Type, resp.LogSpec.Type, "LogSpec.Type not read by FromK8s")
 		assert.Equal(t, req.LogSpec.Host, resp.LogSpec.Host, "LogSpec.Host not read by FromK8s")
-		assert.Equal(t, req.LogSpec.Index, resp.LogSpec.Index, "LogSpec.Index not read by FromK8s")
+		assert.Equal(t, req.LogSpec.Target, resp.LogSpec.Target, "LogSpec.Target not read by FromK8s")
 		assert.Equal(t, req.LogSpec.User, resp.LogSpec.User, "LogSpec.User not read by FromK8s")
 		assert.Equal(t, req.LogSpec.PasswordSecret, resp.LogSpec.PasswordSecret, "LogSpec.PasswordSecret not read by FromK8s")
 		assert.Equal(t, req.LogSpec.PasswordKey, resp.LogSpec.PasswordKey, "LogSpec.PasswordKey not read by FromK8s")
@@ -193,7 +193,7 @@ func TestCappSpecFieldsHandled(t *testing.T) {
 			name: "LogSpec",
 			typ:  reflect.TypeOf(cappv1alpha1.LogSpec{}),
 			handled: map[string]string{
-				"Type": "", "Host": "", "Index": "", "User": "", "PasswordSecret": "", "PasswordKey": "",
+				"Type": "", "Host": "", "Target": "", "User": "", "PasswordSecret": "", "PasswordKey": "",
 			},
 		},
 		{

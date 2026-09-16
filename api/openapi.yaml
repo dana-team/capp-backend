@@ -592,14 +592,17 @@ components:
         type:
           type: string
           enum: [elastic, elastic-datastream]
-          description: Log destination type. When "elastic-datastream", the index field is ignored.
+          description: Log destination type.
           example: elastic
         host:
           type: string
-          example: https://elasticsearch.example.com:9200
-        index:
+          description: Hostname of the logs destination, without scheme, port or path.
+          example: elasticsearch.example.com
+        target:
           type: string
-          description: Index name to write events to. Ignored when type is "elastic-datastream".
+          description: |
+            Index name to write events to when type is "elastic",
+            or the data stream name when type is "elastic-datastream".
           example: capp-logs
         user:
           type: string

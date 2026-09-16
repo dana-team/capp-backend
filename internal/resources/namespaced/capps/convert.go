@@ -172,7 +172,7 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 		capp.Spec.LogSpec = cappv1alpha1.LogSpec{
 			Type:           cappv1alpha1.LogType(req.LogSpec.Type),
 			Host:           req.LogSpec.Host,
-			Index:          req.LogSpec.Index,
+			Target:         req.LogSpec.Target,
 			User:           req.LogSpec.User,
 			PasswordSecret: req.LogSpec.PasswordSecret,
 			PasswordKey:    req.LogSpec.PasswordKey,
@@ -521,7 +521,7 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 		resp.LogSpec = &LogSpec{
 			Type:           string(ls.Type),
 			Host:           ls.Host,
-			Index:          ls.Index,
+			Target:         ls.Target,
 			User:           ls.User,
 			PasswordSecret: ls.PasswordSecret,
 			PasswordKey:    ls.PasswordKey,
