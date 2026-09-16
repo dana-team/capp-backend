@@ -217,7 +217,7 @@ type ResourcesConfig struct {
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
 type GitOpsConfig struct {
-	// Enabled toggles the /sync endpoint on Capps. Default: false.
+	// Enabled toggles the /sync endpoints and auto-sync on Capps. Default: false.
 	Enabled bool `mapstructure:"enabled"`
 
 	// RepoURL is the git repository where values files are pushed.
@@ -248,6 +248,9 @@ type GitOpsConfig struct {
 	// repository: <pathPrefix>/<siteName>/<namespace>/<cappName>.yaml
 	// Default: "sites".
 	PathPrefix string `mapstructure:"pathPrefix"`
+
+	// TimeoutSeconds bounds each git sync/delete operation. Default: 20.
+	TimeoutSeconds int `mapstructure:"timeoutSeconds"`
 }
 
 type ResourceQuantities struct {
@@ -367,6 +370,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gitops.branch", "main")
 	v.SetDefault("gitops.authMethod", "token")
 	v.SetDefault("gitops.pathPrefix", "sites")
+	v.SetDefault("gitops.timeoutSeconds", 20)
 
 	// Capp t-shirt sizes
 	v.SetDefault("cappSizes.small.requests.cpu", "250m")

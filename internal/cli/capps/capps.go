@@ -369,7 +369,7 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 			}
 
 			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
-			if err := h.state.Client.Delete(cmd.Context(), path); err != nil {
+			if err := h.state.Client.Delete(cmd.Context(), path, nil); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Capp %q deleted.\n", cappName) //nolint:errcheck
@@ -382,17 +382,19 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 	cmd.ValidArgsFunction = h.completeCappNames
 }
 
-// syncResult is the response returned by the sync endpoint.
 type syncResult struct {
+	Enabled   bool   `json:"enabled"`
 	CommitSHA string `json:"commitSha,omitempty"`
 	Path      string `json:"path,omitempty"`
 }
 
 func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
+	var disable, skipConfirm bool
+
 	cmd := &cobra.Command{
 		Use:     "capps <name>",
 		Aliases: []string{"capp", "ca"},
-		Short:   "Sync a Capp to the GitOps repository",
+		Short:   "Enable or disable Git sync for a Capp",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cluster := h.state.Cluster
@@ -405,9 +407,25 @@ func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 			}
 			cappName := args[0]
 
+			if disable && !skipConfirm {
+				fmt.Fprintf(cmd.OutOrStdout(), "Disable Git sync for Capp %q? [y/N] ", cappName) //nolint:errcheck
+				var answer string
+				fmt.Fscan(cmd.InOrStdin(), &answer) //nolint:errcheck
+				if answer != "y" && answer != "Y" {
+					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.") //nolint:errcheck
+					return nil
+				}
+			}
+
 			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", cluster, ns, cappName)
 			var result syncResult
-			if err := h.state.Client.Post(cmd.Context(), path, nil, &result); err != nil {
+			var err error
+			if disable {
+				err = h.state.Client.Delete(cmd.Context(), path, &result)
+			} else {
+				err = h.state.Client.Post(cmd.Context(), path, nil, &result)
+			}
+			if err != nil {
 				return err
 			}
 
@@ -417,12 +435,20 @@ func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 			case "yaml":
 				return output.PrintYAML(cmd.OutOrStdout(), result)
 			default:
-				fmt.Fprintf(cmd.OutOrStdout(), "Synced %q to git (commit: %s, path: %s)\n", cappName, result.CommitSHA, result.Path) //nolint:errcheck
+				if disable {
+					fmt.Fprintf(cmd.OutOrStdout(), "Git sync disabled for %q\n", cappName) //nolint:errcheck
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Synced %q to git (commit: %s, path: %s)\n", cappName, result.CommitSHA, result.Path) //nolint:errcheck
+				}
 			}
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&disable, "disable", false, "disable Git sync")
+	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
 	parent.AddCommand(cmd)
+	cmd.ValidArgsFunction = h.completeCappNames
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -58,10 +58,11 @@ func validOpenShiftConfig() OpenShiftConfig {
 
 func validGitOpsConfig() GitOpsConfig {
 	return GitOpsConfig{
-		Enabled:    true,
-		RepoURL:    "https://github.com/org/repo.git",
-		AuthMethod: "token",
-		Token:      "tok",
+		Enabled:        true,
+		RepoURL:        "https://github.com/org/repo.git",
+		AuthMethod:     "token",
+		Token:          "tok",
+		TimeoutSeconds: 20,
 	}
 }
 
@@ -310,6 +311,12 @@ func TestLoad_PathPrefixDefault(t *testing.T) {
 	assert.Equal(t, "sites", cfg.GitOps.PathPrefix)
 }
 
+func TestLoad_GitOpsTimeoutDefault(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 20, cfg.GitOps.TimeoutSeconds)
+}
+
 func TestValidate_GitOps(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -324,7 +331,7 @@ func TestValidate_GitOps(t *testing.T) {
 		{
 			name: "missing repoURL",
 			gitops: GitOpsConfig{
-				Enabled: true, AuthMethod: "token", Token: "tok",
+				Enabled: true, AuthMethod: "token", Token: "tok", TimeoutSeconds: 20,
 			},
 			wantErr:    true,
 			errContain: "gitops.repoURL is required",
@@ -333,10 +340,19 @@ func TestValidate_GitOps(t *testing.T) {
 			name: "missing token",
 			gitops: GitOpsConfig{
 				Enabled: true, RepoURL: "https://github.com/org/repo.git",
-				AuthMethod: "token",
+				AuthMethod: "token", TimeoutSeconds: 20,
 			},
 			wantErr:    true,
 			errContain: "gitops.token is required",
+		},
+		{
+			name: "non-positive timeout",
+			gitops: GitOpsConfig{
+				Enabled: true, RepoURL: "https://github.com/org/repo.git",
+				AuthMethod: "token", Token: "tok",
+			},
+			wantErr:    true,
+			errContain: "gitops.timeoutSeconds must be greater than 0",
 		},
 	}
 	for _, tt := range tests {

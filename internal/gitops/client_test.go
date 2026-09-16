@@ -60,6 +60,7 @@ func initBareRepo(t *testing.T) (*Client, string) {
 
 	logger, _ := zap.NewDevelopment()
 	c := NewClientFromRepo(clone, nil, "master", "sites", logger)
+	c.timeout = 30 * time.Second
 
 	return c, cloneDir
 }
@@ -134,6 +135,36 @@ func TestSyncValues_Overwrite(t *testing.T) {
 	written, err := os.ReadFile(filepath.Join(cloneDir, "sites", "test2", "ns", "app.yaml"))
 	require.NoError(t, err)
 	assert.Equal(t, v2, written)
+}
+
+func TestSyncValues_Unchanged(t *testing.T) {
+	c, _ := initBareRepo(t)
+	ctx := context.Background()
+
+	valuesYAML := []byte("image: nginx:1.25\n")
+	first, err := c.SyncValues(ctx, "test1", "ns", "app", valuesYAML)
+	require.NoError(t, err)
+
+	second, err := c.SyncValues(ctx, "test1", "ns", "app", valuesYAML)
+	require.NoError(t, err, "re-syncing identical values must not fail with an empty commit")
+	assert.Equal(t, first, second, "no new commit should be created")
+
+	iter, err := c.repo.Log(&git.LogOptions{})
+	require.NoError(t, err)
+	count := 0
+	require.NoError(t, iter.ForEach(func(*object.Commit) error {
+		count++
+		return nil
+	}))
+	assert.Equal(t, 2, count, "expected initial commit plus a single sync commit")
+}
+
+func TestSyncValues_Timeout(t *testing.T) {
+	c, _ := initBareRepo(t)
+	c.timeout = time.Nanosecond
+
+	_, err := c.SyncValues(context.Background(), "test1", "ns", "app", []byte("image: nginx\n"))
+	require.Error(t, err)
 }
 
 func TestDeleteValues(t *testing.T) {

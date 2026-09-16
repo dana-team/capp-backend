@@ -430,6 +430,33 @@ cappctl delete capps my-app --cluster prod --namespace my-team
 cappctl delete capps my-app --cluster prod --namespace my-team -y
 ```
 
+If Git sync is enabled for the Capp, its values file is also deleted from the GitOps repository.
+
+### Sync
+
+```
+cappctl sync capps <name> [flags]
+```
+
+Enables Git sync for a Capp, or re-syncs it. While enabled, updates made through capp-backend are committed to the GitOps repository.
+
+**Flags:**
+
+| Flag        | Short | Description                                   |
+|-------------|-------|-----------------------------------------------|
+| `--disable` |       | Disable Git sync and delete the values file   |
+| `--yes`     | `-y`  | Skip confirmation prompt (with `--disable`)   |
+
+**Example:**
+
+```bash
+cappctl sync capps my-app --cluster prod --namespace my-team
+# → Synced "my-app" to git (commit: a1b2c3d, path: sites/prod/my-team/my-app.yaml)
+
+cappctl sync capps my-app --cluster prod --namespace my-team --disable -y
+# → Git sync disabled for "my-app"
+```
+
 ---
 
 ## Insecure TLS

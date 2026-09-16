@@ -49,7 +49,8 @@ POST   /api/v1/clusters/:cluster/namespaces            (auth + cluster) — crea
 
 GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list all capps across namespaces
        /api/v1/clusters/:cluster/namespaces/:namespace/capps[/:name]         (CRUD)
-POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — trigger Capp sync; returns 501 if syncer not configured
+POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — enable Git sync / re-sync; returns 501 if gitops feature is disabled in backend
+DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — disable Git sync (deletes values file); returns 501 if gitops feature is disabled in backend
        /api/v1/clusters/:cluster/namespaces/:namespace/configmaps[/:name]    (CRUD)
        /api/v1/clusters/:cluster/namespaces/:namespace/secrets[/:name]       (CRUD)
 GET    /api/v1/clusters/:cluster/configmaps            (auth + cluster) — list all configmaps across namespaces (dana.io/capp-managed=true only)
@@ -125,7 +126,7 @@ cappctl get      capps [name]
 cappctl create   capps
 cappctl update   capps <name>
 cappctl delete   capps <name>
-cappctl sync     capps <name>
+cappctl sync     capps <name> [--disable]
 ```
 
 **Global flags:** `--server`, `--token`, `--cluster`, `--namespace`, `--context`, `--output` (table|wide|json|yaml), `--insecure`
