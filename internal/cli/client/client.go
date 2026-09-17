@@ -91,9 +91,9 @@ func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPatch, path, body, out)
 }
 
-// Delete sends a DELETE to path. A 204 No Content response is success.
-func (c *Client) Delete(ctx context.Context, path string) error {
-	return c.do(ctx, http.MethodDelete, path, nil, nil)
+// Delete sends a DELETE to path, decoding the response into out (nil to discard it).
+func (c *Client) Delete(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodDelete, path, nil, out)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {

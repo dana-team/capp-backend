@@ -110,7 +110,7 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "capp_update",
-		Description: "Replace an existing Capp's spec. This is a full replacement of everything capp_get returns as editable fields, not a partial patch — fields you omit are cleared, not left as-is. Call capp_get first and send back the full desired state.",
+		Description: "Replace an existing Capp's spec. This is a full replacement of everything capp_get returns as editable fields, not a partial patch — fields you omit are cleared, not left as-is. Call capp_get first and send back the full desired state. If Git sync is enabled, the change is also committed to git.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappUpdateInput) (*mcp.CallToolResult, capps.CappResponse, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -126,14 +126,14 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "capp_delete",
-		Description: "Delete a Capp. This is irreversible.",
+		Description: "Delete a Capp. This is irreversible. If Git sync is enabled, its values file is also deleted.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappDeleteInput) (*mcp.CallToolResult, cappDeleteOutput, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
 			return nil, cappDeleteOutput{}, err
 		}
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", in.Cluster, in.Namespace, in.Name)
-		if err := c.Delete(ctx, path); err != nil {
+		if err := c.Delete(ctx, path, nil); err != nil {
 			return nil, cappDeleteOutput{}, err
 		}
 		return nil, cappDeleteOutput{Deleted: true, Cluster: in.Cluster, Namespace: in.Namespace, Name: in.Name}, nil
@@ -141,7 +141,7 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "capp_sync",
-		Description: "Push the Capp's current Helm values to the GitOps repository and mark it backed-up-to-git. Returns a not-supported error if GitOps is disabled on this capp-backend deployment.",
+		Description: "Enable Git sync for a Capp (or re-sync it). Updates are then committed to the GitOps repository automatically.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappSyncInput) (*mcp.CallToolResult, capps.SyncResponse, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -150,6 +150,22 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", in.Cluster, in.Namespace, in.Name)
 		var out capps.SyncResponse
 		if err := c.Post(ctx, path, nil, &out); err != nil {
+			return nil, capps.SyncResponse{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "capp_sync_disable",
+		Description: "Disable Git sync for a Capp. Deletes its values file from the GitOps repository.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappSyncInput) (*mcp.CallToolResult, capps.SyncResponse, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, capps.SyncResponse{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", in.Cluster, in.Namespace, in.Name)
+		var out capps.SyncResponse
+		if err := c.Delete(ctx, path, &out); err != nil {
 			return nil, capps.SyncResponse{}, err
 		}
 		return nil, out, nil
