@@ -112,7 +112,7 @@ func (c *Client) BuildRelPath(gitOpsPath, namespace, cappName string) string {
 }
 
 // SyncValues writes a per-capp values file to the GitOps repository.
-func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
+func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte, requestedBy string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -152,7 +152,7 @@ func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName
 		return "", fmt.Errorf("stage %s: %w", relPath, err)
 	}
 
-	msg := fmt.Sprintf("sync %s/%s/%s.yaml", gitOpsPath, namespace, cappName)
+	msg := formatCommitMsg("sync", gitOpsPath, namespace, cappName, requestedBy)
 	hash, err := wt.Commit(msg, &git.CommitOptions{
 		Author: commitAuthor(),
 	})
@@ -176,7 +176,7 @@ func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName
 // DeleteValues removes a per-capp values file from the GitOps repository,
 // commits the removal, and pushes. If the file does not exist the call is a
 // no-op and returns ("", nil).
-func (c *Client) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error) {
+func (c *Client) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName, requestedBy string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -210,7 +210,7 @@ func (c *Client) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappNa
 		return "", fmt.Errorf("stage removal %s: %w", relPath, err)
 	}
 
-	msg := fmt.Sprintf("remove %s/%s/%s.yaml", gitOpsPath, namespace, cappName)
+	msg := formatCommitMsg("remove", gitOpsPath, namespace, cappName, requestedBy)
 	hash, err := wt.Commit(msg, &git.CommitOptions{
 		Author: commitAuthor(),
 	})
@@ -292,6 +292,14 @@ func (c *Client) pushCtx(ctx context.Context) error {
 		},
 		Auth: c.auth,
 	}))
+}
+
+func formatCommitMsg(operation, gitOpsPath, namespace, cappName, requestedBy string) string {
+	msg := fmt.Sprintf("%s %s/%s/%s.yaml", operation, gitOpsPath, namespace, cappName)
+	if requestedBy != "" {
+		msg += "\n\nRequested-by: " + requestedBy
+	}
+	return msg
 }
 
 func commitAuthor() *object.Signature {
