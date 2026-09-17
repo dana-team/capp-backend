@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
@@ -20,8 +21,8 @@ import (
 // GitOpsSyncer is the subset of the gitops.Client interface that the
 // sync handler needs. Using an interface allows unit testing with fakes.
 type GitOpsSyncer interface {
-	SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error)
-	DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error)
+	SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte, requestedBy string) (string, error)
+	DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName, requestedBy string) (string, error)
 	BuildRelPath(gitOpsPath, namespace, cappName string) string
 }
 
@@ -192,7 +193,7 @@ func (h *Handler) update(c *gin.Context) {
 			apierrors.Respond(c, apierrors.NewInternal(err))
 			return
 		}
-		if _, err := h.syncCappValues(ctx, meta, updated); err != nil {
+		if _, err := h.syncCappValues(ctx, meta, updated, actingUser(c)); err != nil {
 			apierrors.Respond(c, apierrors.NewGitOpsSyncFailed(err))
 			return
 		}
@@ -232,7 +233,7 @@ func (h *Handler) delete(c *gin.Context) {
 			apierrors.Respond(c, apierrors.NewInternal(err))
 			return
 		}
-		if _, err := h.gitops.DeleteValues(ctx, meta.Name, namespace, name); err != nil {
+		if _, err := h.gitops.DeleteValues(ctx, meta.Name, namespace, name, actingUser(c)); err != nil {
 			apierrors.Respond(c, apierrors.NewGitOpsSyncFailed(err))
 			return
 		}
@@ -309,9 +310,9 @@ func (h *Handler) setGitSync(c *gin.Context, enable bool) {
 
 	var commitSHA string
 	if enable {
-		commitSHA, err = h.syncCappValues(ctx, meta, &capp)
+		commitSHA, err = h.syncCappValues(ctx, meta, &capp, actingUser(c))
 	} else {
-		commitSHA, err = h.gitops.DeleteValues(ctx, meta.Name, namespace, name)
+		commitSHA, err = h.gitops.DeleteValues(ctx, meta.Name, namespace, name, actingUser(c))
 	}
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewGitOpsSyncFailed(err))
@@ -335,12 +336,19 @@ func (h *Handler) isGitSyncEnabledForCapp(capp *cappv1alpha1.Capp) bool {
 	return h.isGitOpsConfigured() && k8s.HasBackupLabel(capp.Labels)
 }
 
-func (h *Handler) syncCappValues(ctx context.Context, meta cluster.ClusterMeta, capp *cappv1alpha1.Capp) (string, error) {
+func (h *Handler) syncCappValues(ctx context.Context, meta cluster.ClusterMeta, capp *cappv1alpha1.Capp, requestedBy string) (string, error) {
 	valuesYAML, err := GenerateValues(capp)
 	if err != nil {
 		return "", fmt.Errorf("generate values: %w", err)
 	}
-	return h.gitops.SyncValues(ctx, meta.Name, capp.Namespace, capp.Name, valuesYAML)
+	return h.gitops.SyncValues(ctx, meta.Name, capp.Namespace, capp.Name, valuesYAML, requestedBy)
+}
+
+// actingUser returns the acting username. Only known in openshift auth mode.
+func actingUser(c *gin.Context) string {
+	val, _ := c.Get(string(middleware.CredentialKey))
+	cred, _ := val.(auth.ClusterCredential)
+	return cred.ImpersonateUser
 }
 
 // extractClusterMeta retrieves the ClusterMeta from the Gin context.

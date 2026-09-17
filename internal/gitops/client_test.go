@@ -110,7 +110,7 @@ func TestSyncValues(t *testing.T) {
 	ctx := context.Background()
 
 	valuesYAML := []byte("image: nginx:1.25\nname: my-capp\n")
-	sha, err := c.SyncValues(ctx, "test1", "production", "my-capp", valuesYAML)
+	sha, err := c.SyncValues(ctx, "test1", "production", "my-capp", valuesYAML, "")
 	require.NoError(t, err)
 	assert.Len(t, sha, 40)
 
@@ -124,11 +124,11 @@ func TestSyncValues_Overwrite(t *testing.T) {
 	ctx := context.Background()
 
 	v1 := []byte("image: nginx:1.24\n")
-	_, err := c.SyncValues(ctx, "test1", "ns", "app", v1)
+	_, err := c.SyncValues(ctx, "test1", "ns", "app", v1, "")
 	require.NoError(t, err)
 
 	v2 := []byte("image: nginx:1.25\n")
-	sha, err := c.SyncValues(ctx, "test2", "ns", "app", v2)
+	sha, err := c.SyncValues(ctx, "test2", "ns", "app", v2, "")
 	require.NoError(t, err)
 	assert.Len(t, sha, 40)
 
@@ -142,10 +142,10 @@ func TestSyncValues_Unchanged(t *testing.T) {
 	ctx := context.Background()
 
 	valuesYAML := []byte("image: nginx:1.25\n")
-	first, err := c.SyncValues(ctx, "test1", "ns", "app", valuesYAML)
+	first, err := c.SyncValues(ctx, "test1", "ns", "app", valuesYAML, "")
 	require.NoError(t, err)
 
-	second, err := c.SyncValues(ctx, "test1", "ns", "app", valuesYAML)
+	second, err := c.SyncValues(ctx, "test1", "ns", "app", valuesYAML, "")
 	require.NoError(t, err, "re-syncing identical values must not fail with an empty commit")
 	assert.Equal(t, first, second, "no new commit should be created")
 
@@ -163,7 +163,7 @@ func TestSyncValues_Timeout(t *testing.T) {
 	c, _ := initBareRepo(t)
 	c.timeout = time.Nanosecond
 
-	_, err := c.SyncValues(context.Background(), "test1", "ns", "app", []byte("image: nginx\n"))
+	_, err := c.SyncValues(context.Background(), "test1", "ns", "app", []byte("image: nginx\n"), "")
 	require.Error(t, err)
 }
 
@@ -172,14 +172,14 @@ func TestDeleteValues(t *testing.T) {
 	ctx := context.Background()
 
 	valuesYAML := []byte("image: nginx:1.25\n")
-	_, err := c.SyncValues(ctx, "test1", "ns", "my-capp", valuesYAML)
+	_, err := c.SyncValues(ctx, "test1", "ns", "my-capp", valuesYAML, "")
 	require.NoError(t, err)
 
 	filePath := filepath.Join(cloneDir, "sites", "test1", "ns", "my-capp.yaml")
 	_, err = os.Stat(filePath)
 	require.NoError(t, err, "file should exist after sync")
 
-	sha, err := c.DeleteValues(ctx, "test1", "ns", "my-capp")
+	sha, err := c.DeleteValues(ctx, "test1", "ns", "my-capp", "")
 	require.NoError(t, err)
 	assert.Len(t, sha, 40)
 
@@ -191,7 +191,7 @@ func TestDeleteValues_NonExistent(t *testing.T) {
 	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
-	sha, err := c.DeleteValues(ctx, "test1", "ns", "does-not-exist")
+	sha, err := c.DeleteValues(ctx, "test1", "ns", "does-not-exist", "")
 	require.NoError(t, err)
 	assert.Empty(t, sha, "no-op should return empty SHA")
 }
@@ -200,9 +200,9 @@ func TestSyncValues_CommitHistory(t *testing.T) {
 	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
-	_, err := c.SyncValues(ctx, "test1", "ns", "app1", []byte("v1"))
+	_, err := c.SyncValues(ctx, "test1", "ns", "app1", []byte("v1"), "")
 	require.NoError(t, err)
-	_, err = c.SyncValues(ctx, "test2", "ns", "app2", []byte("v2"))
+	_, err = c.SyncValues(ctx, "test2", "ns", "app2", []byte("v2"), "alice")
 	require.NoError(t, err)
 
 	ref, err := c.repo.Head()
@@ -210,17 +210,17 @@ func TestSyncValues_CommitHistory(t *testing.T) {
 
 	commit, err := c.repo.CommitObject(ref.Hash())
 	require.NoError(t, err)
-	assert.Contains(t, commit.Message, "sync test2/ns/app2.yaml")
+	assert.Equal(t, "sync test2/ns/app2.yaml\n\nRequested-by: alice", commit.Message)
 }
 
 func TestDeleteValues_CommitMessage(t *testing.T) {
 	c, _ := initBareRepo(t)
 	ctx := context.Background()
 
-	_, err := c.SyncValues(ctx, "test1", "prod", "web", []byte("v1"))
+	_, err := c.SyncValues(ctx, "test1", "prod", "web", []byte("v1"), "")
 	require.NoError(t, err)
 
-	_, err = c.DeleteValues(ctx, "test1", "prod", "web")
+	_, err = c.DeleteValues(ctx, "test1", "prod", "web", "")
 	require.NoError(t, err)
 
 	ref, err := c.repo.Head()
@@ -228,7 +228,7 @@ func TestDeleteValues_CommitMessage(t *testing.T) {
 
 	commit, err := c.repo.CommitObject(ref.Hash())
 	require.NoError(t, err)
-	assert.Contains(t, commit.Message, "remove test1/prod/web.yaml")
+	assert.Equal(t, "remove test1/prod/web.yaml", commit.Message, "no trailer when the user is unknown")
 }
 
 func TestBuildAuth_Token(t *testing.T) {

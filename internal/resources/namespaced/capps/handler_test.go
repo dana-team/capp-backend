@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -82,7 +84,7 @@ type mockGitOpsSyncer struct {
 	deleteCalls int
 }
 
-func (m *mockGitOpsSyncer) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
+func (m *mockGitOpsSyncer) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte, _ string) (string, error) {
 	m.syncCalls = append(m.syncCalls, valuesYAML)
 	if m.syncFn != nil {
 		return m.syncFn(ctx, gitOpsPath, namespace, cappName, valuesYAML)
@@ -90,7 +92,7 @@ func (m *mockGitOpsSyncer) SyncValues(ctx context.Context, gitOpsPath, namespace
 	return "abc123", nil
 }
 
-func (m *mockGitOpsSyncer) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error) {
+func (m *mockGitOpsSyncer) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName, _ string) (string, error) {
 	m.deleteCalls++
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, gitOpsPath, namespace, cappName)
@@ -373,6 +375,27 @@ func TestDelete_GitSyncNotEnabled_SkipsGit(t *testing.T) {
 }
 
 // -- respondList tests --
+
+func TestActingUser(t *testing.T) {
+	tests := []struct {
+		name string
+		cred any
+		want string
+	}{
+		{name: "openshift mode", cred: auth.ClusterCredential{ImpersonateUser: "alice"}, want: "alice"},
+		{name: "passthrough mode", cred: auth.ClusterCredential{BearerToken: "tok"}, want: ""},
+		{name: "no credential", cred: nil, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, c := testutil.GinTestContext(t)
+			if tt.cred != nil {
+				c.Set(string(middleware.CredentialKey), tt.cred)
+			}
+			assert.Equal(t, tt.want, actingUser(c))
+		})
+	}
+}
 
 func TestRespondList_CorrectTotalAndMapping(t *testing.T) {
 	w := engine(t, makeCapp("a", "ns1"), makeCapp("b", "ns1")).
