@@ -10,6 +10,8 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -316,6 +318,16 @@ func Load(path string) (*Config, error) {
 		}
 		if cfg.Clusters[i].GitOpsPath == "" {
 			cfg.Clusters[i].GitOpsPath = cfg.Clusters[i].Name
+		}
+
+		// Viper's AutomaticEnv does not apply env var overrides to elements
+		// inside a slice when using Unmarshal (only to top-level/mapped keys),
+		// so CAPP_CLUSTERS_<i>_CREDENTIAL_INLINE_TOKEN must be read explicitly.
+		if cfg.Clusters[i].Credential.Inline != nil {
+			envKey := fmt.Sprintf("CAPP_CLUSTERS_%d_CREDENTIAL_INLINE_TOKEN", i)
+			if token := os.Getenv(envKey); token != "" {
+				cfg.Clusters[i].Credential.Inline.Token = token
+			}
 		}
 	}
 
