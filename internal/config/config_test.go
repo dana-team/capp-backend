@@ -114,6 +114,27 @@ clusters:
 	assert.Equal(t, "https://dev.example.com:6443", cfg.Clusters[0].Credential.Inline.APIServer)
 }
 
+func TestLoad_ClusterTokenEnvOverride(t *testing.T) {
+	t.Setenv("CAPP_CLUSTERS_1_CREDENTIAL_INLINE_TOKEN", "injected-token")
+
+	cfg := loadTempConfig(t, `
+clusters:
+  - name: local
+    credential:
+      inline:
+        apiServer: "https://kubernetes.default.svc"
+        token: "local-token"
+  - name: remote
+    credential:
+      inline:
+        apiServer: "https://remote.example.com:6443"
+        token: ""
+`)
+	require.Len(t, cfg.Clusters, 2)
+	assert.Equal(t, "local-token", cfg.Clusters[0].Credential.Inline.Token)
+	assert.Equal(t, "injected-token", cfg.Clusters[1].Credential.Inline.Token)
+}
+
 func TestLoad_DisplayNameFallback(t *testing.T) {
 	cfg := loadTempConfig(t, `
 clusters:
