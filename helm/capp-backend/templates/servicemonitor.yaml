@@ -15,7 +15,7 @@ spec:
     matchLabels:
       {{- include "capp-backend.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    - port: {{ .Values.serviceMonitor.port }}
       scheme: {{ .Values.serviceMonitor.scheme }}
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       {{- with .Values.serviceMonitor.interval }}
@@ -25,9 +25,6 @@ spec:
       scrapeTimeout: {{ . | quote }}
       {{- end }}
       path: {{ .Values.serviceMonitor.path }}
-      {{- with .Values.serviceMonitor.interval }}
-      interval: {{ . | quote }}
-      {{- end }}
       tlsConfig:
         insecureSkipVerify: {{ .Values.serviceMonitor.tls.insecureSkipVerify }}
         {{- with .Values.serviceMonitor.tls.caFile }}
