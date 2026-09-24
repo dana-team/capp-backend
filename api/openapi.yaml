@@ -396,6 +396,21 @@ components:
           items:
             $ref: '#/components/schemas/ConfigMapResponse'
 
+    ConfigMapNameListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: string
+          description: List of ConfigMap names.
+          example: [my-config, another-config]
+        total:
+          type: integer
+          format: int32
+          description: Total count of ConfigMaps.
+          example: 2
+
     # ── Secrets ───────────────────────────────────────────────────────────────────
     SecretRequest:
       type: object
@@ -476,6 +491,21 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SecretResponse'
+
+    SecretNameListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: string
+          description: List of Secret names.
+          example: [my-secret, another-secret]
+        total:
+          type: integer
+          format: int32
+          description: Total count of Secrets.
+          example: 2
 
     # ── Resource sizing ─────────────────────────────────────────────────────────
     ResourceQuantitiesDTO:
@@ -1506,6 +1536,36 @@ paths:
         "409":
           $ref: '#/components/responses/Conflict'
 
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/names:
+    get:
+      tags: [configmaps]
+      summary: List ConfigMap names in a namespace
+      description: |
+        Returns only the names of capp-managed ConfigMaps in the namespace.
+        Useful for populating dropdowns without exposing data.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: ConfigMap names list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMapNameListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/{name}:
     get:
       tags: [configmaps]
@@ -1674,6 +1734,36 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "409":
           $ref: '#/components/responses/Conflict'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets/names:
+    get:
+      tags: [secrets]
+      summary: List Secret names in a namespace
+      description: |
+        Returns only the names of capp-managed Secrets in the namespace.
+        Useful for populating dropdowns without exposing secret data.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Secret names list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretNameListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets/{name}:
     get:

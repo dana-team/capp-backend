@@ -28,3 +28,9 @@ type ConfigMapListResponse struct {
 	Items []ConfigMapResponse `json:"items"`
 	Total int                 `json:"total"`
 }
+
+// ConfigMapNameListResponse is the response body for the names-only list endpoint.
+type ConfigMapNameListResponse struct {
+	Items []string `json:"items"`
+	Total int      `json:"total"`
+}
