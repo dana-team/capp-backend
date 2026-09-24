@@ -36,6 +36,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	s := rg.Group("/namespaces/:namespace/secrets")
 	s.GET("", h.list)
 	s.POST("", h.create)
+	s.GET("/names", h.listNames)
 	s.GET("/:name", h.get)
 	s.PUT("/:name", h.update)
 	s.DELETE("/:name", h.delete)
@@ -76,6 +77,31 @@ func (h *Handler) list(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, convertToResponseList(secretList.Items))
+}
+
+// listNames handles GET /api/v1/clusters/:cluster/namespaces/:namespace/secrets/names.
+func (h *Handler) listNames(c *gin.Context) {
+	k8sClient := namespaced.ExtractClient(c)
+	if k8sClient == nil {
+		return
+	}
+
+	namespace := c.Param("namespace")
+
+	secretList := &corev1.SecretList{}
+	if err := k8sClient.List(c.Request.Context(), secretList, client.InNamespace(namespace), client.MatchingLabels{
+		consts.ManagedLabelKey: consts.ManagedLabelValue,
+	}); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	names := make([]string, 0, len(secretList.Items))
+	for _, s := range secretList.Items {
+		names = append(names, s.Name)
+	}
+
+	c.JSON(http.StatusOK, SecretNameListResponse{Items: names, Total: len(names)})
 }
 
 func (h *Handler) create(c *gin.Context) {

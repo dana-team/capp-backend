@@ -31,3 +31,9 @@ type SecretListResponse struct {
 	Items []SecretResponse `json:"items"`
 	Total int              `json:"total"`
 }
+
+// SecretNameListResponse returns a list of secret names without exposing secret data.
+type SecretNameListResponse struct {
+	Items []string `json:"items"`
+	Total int      `json:"total"`
+}

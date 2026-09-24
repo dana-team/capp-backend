@@ -51,7 +51,9 @@ GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list
        /api/v1/clusters/:cluster/namespaces/:namespace/capps[/:name]         (CRUD)
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — trigger Capp sync; returns 501 if syncer not configured
        /api/v1/clusters/:cluster/namespaces/:namespace/configmaps[/:name]    (CRUD)
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/configmaps/names     (auth + cluster) — list configmap names only
        /api/v1/clusters/:cluster/namespaces/:namespace/secrets[/:name]       (CRUD)
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/secrets/names         (auth + cluster) — list secret names only
 GET    /api/v1/clusters/:cluster/configmaps            (auth + cluster) — list all configmaps across namespaces (dana.io/capp-managed=true only)
 GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list all secrets across namespaces
 ```
