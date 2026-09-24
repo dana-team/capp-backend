@@ -233,6 +233,7 @@ readinessProbe:
 serviceMonitor:
   enabled: false
   namespace: ""
+  port: "queue-proxy-metrics"
   interval: "30s"
   path: "/metrics"
   labels: {}
