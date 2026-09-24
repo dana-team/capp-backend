@@ -63,6 +63,37 @@ func TestList_Success(t *testing.T) {
 	assert.Equal(t, 1, resp.Total)
 }
 
+// -- ListNames tests --
+
+func TestListNames_Success(t *testing.T) {
+	w := engine(t, managedSecret("s1", "ns1"), managedSecret("s2", "ns1"), managedSecret("s3", "ns2")).
+		Get("/namespaces/ns1/secrets/names")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp SecretNameListResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 2, resp.Total)
+	assert.Equal(t, []string{"s1", "s2"}, resp.Items)
+}
+
+func TestListNames_ExcludesUnmanaged(t *testing.T) {
+	w := engine(t, managedSecret("s1", "ns1"), unmanagedSecret("s2")).
+		Get("/namespaces/ns1/secrets/names")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp SecretNameListResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, []string{"s1"}, resp.Items)
+}
+
+func TestListNames_Empty(t *testing.T) {
+	w := engine(t).Get("/namespaces/ns1/secrets/names")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "\"items\":[]")
+}
+
 // -- Get tests --
 
 func TestGet_Success(t *testing.T) {

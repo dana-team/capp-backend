@@ -61,6 +61,37 @@ func TestList_Success(t *testing.T) {
 	assert.Equal(t, 1, resp.Total)
 }
 
+// -- ListNames tests --
+
+func TestListNames_Success(t *testing.T) {
+	w := engine(t, managedCM("cm1", "ns1"), managedCM("cm2", "ns1"), managedCM("cm3", "ns2")).
+		Get("/namespaces/ns1/configmaps/names")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp ConfigMapNameListResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 2, resp.Total)
+	assert.ElementsMatch(t, []string{"cm1", "cm2"}, resp.Items)
+}
+
+func TestListNames_ExcludesUnmanaged(t *testing.T) {
+	w := engine(t, managedCM("cm1", "ns1"), unmanagedCM("cm2")).
+		Get("/namespaces/ns1/configmaps/names")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp ConfigMapNameListResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, []string{"cm1"}, resp.Items)
+}
+
+func TestListNames_Empty(t *testing.T) {
+	w := engine(t).Get("/namespaces/ns1/configmaps/names")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"items":[]`)
+}
+
 // -- Get tests --
 
 func TestGet_Success(t *testing.T) {
