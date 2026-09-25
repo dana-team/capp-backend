@@ -208,6 +208,43 @@ func TestSync_GitOpsDisabled(t *testing.T) {
 	assert.Contains(t, err.Error(), "not supported")
 }
 
+func TestSync_Disable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodDelete, r.Method)
+		assert.Equal(t, "/api/v1/clusters/c1/namespaces/ns1/capps/my-app/sync", r.URL.Path)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(syncResult{ //nolint:errcheck
+			Enabled:   false,
+			CommitSHA: "def456",
+			Path:      "sites/c1/ns1/my-app.yaml",
+		})
+	}))
+	defer srv.Close()
+
+	cmd, buf := newSyncCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--disable", "--yes"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Contains(t, buf.String(), `Git sync disabled for "my-app"`)
+}
+
+func TestSync_Disable_Aborted(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	cmd, buf := newSyncCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetIn(bytes.NewBufferString("n\n"))
+	cmd.SetArgs([]string{"capps", "my-app", "--disable"})
+	require.NoError(t, cmd.Execute())
+
+	assert.False(t, called, "no request should be sent when aborted")
+	assert.Contains(t, buf.String(), "Aborted.")
+}
+
 func TestCreate_RouteSpec_AllFields(t *testing.T) {
 	var received apitypes.CappRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

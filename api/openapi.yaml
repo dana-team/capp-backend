@@ -983,9 +983,12 @@ components:
     SyncResponse:
       type: object
       properties:
+        enabled:
+          type: boolean
+          description: Whether Git sync is enabled for the Capp after the call.
         commitSha:
           type: string
-          description: Git commit SHA of the pushed values file.
+          description: Git commit SHA. Empty when nothing was deleted.
           example: "a1b2c3d4e5f6"
         path:
           type: string
@@ -1047,6 +1050,12 @@ components:
             $ref: '#/components/schemas/Error'
     InternalError:
       description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    GitOpsSyncFailed:
+      description: Writing to the GitOps repository failed (`GITOPS_SYNC_FAILED`). The change was already applied in the cluster; re-sync to retry.
       content:
         application/json:
           schema:
@@ -1869,6 +1878,8 @@ paths:
       description: |
         Replaces the Capp spec. The backend fetches the current `resourceVersion`
         before applying the update to satisfy Kubernetes optimistic concurrency control.
+
+        If Git sync is enabled, the new values are committed to the GitOps repository after the update.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -1898,10 +1909,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+        "502":
+          $ref: '#/components/responses/GitOpsSyncFailed'
 
     delete:
       tags: [capps]
       summary: Delete a Capp
+      description: |
+        If Git sync is enabled, the Capp's values file is also deleted from the GitOps repository.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -1915,25 +1930,25 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+        "502":
+          $ref: '#/components/responses/GitOpsSyncFailed'
 
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/sync:
     post:
       tags: [capps]
-      summary: Sync a Capp to the GitOps repository
+      summary: Enable Git sync for a Capp
       description: |
-        Generates a Helm values file from the live Capp spec and pushes it to the
-        configured GitOps repository. Also patches the `rcs.dana.io/backup-to-git=true`
-        label onto the Capp (idempotent on re-calls).
+        Pushes the Capp's values file to the GitOps repository and adds the
+        `rcs.dana.io/backup-to-git=true` label. Safe to call again to re-sync.
 
-        Returns `501 Not Implemented` when the backend is not configured with a
-        GitOps integration (`gitops.enabled: false`).
+        Returns `501 Not Implemented` when `gitops.enabled` is false.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
         "200":
-          description: Capp values pushed to GitOps repository.
+          description: Git sync enabled and values pushed.
           content:
             application/json:
               schema:
@@ -1952,6 +1967,50 @@ paths:
                 $ref: '#/components/schemas/Error'
         "500":
           $ref: '#/components/responses/InternalError'
+        "502":
+          $ref: '#/components/responses/GitOpsSyncFailed'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [capps]
+      summary: Disable Git sync for a Capp
+      description: |
+        Deletes the Capp's values file from the GitOps repository and removes the
+        `rcs.dana.io/backup-to-git` label. No-op if Git sync is already disabled.
+
+        Returns `501 Not Implemented` when `gitops.enabled` is false.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Git sync disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: GitOps integration is not enabled on this backend.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "502":
+          $ref: '#/components/responses/GitOpsSyncFailed'
         "503":
           description: Cluster is currently unhealthy.
           content:

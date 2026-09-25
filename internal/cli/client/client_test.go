@@ -92,7 +92,7 @@ func TestDeleteNoContent(t *testing.T) {
 	defer srv.Close()
 
 	c := client.New(srv.URL, "tok", false)
-	require.NoError(t, c.Delete(context.Background(), "/api/v1/clusters/x/namespaces/default/capps/myapp"))
+	require.NoError(t, c.Delete(context.Background(), "/api/v1/clusters/x/namespaces/default/capps/myapp", nil))
 }
 
 func TestWithToken(t *testing.T) {

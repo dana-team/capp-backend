@@ -100,6 +100,7 @@ gitops:
   token: ""              # inject via CAPP_GITOPS_TOKEN
   sshKeyPath: ""         # path to SSH private key (when authMethod is "ssh")
   pathPrefix: "sites"    # prefix for values files in the repo
+  timeoutSeconds: 20     # timeout for each git sync/delete operation
 
 clusters:
   - name: "local"                 # Used as path parameter in /api/v1/clusters/:cluster
@@ -211,7 +212,8 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Get a Capp |
 | `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Update a Capp |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Delete a Capp |
-| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Trigger Capp GitOps sync |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Enable Git sync / re-sync |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Disable Git sync |
 | `GET` | `/api/v1/clusters/:cluster/configmaps` | ✓ | List all ConfigMaps across namespaces |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | List ConfigMaps in a namespace |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | Create a ConfigMap |
@@ -301,7 +303,7 @@ The server exposes `POST /mcp` (Streamable HTTP transport) and `GET /healthz` (l
 |---|---|---|
 | `clusters` | `cluster_list`, `cluster_get` | Discover valid `cluster` values for every other tool |
 | `namespaces` | `namespace_list`, `namespace_create`, `namespace_update`, `namespace_add_users` | `namespace_update` is a full replace; use `namespace_add_users` to append without disturbing existing users |
-| `capps` | `capp_list`, `capp_get`, `capp_create`, `capp_update`, `capp_delete`, `capp_sync` | `capp_update` is a full replace, not a patch — call `capp_get` first and send back the full desired state |
+| `capps` | `capp_list`, `capp_get`, `capp_create`, `capp_update`, `capp_delete`, `capp_sync`, `capp_sync_disable` | `capp_update` is a full replace, not a patch — call `capp_get` first and send back the full desired state |
 | `configmaps` | `configmap_list`, `configmap_get`, `configmap_create`, `configmap_update`, `configmap_delete` | Only ConfigMaps labeled `dana.io/capp-managed=true` are visible |
 | `secrets` | `secret_list`, `secret_get` | **Read-only.** Returns metadata only (name, type, labels, data key names) — secret values are never exposed |
 

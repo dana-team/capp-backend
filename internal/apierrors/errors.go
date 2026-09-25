@@ -41,6 +41,7 @@ const (
 	CodeClusterUnhealthy = "CLUSTER_UNHEALTHY"
 	CodeNotSupported     = "NOT_SUPPORTED"
 	CodeNamespaceDenied  = "NAMESPACE_DENIED"
+	CodeGitOpsSyncFailed = "GITOPS_SYNC_FAILED"
 )
 
 // APIError is the canonical error type for all HTTP responses. It implements
@@ -159,6 +160,16 @@ func NewNamespaceDenied(namespace, cluster string) *APIError {
 		Code:    CodeNamespaceDenied,
 		Message: fmt.Sprintf("namespace %q is not accessible on cluster %q", namespace, cluster),
 		Status:  http.StatusForbidden,
+	}
+}
+
+// NewGitOpsSyncFailed returns a 502 error when writing to the GitOps repository fails.
+func NewGitOpsSyncFailed(err error) *APIError {
+	return &APIError{
+		Code:    CodeGitOpsSyncFailed,
+		Message: "the Capp was changed in the cluster, but syncing to the GitOps repository failed; re-sync to retry",
+		Status:  http.StatusBadGateway,
+		cause:   err,
 	}
 }
 
