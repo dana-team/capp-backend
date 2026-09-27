@@ -28,6 +28,8 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
+	errs = append(errs, validateBenchmarks(&cfg.Resources.Benchmarks)...)
+	errs = append(errs, validateVictoriaMetrics(&cfg.VictoriaMetrics)...)
 
 	if cfg.GitOps.Enabled {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
@@ -192,6 +194,40 @@ func validateGitOps(g *GitOpsConfig) []error {
 					"set via CAPP_GITOPS_SSHKEYPATH environment variable",
 			))
 		}
+	}
+
+	return errs
+}
+
+// validateBenchmarks checks that benchmark configuration is complete when enabled.
+func validateBenchmarks(b *BenchmarkConfig) []error {
+	if !b.Enabled {
+		return nil
+	}
+
+	var errs []error
+
+	if b.ChartRef == "" {
+		errs = append(errs, errors.New(
+			"config: resources.benchmarks.chartRef is required when resources.benchmarks.enabled is true",
+		))
+	}
+
+	return errs
+}
+
+// validateVictoriaMetrics checks that VM proxy config is complete when enabled.
+func validateVictoriaMetrics(vm *VictoriaMetricsConfig) []error {
+	if !vm.Enabled {
+		return nil
+	}
+
+	var errs []error
+
+	if vm.URL == "" {
+		errs = append(errs, errors.New(
+			"config: victoriaMetrics.url is required when victoriaMetrics.enabled is true",
+		))
 	}
 
 	return errs

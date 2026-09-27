@@ -140,3 +140,20 @@ resources:
     enabled: true
   capps:
     enabled: true
+
+  # On-demand per-capp benchmarking, powered by the capp-monitoring chart.
+  # The chart is self-contained and can be deployed into any namespace.
+  # benchmarks:
+  #   enabled: false
+  #   chartRef: ""                    # OCI ref, e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"
+
+# ── VictoriaMetrics Proxy ─────────────────────────────────────────────────────
+# When enabled, the backend proxies PromQL queries to a VictoriaMetrics (or
+# Prometheus-compatible) server, allowing the frontend to display per-capp
+# performance dashboards without direct access to the metrics backend.
+# victoriaMetrics:
+#   enabled: false
+#   url: ""                         # e.g. "http://name-rcs.apps.ocp4.example.com"
+#   caCert: ""                      # optional: base64-encoded PEM CA bundle
+#   insecure: false                 # skip TLS verification (dev only)
+#   timeoutSeconds: 30              # max query duration

@@ -109,6 +109,22 @@ data:
           limits:
             cpu: {{ .Values.config.resources.cappSizes.large.limits.cpu | quote }}
             memory: {{ .Values.config.resources.cappSizes.large.limits.memory | quote }}
+      {{- if (dig "resources" "benchmarks" "enabled" false .Values.config) }}
+      benchmarks:
+        enabled: true
+        chartRef: {{ .Values.config.resources.benchmarks.chartRef | quote }}
+      {{- end }}
+
+    {{- if (dig "victoriaMetrics" "enabled" false .Values.config) }}
+    victoriaMetrics:
+      enabled: true
+      url: {{ .Values.config.victoriaMetrics.url | quote }}
+      {{- if .Values.config.victoriaMetrics.caCert }}
+      caCert: {{ .Values.config.victoriaMetrics.caCert | quote }}
+      {{- end }}
+      insecure: {{ .Values.config.victoriaMetrics.insecure }}
+      timeoutSeconds: {{ .Values.config.victoriaMetrics.timeoutSeconds }}
+    {{- end }}
 
     {{- if .Values.config.gitops.enabled }}
     gitops:

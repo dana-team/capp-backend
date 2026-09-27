@@ -211,10 +211,24 @@ type ResourceToggle struct {
 // Disabling a resource removes its routes entirely at startup — no 404s,
 // no handler overhead.
 type ResourcesConfig struct {
-	Namespaces ResourceToggle `mapstructure:"namespaces"`
-	Capps      ResourceToggle `mapstructure:"capps"`
-	Configmaps ResourceToggle `mapstructure:"configmaps"`
-	Secrets    ResourceToggle `mapstructure:"secrets"`
+	Namespaces ResourceToggle  `mapstructure:"namespaces"`
+	Capps      ResourceToggle  `mapstructure:"capps"`
+	Configmaps ResourceToggle  `mapstructure:"configmaps"`
+	Secrets    ResourceToggle  `mapstructure:"secrets"`
+	Benchmarks BenchmarkConfig `mapstructure:"benchmarks"`
+}
+
+// BenchmarkConfig controls on-demand per-capp benchmarking, powered by
+// the capp-monitoring Helm chart. The chart is self-contained and can be
+// deployed into any namespace — no prior dependencies required.
+type BenchmarkConfig struct {
+	// Enabled toggles the benchmark endpoints. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// ChartRef is an OCI chart reference for the capp-monitoring Helm chart
+	// (e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0").
+	// Required when enabled.
+	ChartRef string `mapstructure:"chartRef"`
 }
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
@@ -273,18 +287,45 @@ type ResourceConfig struct {
 	CappSizes CappSizes `mapstructure:"cappSizes"`
 }
 
+// VictoriaMetricsConfig controls the VictoriaMetrics / Prometheus-compatible
+// metrics proxy. When enabled, the backend proxies PromQL queries from the
+// frontend to a VictoriaMetrics (or Prometheus) server, allowing users to
+// view per-capp performance dashboards without direct access to the metrics
+// backend.
+type VictoriaMetricsConfig struct {
+	// Enabled toggles the metrics proxy endpoints. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// URL is the base URL of the VictoriaMetrics or Prometheus-compatible
+	// query API (e.g. "https://victoria.apps.example.com" or
+	// "http://vmsingle-release.monitoring.svc:8429").
+	URL string `mapstructure:"url"`
+
+	// CACert is a base64-encoded PEM CA bundle for TLS to the metrics server.
+	// If empty, the system root CAs are used.
+	CACert string `mapstructure:"caCert"`
+
+	// Insecure disables TLS server verification. Default: false.
+	Insecure bool `mapstructure:"insecure"`
+
+	// TimeoutSeconds is the maximum duration for a single query to the
+	// metrics server. Default: 30.
+	TimeoutSeconds int `mapstructure:"timeoutSeconds"`
+}
+
 // Config is the root configuration object for the capp-backend server.
 // It is populated once at startup by Load and then treated as read-only.
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Auth      AuthConfig      `mapstructure:"auth"`
-	Logging   LoggingConfig   `mapstructure:"logging"`
-	Metrics   MetricsConfig   `mapstructure:"metrics"`
-	Tracing   TracingConfig   `mapstructure:"tracing"`
-	Clusters  []ClusterConfig `mapstructure:"clusters"`
-	Resources ResourcesConfig `mapstructure:"resources"`
-	GitOps    GitOpsConfig    `mapstructure:"gitops"`
-	Sizes     CappSizes       `mapstructure:"cappSizes"`
+	Server          ServerConfig          `mapstructure:"server"`
+	Auth            AuthConfig            `mapstructure:"auth"`
+	Logging         LoggingConfig         `mapstructure:"logging"`
+	Metrics         MetricsConfig         `mapstructure:"metrics"`
+	Tracing         TracingConfig         `mapstructure:"tracing"`
+	Clusters        []ClusterConfig       `mapstructure:"clusters"`
+	Resources       ResourcesConfig       `mapstructure:"resources"`
+	GitOps          GitOpsConfig          `mapstructure:"gitops"`
+	Sizes           CappSizes             `mapstructure:"cappSizes"`
+	VictoriaMetrics VictoriaMetricsConfig `mapstructure:"victoriaMetrics"`
 }
 
 // Load reads configuration from the file at path (if non-empty) and from
@@ -379,6 +420,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gitops.branch", "main")
 	v.SetDefault("gitops.authMethod", "token")
 	v.SetDefault("gitops.pathPrefix", "sites")
+
+	// Benchmarks — disabled by default
+	v.SetDefault("resources.benchmarks.enabled", false)
+
+	// VictoriaMetrics proxy — disabled by default
+	v.SetDefault("victoriaMetrics.enabled", false)
+	v.SetDefault("victoriaMetrics.insecure", false)
+	v.SetDefault("victoriaMetrics.timeoutSeconds", 30)
 
 	// Capp t-shirt sizes
 	v.SetDefault("cappSizes.small.requests.cpu", "250m")

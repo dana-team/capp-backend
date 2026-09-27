@@ -87,6 +87,15 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.InDelta(t, 0.1, cfg.Tracing.SampleRate, 0.0001)
 	assert.True(t, cfg.Resources.Namespaces.Enabled)
 	assert.True(t, cfg.Resources.Capps.Enabled)
+
+	// Benchmark defaults
+	assert.False(t, cfg.Resources.Benchmarks.Enabled)
+	assert.Empty(t, cfg.Resources.Benchmarks.ChartRef)
+
+	// VictoriaMetrics defaults
+	assert.False(t, cfg.VictoriaMetrics.Enabled)
+	assert.False(t, cfg.VictoriaMetrics.Insecure)
+	assert.Equal(t, 30, cfg.VictoriaMetrics.TimeoutSeconds)
 }
 
 func TestLoad_FromFile(t *testing.T) {
@@ -420,4 +429,123 @@ func TestValidate_GitOpsPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ── Benchmark config tests ───────────────────────────────────────────────────
+
+func TestValidate_Benchmarks(t *testing.T) {
+	tests := []struct {
+		name       string
+		benchmarks BenchmarkConfig
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name:       "disabled — no validation",
+			benchmarks: BenchmarkConfig{Enabled: false},
+		},
+		{
+			name: "enabled with chartRef — valid",
+			benchmarks: BenchmarkConfig{
+				Enabled:  true,
+				ChartRef: "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0",
+			},
+		},
+		{
+			name:       "enabled without chartRef — error",
+			benchmarks: BenchmarkConfig{Enabled: true},
+			wantErr:    true,
+			errContain: "resources.benchmarks.chartRef is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Resources.Benchmarks = tt.benchmarks
+			err := Validate(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContain)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestLoad_BenchmarkFromFile(t *testing.T) {
+	cfg := loadTempConfig(t, `
+clusters:
+  - name: dev
+    credential:
+      inline:
+        apiServer: "https://dev.example.com:6443"
+resources:
+  benchmarks:
+    enabled: true
+    chartRef: "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"
+`)
+	assert.True(t, cfg.Resources.Benchmarks.Enabled)
+	assert.Equal(t, "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0", cfg.Resources.Benchmarks.ChartRef)
+}
+
+// ── VictoriaMetrics config tests ─────────────────────────────────────────────
+
+func TestValidate_VictoriaMetrics(t *testing.T) {
+	tests := []struct {
+		name       string
+		vm         VictoriaMetricsConfig
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "disabled — no validation",
+			vm:   VictoriaMetricsConfig{Enabled: false},
+		},
+		{
+			name: "enabled with URL — valid",
+			vm: VictoriaMetricsConfig{
+				Enabled: true,
+				URL:     "https://victoria.apps.example.com",
+			},
+		},
+		{
+			name:       "enabled without URL — error",
+			vm:         VictoriaMetricsConfig{Enabled: true, URL: ""},
+			wantErr:    true,
+			errContain: "victoriaMetrics.url is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.VictoriaMetrics = tt.vm
+			err := Validate(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContain)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestLoad_VictoriaMetricsFromFile(t *testing.T) {
+	cfg := loadTempConfig(t, `
+clusters:
+  - name: dev
+    credential:
+      inline:
+        apiServer: "https://dev.example.com:6443"
+victoriaMetrics:
+  enabled: true
+  url: "http://name-rcs.apps.ocp4.example.com"
+  insecure: true
+  timeoutSeconds: 60
+`)
+	assert.True(t, cfg.VictoriaMetrics.Enabled)
+	assert.Equal(t, "http://name-rcs.apps.ocp4.example.com", cfg.VictoriaMetrics.URL)
+	assert.True(t, cfg.VictoriaMetrics.Insecure)
+	assert.Equal(t, 60, cfg.VictoriaMetrics.TimeoutSeconds)
 }
