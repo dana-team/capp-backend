@@ -140,3 +140,9 @@ resources:
     enabled: true
   capps:
     enabled: true
+
+  # On-demand per-capp benchmarking, powered by the capp-monitoring chart.
+  # The chart is self-contained and can be deployed into any namespace.
+  # benchmarks:
+  #   enabled: false
+  #   chartRef: ""                    # OCI ref, e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"

@@ -211,10 +211,24 @@ type ResourceToggle struct {
 // Disabling a resource removes its routes entirely at startup — no 404s,
 // no handler overhead.
 type ResourcesConfig struct {
-	Namespaces ResourceToggle `mapstructure:"namespaces"`
-	Capps      ResourceToggle `mapstructure:"capps"`
-	Configmaps ResourceToggle `mapstructure:"configmaps"`
-	Secrets    ResourceToggle `mapstructure:"secrets"`
+	Namespaces ResourceToggle  `mapstructure:"namespaces"`
+	Capps      ResourceToggle  `mapstructure:"capps"`
+	Configmaps ResourceToggle  `mapstructure:"configmaps"`
+	Secrets    ResourceToggle  `mapstructure:"secrets"`
+	Benchmarks BenchmarkConfig `mapstructure:"benchmarks"`
+}
+
+// BenchmarkConfig controls on-demand per-capp benchmarking, powered by
+// the capp-monitoring Helm chart. The chart is self-contained and can be
+// deployed into any namespace — no prior dependencies required.
+type BenchmarkConfig struct {
+	// Enabled toggles the benchmark endpoints. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// ChartRef is an OCI chart reference for the capp-monitoring Helm chart
+	// (e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0").
+	// Required when enabled.
+	ChartRef string `mapstructure:"chartRef"`
 }
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
@@ -379,6 +393,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gitops.branch", "main")
 	v.SetDefault("gitops.authMethod", "token")
 	v.SetDefault("gitops.pathPrefix", "sites")
+
+	// Benchmarks — disabled by default
+	v.SetDefault("resources.benchmarks.enabled", false)
 
 	// Capp t-shirt sizes
 	v.SetDefault("cappSizes.small.requests.cpu", "250m")
