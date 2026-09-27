@@ -992,6 +992,64 @@ components:
           description: Relative path of the values file in the GitOps repository.
           example: "namespaces/default/my-app/values.yaml"
 
+    MigrateRequest:
+      type: object
+      required: [targetCluster, targetNamespace]
+      properties:
+        targetCluster:
+          type: string
+          description: Name of the cluster to migrate the Capp to.
+          example: production-west
+        targetNamespace:
+          type: string
+          description: Namespace on the target cluster to create the Capp in.
+          example: team-beta
+        deleteSource:
+          type: boolean
+          description: If true, delete the source Capp after successful creation on the target.
+          default: false
+          example: false
+
+    MigrateResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the migrated Capp.
+          example: my-app
+        sourceCluster:
+          type: string
+          description: Cluster the Capp was migrated from.
+          example: production-east
+        sourceNamespace:
+          type: string
+          description: Namespace the Capp was migrated from.
+          example: team-alpha
+        targetCluster:
+          type: string
+          description: Cluster the Capp was migrated to.
+          example: production-west
+        targetNamespace:
+          type: string
+          description: Namespace the Capp was created in on the target cluster.
+          example: team-beta
+        sourceDeleted:
+          type: boolean
+          description: Whether the source Capp was successfully deleted. False when deleteSource was not requested or when the delete failed after successful creation.
+          example: false
+        copiedSecrets:
+          type: array
+          items:
+            type: string
+          description: Names of Secrets copied to the target namespace.
+          example: ["db-creds"]
+        copiedConfigMaps:
+          type: array
+          items:
+            type: string
+          description: Names of ConfigMaps copied to the target namespace.
+          example: ["app-config"]
+
   parameters:
     clusterParam:
       name: cluster
@@ -1954,6 +2012,75 @@ paths:
           $ref: '#/components/responses/InternalError'
         "503":
           description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/migrate:
+    post:
+      tags: [capps]
+      summary: Migrate a Capp to another cluster or namespace
+      description: |
+        Creates a copy of the Capp on the target cluster and namespace, including
+        all managed dependent resources (Secrets and ConfigMaps labeled
+        `dana.io/capp-managed=true`). Optionally deletes the source Capp after
+        successful creation on the target.
+
+        If the source Capp has a hostname set, a DNS bypass annotation is added to
+        the target Capp to prevent the webhook from rejecting the create due to a
+        duplicate hostname. The annotation is automatically removed after the source
+        is deleted.
+
+        Same-cluster migration to a different namespace is supported. Migrating to
+        the same cluster and namespace is rejected.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MigrateRequest'
+      responses:
+        "200":
+          description: Migration successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrateResponse'
+        "400":
+          description: Invalid request body or same cluster and namespace as source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Target namespace denied by allowed namespaces or user lacks RBAC on target cluster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Source Capp not found, target cluster not configured, or target namespace does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: Capp, Secret, or ConfigMap already exists on the target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Target cluster is currently unhealthy.
           content:
             application/json:
               schema:

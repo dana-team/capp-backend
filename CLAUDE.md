@@ -50,6 +50,7 @@ POST   /api/v1/clusters/:cluster/namespaces            (auth + cluster) — crea
 GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list all capps across namespaces
        /api/v1/clusters/:cluster/namespaces/:namespace/capps[/:name]         (CRUD)
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — trigger Capp sync; returns 501 if syncer not configured
+POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate  (auth + cluster) — migrate Capp to another cluster/namespace with dependent resources
        /api/v1/clusters/:cluster/namespaces/:namespace/configmaps[/:name]    (CRUD)
        /api/v1/clusters/:cluster/namespaces/:namespace/secrets[/:name]       (CRUD)
 GET    /api/v1/clusters/:cluster/configmaps            (auth + cluster) — list all configmaps across namespaces (dana.io/capp-managed=true only)
@@ -93,7 +94,7 @@ internal/
     cluster/
       namespaces/               # Namespace list + create handler (with SelfSubjectAccessReview filtering)
     namespaced/
-      capps/                    # Capp CRUD handler, DTO types, K8s conversion
+      capps/                    # Capp CRUD, sync, migrate handler, DTO types, K8s conversion
       configmaps/               # ConfigMap CRUD handler (dana.io/capp-managed=true filter on list)
       secrets/                  # Secret CRUD handler
   cli/                          # cappctl CLI packages (no Gin/K8s imports)

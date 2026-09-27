@@ -2,10 +2,12 @@ package capps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
@@ -13,6 +15,7 @@ import (
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -30,13 +33,15 @@ type GitOpsSyncer interface {
 type Handler struct {
 	gitopsEnabled bool
 	gitops        GitOpsSyncer
+	clusterMgr    cluster.ClusterManager
 	sizes         config.CappSizes
 }
 
 // New returns a ready-to-use Capp Handler. When gitops is disabled, pass nil
-// for the syncer — the sync endpoint will return 501.
-func New(gitopsEnabled bool, gitops GitOpsSyncer, sizes config.CappSizes) *Handler {
-	return &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, sizes: sizes}
+// for the syncer — the sync endpoint will return 501. Pass nil for clusterMgr
+// when migration is not needed (e.g. in tests that don't exercise migrate).
+func New(gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes) *Handler {
+	return &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, clusterMgr: clusterMgr, sizes: sizes}
 }
 
 // Name returns the handler's identifier, matching the resources.capps config key.
@@ -55,6 +60,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.PUT("/:name", h.update)
 	ns.DELETE("/:name", h.delete)
 	ns.POST("/:name/sync", h.sync)
+	ns.POST("/:name/migrate", h.migrate)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -289,6 +295,151 @@ func (h *Handler) sync(c *gin.Context) {
 		CommitSHA: commitSHA,
 		Path:      relPath,
 	})
+}
+
+// migrate handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate
+func (h *Handler) migrate(c *gin.Context) {
+	sourceClient := namespaced.ExtractClient(c)
+	if sourceClient == nil {
+		return
+	}
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	var req MigrateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apierrors.Respond(c, apierrors.NewBadRequest(fmt.Sprintf("invalid request body: %s", err)))
+		return
+	}
+
+	meta, err := extractClusterMeta(c)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
+
+	if req.TargetCluster == meta.Name && req.TargetNamespace == namespace {
+		apierrors.Respond(c, apierrors.NewBadRequest("cannot migrate to the same cluster and namespace"))
+		return
+	}
+
+	credVal, exists := c.Get(string(middleware.CredentialKey))
+	if !exists {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential not found in context")))
+		return
+	}
+	cred, ok := credVal.(auth.ClusterCredential)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential has unexpected type in context")))
+		return
+	}
+
+	targetCC, err := h.clusterMgr.Get(req.TargetCluster)
+	if err != nil {
+		if errors.Is(err, cluster.ErrClusterNotFound) {
+			apierrors.Respond(c, apierrors.NewClusterNotFound(req.TargetCluster))
+			return
+		}
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
+	if !targetCC.IsHealthy() {
+		apierrors.Respond(c, apierrors.NewClusterUnhealthy(req.TargetCluster))
+		return
+	}
+
+	if !h.clusterMgr.IsNamespaceAllowed(targetCC, req.TargetNamespace) {
+		apierrors.Respond(c, apierrors.NewNamespaceDenied(req.TargetNamespace, req.TargetCluster))
+		return
+	}
+
+	targetClient, err := h.clusterMgr.ClientFor(targetCC, cred)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("build target client: %w", err)))
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	var targetNS corev1.Namespace
+	if err := targetClient.Get(ctx, client.ObjectKey{Name: req.TargetNamespace}, &targetNS); err != nil {
+		if k8serrors.IsNotFound(err) {
+			apierrors.Respond(c, apierrors.NewNotFound("Namespace", req.TargetNamespace))
+			return
+		}
+		apierrors.Respond(c, err)
+		return
+	}
+
+	var sourceCapp cappv1alpha1.Capp
+	if err := sourceClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &sourceCapp); err != nil {
+		if k8serrors.IsNotFound(err) {
+			apierrors.Respond(c, apierrors.NewNotFound("Capp", name))
+			return
+		}
+		apierrors.Respond(c, err)
+		return
+	}
+
+	var existingTarget cappv1alpha1.Capp
+	if err := targetClient.Get(ctx, client.ObjectKey{Namespace: req.TargetNamespace, Name: name}, &existingTarget); err == nil {
+		apierrors.Respond(c, apierrors.NewConflict("Capp", name))
+		return
+	} else if !k8serrors.IsNotFound(err) {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	secrets, configMaps, err := listManagedResources(ctx, sourceClient, namespace)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("list managed resources: %w", err)))
+		return
+	}
+
+	if err := copyDependentResources(ctx, targetClient, req.TargetNamespace, secrets, configMaps); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	targetCapp := prepareCapp(&sourceCapp, req.TargetNamespace)
+	if err := targetClient.Create(ctx, targetCapp); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	resp := MigrateResponse{
+		Name:            name,
+		SourceCluster:   meta.Name,
+		SourceNamespace: namespace,
+		TargetCluster:   req.TargetCluster,
+		TargetNamespace: req.TargetNamespace,
+	}
+
+	for i := range secrets {
+		resp.CopiedSecrets = append(resp.CopiedSecrets, secrets[i].Name)
+	}
+	for i := range configMaps {
+		resp.CopiedConfigMaps = append(resp.CopiedConfigMaps, configMaps[i].Name)
+	}
+
+	if req.DeleteSource {
+		if err := sourceClient.Delete(ctx, &sourceCapp); err != nil {
+			resp.SourceDeleted = false
+			c.JSON(http.StatusOK, resp)
+			return
+		}
+		resp.SourceDeleted = true
+
+		if _, hasBypass := targetCapp.Annotations[migrationBypassAnnotation]; hasBypass {
+			patch := client.MergeFrom(targetCapp.DeepCopy())
+			delete(targetCapp.Annotations, migrationBypassAnnotation)
+			if err := targetClient.Patch(ctx, targetCapp, patch); err != nil {
+				_ = c.Error(fmt.Errorf("remove bypass annotation: %w", err))
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // extractClusterMeta retrieves the ClusterMeta from the Gin context.
