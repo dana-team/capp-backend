@@ -285,3 +285,24 @@ type CappListResponse struct {
 	Items []CappResponse `json:"items"`
 	Total int            `json:"total"`
 }
+
+// ── Migration types ───────────────────────────────────────────────────────────
+
+// MigrateRequest is the body for POST .../capps/:name/migrate.
+type MigrateRequest struct {
+	TargetCluster   string `json:"targetCluster"    binding:"required"`
+	TargetNamespace string `json:"targetNamespace"  binding:"required"`
+	DeleteSource    bool   `json:"deleteSource"`
+}
+
+// MigrateResponse is returned on successful migration.
+type MigrateResponse struct {
+	Name             string   `json:"name"`
+	SourceCluster    string   `json:"sourceCluster"`
+	SourceNamespace  string   `json:"sourceNamespace"`
+	TargetCluster    string   `json:"targetCluster"`
+	TargetNamespace  string   `json:"targetNamespace"`
+	SourceDeleted    bool     `json:"sourceDeleted"`
+	CopiedSecrets    []string `json:"copiedSecrets,omitempty"`
+	CopiedConfigMaps []string `json:"copiedConfigMaps,omitempty"`
+}

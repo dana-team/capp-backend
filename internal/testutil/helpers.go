@@ -194,6 +194,12 @@ func NewEngineHelperWithAdmin(t *testing.T, userClient, adminClient client.Clien
 	return &EngineHelper{t: t, Engine: EngineWithAdminClient(t, userClient, adminClient, meta, handler)}
 }
 
+// NewEngineHelperFrom creates an EngineHelper from an existing gin.Engine.
+func NewEngineHelperFrom(t *testing.T, engine *gin.Engine) *EngineHelper {
+	t.Helper()
+	return &EngineHelper{t: t, Engine: engine}
+}
+
 func (h *EngineHelper) Get(path string) *httptest.ResponseRecorder {
 	return ServeHTTP(h.Engine, http.MethodGet, path, nil)
 }

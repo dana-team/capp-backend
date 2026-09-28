@@ -212,6 +212,7 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Update a Capp |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Delete a Capp |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Trigger Capp GitOps sync |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate` | ✓ | Migrate Capp to another cluster/namespace |
 | `GET` | `/api/v1/clusters/:cluster/configmaps` | ✓ | List all ConfigMaps across namespaces |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | List ConfigMaps in a namespace |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | Create a ConfigMap |
@@ -348,7 +349,7 @@ internal/
 │   ├── cluster/
 │   │   └── namespaces/  # Namespace list + create handler
 │   └── namespaced/
-│       ├── capps/       # Capp CRUD + sync handler
+│       ├── capps/       # Capp CRUD, sync, and migrate handler
 │       ├── configmaps/  # ConfigMap CRUD handler
 │       └── secrets/     # Secret CRUD handler
 └── server/         # Gin engine setup, route registration, auth endpoints
