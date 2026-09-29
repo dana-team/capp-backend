@@ -737,6 +737,48 @@ func TestMigrate(t *testing.T) {
 		assert.Empty(t, resp.CopiedConfigMaps)
 	})
 
+	t.Run("cleans up copied resources when capp create fails", func(t *testing.T) {
+		sourceCapp := makeCapp("my-app", "ns1")
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: "s1", Namespace: "ns1",
+			Labels: map[string]string{"dana.io/capp-managed": "true"},
+		}}
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+			Name: "cm1", Namespace: "ns1",
+			Labels: map[string]string{"dana.io/capp-managed": "true"},
+		}}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, sourceCapp, secret, cm)
+		targetClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*cappv1alpha1.Capp); ok {
+					return errors.New("webhook denied capp")
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}, targetNS)
+
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
+				return targetClient, nil
+			},
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		assert.NotEqual(t, http.StatusOK, w.Code)
+
+		getSecret := targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "s1"}, &corev1.Secret{})
+		require.Error(t, getSecret, "secret should have been cleaned up")
+
+		getCM := targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "cm1"}, &corev1.ConfigMap{})
+		require.Error(t, getCM, "configmap should have been cleaned up")
+	})
+
 	t.Run("configmap collision on target", func(t *testing.T) {
 		sourceCapp := makeCapp("my-app", "ns1")
 		sourceCM := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
