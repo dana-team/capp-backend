@@ -15,6 +15,11 @@ import (
 	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 )
 
+const (
+	outputJSON = "json"
+	outputYAML = "yaml"
+)
+
 // ── Table column definitions ──────────────────────────────────────────────────
 
 var tableCols = []output.Column[apitypes.CappResponse]{
@@ -430,9 +435,9 @@ func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 			}
 
 			switch h.state.OutputFmt {
-			case "json":
+			case outputJSON:
 				return output.PrintJSON(cmd.OutOrStdout(), result)
-			case "yaml":
+			case outputYAML:
 				return output.PrintYAML(cmd.OutOrStdout(), result)
 			default:
 				if disable {
@@ -451,13 +456,92 @@ func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 	cmd.ValidArgsFunction = h.completeCappNames
 }
 
+func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
+	var (
+		targetCluster   string
+		targetNamespace string
+		deleteSource    bool
+		skipConfirm     bool
+	)
+
+	cmd := &cobra.Command{
+		Use:     "capps <name>",
+		Aliases: []string{"capp", "ca"},
+		Short:   "Migrate a Capp to another cluster or namespace",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cluster := h.state.Cluster
+			ns := h.state.Namespace
+			if cluster == "" {
+				return fmt.Errorf("--cluster is required")
+			}
+			if ns == "" {
+				return fmt.Errorf("--namespace is required")
+			}
+			if targetCluster == "" {
+				return fmt.Errorf("--target-cluster is required")
+			}
+			if targetNamespace == "" {
+				return fmt.Errorf("--target-namespace is required")
+			}
+			cappName := args[0]
+
+			if deleteSource && !skipConfirm {
+				fmt.Fprintf(cmd.OutOrStdout(), "Migrate Capp %q from %s/%s to %s/%s and DELETE source? [y/N] ", cappName, cluster, ns, targetCluster, targetNamespace) //nolint:errcheck
+				var answer string
+				fmt.Fscan(cmd.InOrStdin(), &answer) //nolint:errcheck
+				if answer != "y" && answer != "Y" {
+					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.") //nolint:errcheck
+					return nil
+				}
+			}
+
+			req := apitypes.MigrateRequest{
+				TargetCluster:   targetCluster,
+				TargetNamespace: targetNamespace,
+				DeleteSource:    deleteSource,
+			}
+
+			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/migrate", cluster, ns, cappName)
+			var result apitypes.MigrateResponse
+			if err := h.state.Client.Post(cmd.Context(), path, req, &result); err != nil {
+				return err
+			}
+
+			switch h.state.OutputFmt {
+			case outputJSON:
+				return output.PrintJSON(cmd.OutOrStdout(), result)
+			case outputYAML:
+				return output.PrintYAML(cmd.OutOrStdout(), result)
+			default:
+				summary := fmt.Sprintf("Migrated %q from %s/%s to %s/%s", result.Name, result.SourceCluster, result.SourceNamespace, result.TargetCluster, result.TargetNamespace)
+				if len(result.CopiedSecrets) > 0 || len(result.CopiedConfigMaps) > 0 {
+					summary += fmt.Sprintf(" (copied: %d secrets, %d configmaps)", len(result.CopiedSecrets), len(result.CopiedConfigMaps))
+				}
+				if result.SourceDeleted {
+					summary += " (source deleted)"
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), summary) //nolint:errcheck
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&targetCluster, "target-cluster", "", "target cluster name (required)")
+	cmd.Flags().StringVar(&targetNamespace, "target-namespace", "", "target namespace (required)")
+	cmd.Flags().BoolVar(&deleteSource, "delete-source", false, "delete the source Capp after migration")
+	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
+	parent.AddCommand(cmd)
+	cmd.ValidArgsFunction = h.completeCappNames
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func (h *handler) render(w io.Writer, items []apitypes.CappResponse, raw any) error {
 	switch h.state.OutputFmt {
-	case "json":
+	case outputJSON:
 		return output.PrintJSON(w, raw)
-	case "yaml":
+	case outputYAML:
 		return output.PrintYAML(w, raw)
 	case "wide":
 		output.PrintTable(w, tableCols, items, true)

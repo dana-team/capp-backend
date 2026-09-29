@@ -131,6 +131,7 @@ cappctl create   capps
 cappctl update   capps <name>
 cappctl delete   capps <name>
 cappctl sync     capps <name> [--disable]
+cappctl migrate  capps <name>
 ```
 
 **Global flags:** `--server`, `--token`, `--cluster`, `--namespace`, `--context`, `--output` (table|wide|json|yaml), `--insecure`
@@ -143,7 +144,7 @@ cappctl sync     capps <name> [--disable]
 
 **MCP integration:** `cappctl mcp-headers` (`internal/cli/auth/headers.go`) prints `{"Authorization": "Bearer <token>"}` after running the normal auth/refresh flow. Wire it up as a Claude Code MCP `headersHelper` so Claude Code re-runs it on every reconnect and on 401/403, picking up a refreshed token without restarting the session — see `claude mcp add-json` with `"headersHelper": "cappctl mcp-headers --context <name>"`.
 
-**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)` — implement as a no-op if sync is not applicable to the resource.
+**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)` and `RegisterMigrateCommand(parent *cobra.Command)` — implement as no-ops if sync or migrate is not applicable to the resource.
 
 ### Startup Sequence
 1. Load config (YAML + env vars) → validate

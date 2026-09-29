@@ -119,9 +119,10 @@ func New(state *State, registry *resource.Registry) *cobra.Command {
 	updateCmd := &cobra.Command{Use: "update", Short: "Update a resource", Args: cobra.MinimumNArgs(1)}
 	deleteCmd := &cobra.Command{Use: "delete", Short: "Delete a resource", Args: cobra.MinimumNArgs(1)}
 	syncCmd := &cobra.Command{Use: "sync", Short: "Sync a resource to the GitOps repository", Args: cobra.MinimumNArgs(1)}
+	migrateCmd := &cobra.Command{Use: "migrate", Short: "Migrate a resource to another cluster or namespace", Args: cobra.MinimumNArgs(1)}
 
-	registry.MountAll(getCmd, createCmd, updateCmd, deleteCmd, syncCmd)
-	root.AddCommand(getCmd, createCmd, updateCmd, deleteCmd, syncCmd)
+	registry.MountAll(getCmd, createCmd, updateCmd, deleteCmd, syncCmd, migrateCmd)
+	root.AddCommand(getCmd, createCmd, updateCmd, deleteCmd, syncCmd, migrateCmd)
 
 	return root
 }

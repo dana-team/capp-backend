@@ -20,6 +20,8 @@ type ResourceCommand interface {
 	RegisterDeleteCommand(parent *cobra.Command)
 	// RegisterSyncCommand attaches the sync sub-command to parent.
 	RegisterSyncCommand(parent *cobra.Command)
+	// RegisterMigrateCommand attaches the migrate sub-command to parent.
+	RegisterMigrateCommand(parent *cobra.Command)
 }
 
 // Registry holds all registered ResourceCommands.
@@ -35,13 +37,14 @@ func (r *Registry) Register(h ResourceCommand) {
 	r.handlers = append(r.handlers, h)
 }
 
-// MountAll attaches each handler's commands to the five verb parents.
-func (r *Registry) MountAll(get, create, update, delete, sync *cobra.Command) {
+// MountAll attaches each handler's commands to the six verb parents.
+func (r *Registry) MountAll(get, create, update, delete, sync, migrate *cobra.Command) {
 	for _, h := range r.handlers {
 		h.RegisterGetCommand(get)
 		h.RegisterCreateCommand(create)
 		h.RegisterUpdateCommand(update)
 		h.RegisterDeleteCommand(delete)
 		h.RegisterSyncCommand(sync)
+		h.RegisterMigrateCommand(migrate)
 	}
 }

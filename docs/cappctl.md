@@ -457,6 +457,45 @@ cappctl sync capps my-app --cluster prod --namespace my-team --disable -y
 # → Git sync disabled for "my-app"
 ```
 
+### Migrate
+
+```
+cappctl migrate capps <name> [flags]
+```
+
+Migrates a Capp to another cluster or namespace. Copies the Capp and its managed Secrets/ConfigMaps to the target. Optionally deletes the source Capp after migration.
+
+**Required flags:**
+
+| Flag                 | Description                          |
+|----------------------|--------------------------------------|
+| `--target-cluster`   | Target cluster name                  |
+| `--target-namespace` | Target namespace                     |
+
+**Optional flags:**
+
+| Flag              | Short | Description                                         |
+|-------------------|-------|-----------------------------------------------------|
+| `--delete-source` |       | Delete the source Capp after migration               |
+| `--yes`           | `-y`  | Skip confirmation prompt (only applies with `--delete-source`) |
+
+**Examples:**
+
+```bash
+# Copy a Capp to another cluster
+cappctl migrate capps my-app --cluster east --namespace team-a \
+  --target-cluster west --target-namespace team-a
+
+# Migrate and delete the source
+cappctl migrate capps my-app --cluster east --namespace team-a \
+  --target-cluster west --target-namespace team-b --delete-source
+# → Migrate Capp "my-app" from east/team-a to west/team-b and DELETE source? [y/N]
+
+# Skip confirmation
+cappctl migrate capps my-app --cluster east --namespace team-a \
+  --target-cluster west --target-namespace team-b --delete-source -y
+```
+
 ---
 
 ## Insecure TLS
