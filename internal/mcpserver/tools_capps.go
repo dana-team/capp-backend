@@ -8,8 +8,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// CappToolSet exposes full CRUD plus sync for the Capp custom resource,
-// mirroring the backend's own capps.Handler routes.
+// CappToolSet exposes full CRUD plus sync and migrate for the Capp custom
+// resource, mirroring the backend's own capps.Handler routes.
 type CappToolSet struct{}
 
 func (CappToolSet) Name() string { return "capps" }
@@ -54,6 +54,13 @@ type cappSyncInput struct {
 	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string `json:"namespace" jsonschema:"the namespace containing the capp"`
 	Name      string `json:"name" jsonschema:"the capp name to sync"`
+}
+
+type cappMigrateInput struct {
+	Cluster   string `json:"cluster" jsonschema:"the source cluster name"`
+	Namespace string `json:"namespace" jsonschema:"the source namespace containing the capp"`
+	Name      string `json:"name" jsonschema:"the capp name to migrate"`
+	capps.MigrateRequest
 }
 
 func (CappToolSet) Register(s *mcp.Server, be *Backend) {
@@ -167,6 +174,22 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 		var out capps.SyncResponse
 		if err := c.Delete(ctx, path, &out); err != nil {
 			return nil, capps.SyncResponse{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "capp_migrate",
+		Description: "Migrate a Capp and its managed Secrets/ConfigMaps to a different cluster or namespace. When deleteSource is true the original Capp is removed after a successful copy — this is irreversible.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappMigrateInput) (*mcp.CallToolResult, capps.MigrateResponse, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, capps.MigrateResponse{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/migrate", in.Cluster, in.Namespace, in.Name)
+		var out capps.MigrateResponse
+		if err := c.Post(ctx, path, in.MigrateRequest, &out); err != nil {
+			return nil, capps.MigrateResponse{}, err
 		}
 		return nil, out, nil
 	})
