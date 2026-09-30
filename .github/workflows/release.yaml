@@ -151,7 +151,6 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           echo "CHART_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Update Chart.yaml version
@@ -170,7 +169,7 @@ jobs:
         run: |
           helm package helm/${{ env.CHART_NAME }} \
             --version ${{ steps.version.outputs.CHART_VERSION }} \
-            --app-version ${{ steps.version.outputs.VERSION }} \
+            --app-version ${{ steps.version.outputs.CHART_VERSION }} \
             --destination /tmp/charts/
 
       - name: Push chart to GHCR OCI
@@ -195,7 +194,6 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           echo "CHART_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Update Chart.yaml version
@@ -214,7 +212,7 @@ jobs:
         run: |
           helm package helm/${{ env.MCP_CHART_NAME }} \
             --version ${{ steps.version.outputs.CHART_VERSION }} \
-            --app-version ${{ steps.version.outputs.VERSION }} \
+            --app-version ${{ steps.version.outputs.CHART_VERSION }} \
             --destination /tmp/charts/
 
       - name: Push chart to GHCR OCI
