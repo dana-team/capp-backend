@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// NamespaceToolSet exposes the namespace lifecycle: list, create, and the two
+// NamespaceToolSet exposes the namespace lifecycle: list, create, delete, and the two
 // update flavors capp-backend supports (full-replace vs. additive-users).
 type NamespaceToolSet struct{}
 
@@ -27,6 +27,17 @@ type namespaceUpdateInput struct {
 	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string `json:"namespace" jsonschema:"the namespace to update"`
 	ns.UpdateNamespaceRequest
+}
+
+type namespaceDeleteInput struct {
+	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
+	Namespace string `json:"namespace" jsonschema:"the namespace to delete"`
+}
+
+type namespaceDeleteOutput struct {
+	Deleted   bool   `json:"deleted"`
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
 }
 
 // namespaceAddUsersInput intentionally does not embed ns.PatchNamespaceRequest:
@@ -84,6 +95,21 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 			return nil, ns.NamespaceItem{}, err
 		}
 		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "namespace_delete",
+		Description: "Delete a CAPP-enabled namespace. The namespace must be empty — if it still contains Capps, the server rejects the request with a conflict error. This is irreversible.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceDeleteInput) (*mcp.CallToolResult, namespaceDeleteOutput, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, namespaceDeleteOutput{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s", in.Cluster, in.Namespace)
+		if err := c.Delete(ctx, path); err != nil {
+			return nil, namespaceDeleteOutput{}, err
+		}
+		return nil, namespaceDeleteOutput{Deleted: true, Cluster: in.Cluster, Namespace: in.Namespace}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
