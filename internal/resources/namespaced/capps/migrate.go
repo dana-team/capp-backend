@@ -83,9 +83,35 @@ func listManagedResources(ctx context.Context, k8sClient client.Client, namespac
 	return secrets.Items, configMaps.Items, nil
 }
 
+// cleanupResources deletes the given secrets and configmaps on a best-effort
+// basis. Not-found errors are ignored; the first real error is returned.
+func cleanupResources(ctx context.Context, k8sClient client.Client, namespace string, secrets []corev1.Secret, configMaps []corev1.ConfigMap) error {
+	var cleanupErr error
+	for i := range secrets {
+		obj := &corev1.Secret{}
+		obj.Name = secrets[i].Name
+		obj.Namespace = namespace
+		if err := k8sClient.Delete(ctx, obj); err != nil && !k8serrors.IsNotFound(err) && cleanupErr == nil {
+			cleanupErr = err
+		}
+	}
+
+	for i := range configMaps {
+		obj := &corev1.ConfigMap{}
+		obj.Name = configMaps[i].Name
+		obj.Namespace = namespace
+		if err := k8sClient.Delete(ctx, obj); err != nil && !k8serrors.IsNotFound(err) && cleanupErr == nil {
+			cleanupErr = err
+		}
+	}
+
+	return cleanupErr
+}
+
 // copyDependentResources checks that none of the source Secrets or ConfigMaps
 // exist on the target, then creates them all. Returns a conflict error on the
-// first collision without writing anything.
+// first collision without writing anything. If a create fails mid-batch,
+// already-created resources are best-effort deleted before returning.
 func copyDependentResources(ctx context.Context, targetClient client.Client, targetNamespace string, secrets []corev1.Secret, configMaps []corev1.ConfigMap) error {
 	for i := range secrets {
 		key := client.ObjectKey{Namespace: targetNamespace, Name: secrets[i].Name}
@@ -105,18 +131,25 @@ func copyDependentResources(ctx context.Context, targetClient client.Client, tar
 		}
 	}
 
+	var createdSecrets []corev1.Secret
+	var createdConfigMaps []corev1.ConfigMap
+
 	for i := range secrets {
 		prepared := prepareDependentResource(&secrets[i], targetNamespace)
 		if err := targetClient.Create(ctx, prepared); err != nil {
+			_ = cleanupResources(ctx, targetClient, targetNamespace, createdSecrets, createdConfigMaps)
 			return err
 		}
+		createdSecrets = append(createdSecrets, secrets[i])
 	}
 
 	for i := range configMaps {
 		prepared := prepareDependentResource(&configMaps[i], targetNamespace)
 		if err := targetClient.Create(ctx, prepared); err != nil {
+			_ = cleanupResources(ctx, targetClient, targetNamespace, createdSecrets, createdConfigMaps)
 			return err
 		}
+		createdConfigMaps = append(createdConfigMaps, configMaps[i])
 	}
 
 	return nil

@@ -403,6 +403,9 @@ func (h *Handler) migrate(c *gin.Context) {
 
 	targetCapp := prepareCapp(&sourceCapp, req.TargetNamespace)
 	if err := targetClient.Create(ctx, targetCapp); err != nil {
+		if cleanupErr := cleanupResources(ctx, targetClient, req.TargetNamespace, secrets, configMaps); cleanupErr != nil {
+			_ = c.Error(fmt.Errorf("rollback copied resources: %w", cleanupErr))
+		}
 		apierrors.Respond(c, err)
 		return
 	}

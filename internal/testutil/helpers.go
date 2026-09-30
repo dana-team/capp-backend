@@ -66,6 +66,17 @@ func FakeClient(t *testing.T, objects ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(TestScheme(t)).WithObjects(objects...).Build()
 }
 
+// FakeClientWithInterceptors creates a fake client with custom interceptor
+// functions, useful for injecting errors into specific operations.
+func FakeClientWithInterceptors(t *testing.T, funcs interceptor.Funcs, objects ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(TestScheme(t)).
+		WithObjects(objects...).
+		WithInterceptorFuncs(funcs).
+		Build()
+}
+
 // FakeClientAllowSAR creates a fake client where all SelfSubjectAccessReview
 // creations succeed with Allowed=true, enabling tests to exercise authorized paths.
 func FakeClientAllowSAR(t *testing.T, objects ...client.Object) client.Client {

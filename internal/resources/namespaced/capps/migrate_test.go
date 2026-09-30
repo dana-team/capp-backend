@@ -2,6 +2,7 @@ package capps
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	knativev1 "knative.dev/serving/pkg/apis/serving/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestPrepareCapp(t *testing.T) {
@@ -349,5 +351,85 @@ func TestCopyDependentResources(t *testing.T) {
 		targetClient := testutil.FakeClient(t)
 		err := copyDependentResources(context.Background(), targetClient, "target-ns", nil, nil)
 		require.NoError(t, err)
+	})
+
+	t.Run("rolls back created secrets on later secret create failure", func(t *testing.T) {
+		var createCount int
+		targetClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					createCount++
+					if createCount == 2 {
+						return fmt.Errorf("transient API error")
+					}
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		})
+
+		secrets := []corev1.Secret{
+			{ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "src", Labels: managedLabels}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "s2", Namespace: "src", Labels: managedLabels}},
+		}
+		err := copyDependentResources(context.Background(), targetClient, "target-ns", secrets, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "transient API error")
+
+		var s corev1.Secret
+		getErr := targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "s1"}, &s)
+		assert.Error(t, getErr, "s1 should have been cleaned up")
+	})
+
+	t.Run("rolls back secrets on configmap create failure", func(t *testing.T) {
+		targetClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					return fmt.Errorf("configmap create failed")
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		})
+
+		secrets := []corev1.Secret{
+			{ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "src", Labels: managedLabels}},
+		}
+		configMaps := []corev1.ConfigMap{
+			{ObjectMeta: metav1.ObjectMeta{Name: "cm1", Namespace: "src", Labels: managedLabels}},
+		}
+		err := copyDependentResources(context.Background(), targetClient, "target-ns", secrets, configMaps)
+		require.Error(t, err)
+
+		var s corev1.Secret
+		getErr := targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "s1"}, &s)
+		assert.Error(t, getErr, "s1 should have been cleaned up")
+	})
+
+	t.Run("returns original error when cleanup also fails", func(t *testing.T) {
+		var createCount int
+		targetClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					createCount++
+					if createCount == 2 {
+						return fmt.Errorf("create failed")
+					}
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					return fmt.Errorf("delete also failed")
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		})
+
+		secrets := []corev1.Secret{
+			{ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "src", Labels: managedLabels}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "s2", Namespace: "src", Labels: managedLabels}},
+		}
+		err := copyDependentResources(context.Background(), targetClient, "target-ns", secrets, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create failed", "original error must be returned, not cleanup error")
 	})
 }
