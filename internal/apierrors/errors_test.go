@@ -51,9 +51,10 @@ func TestNewNotFound(t *testing.T) {
 }
 
 func TestNewConflict(t *testing.T) {
-	e := NewConflict("capp", "my-app")
+	e := NewConflict("capp \"my-app\" already exists")
 	assert.Equal(t, CodeConflict, e.Code)
 	assert.Equal(t, http.StatusConflict, e.Status)
+	assert.Equal(t, "capp \"my-app\" already exists", e.Message)
 }
 
 func TestNewForbidden(t *testing.T) {

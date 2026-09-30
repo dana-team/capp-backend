@@ -46,6 +46,7 @@ GET    /api/v1/clusters[/:cluster]                     (auth)
 
 GET    /api/v1/clusters/:cluster/namespaces            (auth + cluster) — lists CAPP-labeled namespaces, filtered by SelfSubjectAccessReview
 POST   /api/v1/clusters/:cluster/namespaces            (auth + cluster) — creates namespace with dana.io/capp-ns=true label; response includes canCreate field
+DELETE /api/v1/clusters/:cluster/namespaces/:namespace (auth + cluster) — deletes empty namespace; 409 if Capps exist
 
 GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list all capps across namespaces
        /api/v1/clusters/:cluster/namespaces/:namespace/capps[/:name]         (CRUD)

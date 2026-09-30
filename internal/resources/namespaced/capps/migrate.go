@@ -2,6 +2,7 @@ package capps
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
@@ -89,7 +90,7 @@ func copyDependentResources(ctx context.Context, targetClient client.Client, tar
 	for i := range secrets {
 		key := client.ObjectKey{Namespace: targetNamespace, Name: secrets[i].Name}
 		if err := targetClient.Get(ctx, key, &corev1.Secret{}); err == nil {
-			return apierrors.NewConflict("Secret", secrets[i].Name)
+			return apierrors.NewConflict(fmt.Sprintf("Secret %q already exists", secrets[i].Name))
 		} else if !k8serrors.IsNotFound(err) {
 			return err
 		}
@@ -98,7 +99,7 @@ func copyDependentResources(ctx context.Context, targetClient client.Client, tar
 	for i := range configMaps {
 		key := client.ObjectKey{Namespace: targetNamespace, Name: configMaps[i].Name}
 		if err := targetClient.Get(ctx, key, &corev1.ConfigMap{}); err == nil {
-			return apierrors.NewConflict("ConfigMap", configMaps[i].Name)
+			return apierrors.NewConflict(fmt.Sprintf("ConfigMap %q already exists", configMaps[i].Name))
 		} else if !k8serrors.IsNotFound(err) {
 			return err
 		}

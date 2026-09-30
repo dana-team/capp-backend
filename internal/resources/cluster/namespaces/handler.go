@@ -7,6 +7,7 @@
 //	POST   /api/v1/clusters/:cluster/namespaces          — create namespace with quota + RoleBinding
 //	PUT    /api/v1/clusters/:cluster/namespaces/:namespace    — replace quota and RoleBinding
 //	PATCH  /api/v1/clusters/:cluster/namespaces/:namespace    — add users to existing RoleBinding
+//	DELETE /api/v1/clusters/:cluster/namespaces/:namespace    — delete empty namespace
 //
 // On OpenShift clusters, it lists project.openshift.io/v1 Projects using the
 // user-scoped client — the Projects API automatically returns only the projects
@@ -25,6 +26,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/utils"
+	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -62,6 +64,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/namespaces", h.create)
 	rg.PUT("/namespaces/:namespace", h.update)
 	rg.PATCH("/namespaces/:namespace", h.patch)
+	rg.DELETE("/namespaces/:namespace", h.delete)
 }
 
 // list handles GET /api/v1/clusters/:cluster/namespaces.
@@ -108,7 +111,7 @@ func (h *Handler) list(c *gin.Context) {
 		return
 	}
 
-	canCreate, _ := canCreateNamespaces(c.Request.Context(), userClient)
+	canCreate, _ := canAccessNamespaces(c.Request.Context(), userClient, "create")
 
 	for i := range items {
 		items[i].CanEdit = canCreate
@@ -234,7 +237,7 @@ func (h *Handler) get(c *gin.Context) {
 			users = append(users, subject.Name)
 		}
 	}
-	canEdit, _ := canCreateNamespaces(c.Request.Context(), userClient)
+	canEdit, _ := canAccessNamespaces(c.Request.Context(), userClient, "create")
 	item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quota, Users: &users, CanEdit: canEdit}
 	c.JSON(http.StatusOK, item)
 }
@@ -248,7 +251,7 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 
-	allowed, err := canCreateNamespaces(c.Request.Context(), userClient)
+	allowed, err := canAccessNamespaces(c.Request.Context(), userClient, "create")
 	if err != nil || !allowed {
 		apierrors.Respond(c, apierrors.NewForbidden("not allowed to create namespaces"))
 		return
@@ -285,7 +288,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	allowed, err := canCreateNamespaces(c.Request.Context(), userClient)
+	allowed, err := canAccessNamespaces(c.Request.Context(), userClient, "create")
 	if err != nil || !allowed {
 		apierrors.Respond(c, apierrors.NewForbidden("not allowed to update namespaces"))
 		return
@@ -435,9 +438,55 @@ func (h *Handler) patch(c *gin.Context) {
 	}
 
 	item := buildNamespaceItem(c.Request.Context(), adminClient, namespaceName, string(ns.Status.Phase))
-	canEdit, _ := canCreateNamespaces(c.Request.Context(), userClient)
+	canEdit, _ := canAccessNamespaces(c.Request.Context(), userClient, "create")
 	item.CanEdit = canEdit
 	c.JSON(http.StatusOK, item)
+}
+
+// delete handles DELETE /api/v1/clusters/:cluster/namespaces/:namespace.
+// Rejects deletion when the namespace still contains Capps (409 Conflict).
+func (h *Handler) delete(c *gin.Context) {
+	namespaceName := c.Param("namespace")
+	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
+		return
+	}
+
+	allowed, err := canAccessNamespaces(c.Request.Context(), userClient, "delete")
+	if err != nil || !allowed {
+		apierrors.Respond(c, apierrors.NewForbidden("not allowed to delete namespaces"))
+		return
+	}
+
+	adminClient, ok := c.MustGet(string(middleware.AdminK8sClientKey)).(client.Client)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("AdminK8sClientKey")))
+		return
+	}
+
+	ns := &corev1.Namespace{}
+	if err := adminClient.Get(c.Request.Context(), client.ObjectKey{Name: namespaceName}, ns); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	var cappList cappv1alpha1.CappList
+	if err := adminClient.List(c.Request.Context(), &cappList, client.InNamespace(namespaceName)); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	if count := len(cappList.Items); count > 0 {
+		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf("namespace %q contains %d Capp(s)", namespaceName, count)))
+		return
+	}
+
+	if err := adminClient.Delete(c.Request.Context(), ns); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
 
 // buildNamespaceItem reads the current ResourceQuota and RoleBinding from the
@@ -465,11 +514,11 @@ func buildNamespaceItem(ctx context.Context, adminClient client.Client, nsName, 
 	return item
 }
 
-func canCreateNamespaces(ctx context.Context, userClient client.Client) (bool, error) {
+func canAccessNamespaces(ctx context.Context, userClient client.Client, verb string) (bool, error) {
 	sar := &authorizationv1.SelfSubjectAccessReview{
 		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Verb:     "create",
+				Verb:     verb,
 				Group:    "",
 				Resource: "namespaces",
 			},
@@ -491,7 +540,7 @@ func createNamespace(ctx context.Context, adminClient client.Client, request Cre
 
 	if err := adminClient.Create(ctx, ns); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
-			return apierrors.NewConflict("namespace", request.Name)
+			return apierrors.NewConflict(fmt.Sprintf("namespace %q already exists", request.Name))
 		}
 		return err
 	}

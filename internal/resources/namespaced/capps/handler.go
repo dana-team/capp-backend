@@ -383,7 +383,7 @@ func (h *Handler) migrate(c *gin.Context) {
 
 	var existingTarget cappv1alpha1.Capp
 	if err := targetClient.Get(ctx, client.ObjectKey{Namespace: req.TargetNamespace, Name: name}, &existingTarget); err == nil {
-		apierrors.Respond(c, apierrors.NewConflict("Capp", name))
+		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf("Capp %q already exists", name)))
 		return
 	} else if !k8serrors.IsNotFound(err) {
 		apierrors.Respond(c, err)
