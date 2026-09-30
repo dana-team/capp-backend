@@ -4,6 +4,7 @@
 package gitops
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ type Client struct {
 	branch     string
 	pathPrefix string
 	cloneDir   string
+	timeout    time.Duration
 	logger     *zap.Logger
 }
 
@@ -77,6 +79,7 @@ func NewClient(cfg config.GitOpsConfig, logger *zap.Logger, cloneDir string) (*C
 		branch:     cfg.Branch,
 		pathPrefix: cfg.PathPrefix,
 		cloneDir:   cloneDir,
+		timeout:    time.Duration(cfg.TimeoutSeconds) * time.Second,
 		logger:     logger,
 	}, nil
 }
@@ -108,11 +111,13 @@ func (c *Client) BuildRelPath(gitOpsPath, namespace, cappName string) string {
 	return filepath.Join(c.pathPrefix, gitOpsPath, namespace, cappName+".yaml")
 }
 
-// SyncValues writes a per-capp values file to the GitOps repository,
-// commits it, and pushes to the remote. Returns the commit SHA on success.
+// SyncValues writes a per-capp values file to the GitOps repository.
 func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	if err := c.pullCtx(ctx); err != nil {
 		return "", fmt.Errorf("pull: %w", err)
@@ -125,6 +130,15 @@ func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName
 
 	relPath := c.BuildRelPath(gitOpsPath, namespace, cappName)
 	absPath := filepath.Join(wt.Filesystem.Root(), relPath)
+
+	if current, err := os.ReadFile(absPath); err == nil && bytes.Equal(current, valuesYAML) {
+		head, err := c.repo.Head()
+		if err != nil {
+			return "", fmt.Errorf("resolve HEAD: %w", err)
+		}
+		c.logger.Debug("values unchanged, skipping commit", zap.String("path", relPath))
+		return head.Hash().String(), nil
+	}
 
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(relPath), err)
@@ -165,6 +179,9 @@ func (c *Client) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName
 func (c *Client) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	if err := c.pullCtx(ctx); err != nil {
 		return "", fmt.Errorf("pull: %w", err)
