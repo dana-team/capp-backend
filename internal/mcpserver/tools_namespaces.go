@@ -106,7 +106,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 			return nil, namespaceDeleteOutput{}, err
 		}
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s", in.Cluster, in.Namespace)
-		if err := c.Delete(ctx, path); err != nil {
+		if err := c.Delete(ctx, path, nil); err != nil {
 			return nil, namespaceDeleteOutput{}, err
 		}
 		return nil, namespaceDeleteOutput{Deleted: true, Cluster: in.Cluster, Namespace: in.Namespace}, nil
