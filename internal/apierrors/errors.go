@@ -85,13 +85,9 @@ func NewNotFound(resource, name string) *APIError {
 	}
 }
 
-// NewConflict returns a 409 error when a resource already exists.
-func NewConflict(resource, name string) *APIError {
-	return &APIError{
-		Code:    CodeConflict,
-		Message: fmt.Sprintf("%s %q already exists", resource, name),
-		Status:  http.StatusConflict,
-	}
+// NewConflict returns a 409 error with the provided message.
+func NewConflict(msg string) *APIError {
+	return &APIError{Code: CodeConflict, Message: msg, Status: http.StatusConflict}
 }
 
 // NewForbidden returns a 403 error.

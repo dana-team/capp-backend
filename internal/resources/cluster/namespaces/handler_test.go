@@ -10,6 +10,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/testutil"
+	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -598,4 +599,46 @@ func TestQuotaInfoFromK8s(t *testing.T) {
 			}
 		})
 	}
+}
+
+// -- Delete tests --
+
+func TestDelete(t *testing.T) {
+	t.Run("succeeds", func(t *testing.T) {
+		ns := managedNamespace("my-ns")
+		e := engine(t, cluster.ClusterMeta{Name: "prod"}, []client.Object{ns})
+		w := e.Delete("/namespaces/my-ns")
+
+		assert.Equal(t, http.StatusNoContent, w.Code)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
+		w := e.Delete("/namespaces/missing-ns")
+
+		assert.GreaterOrEqual(t, w.Code, 400)
+	})
+
+	t.Run("blocked by capp", func(t *testing.T) {
+		ns := managedNamespace("my-ns")
+		capp := &cappv1alpha1.Capp{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "my-ns"},
+		}
+		e := engine(t, cluster.ClusterMeta{Name: "prod"}, []client.Object{ns, capp})
+		w := e.Delete("/namespaces/my-ns")
+
+		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Contains(t, w.Body.String(), "contains")
+	})
+
+	t.Run("unauthorized", func(t *testing.T) {
+		ns := managedNamespace("my-ns")
+		e := testutil.NewEngineHelperWithAdmin(t,
+			testutil.FakeClientDenySAR(t),
+			testutil.FakeClientAllowSAR(t, ns),
+			cluster.ClusterMeta{Name: "prod"}, New(zap.NewNop()))
+		w := e.Delete("/namespaces/my-ns")
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
 }
