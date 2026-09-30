@@ -270,6 +270,190 @@ func TestCreate_RouteSpec_AllFields(t *testing.T) {
 	assert.Equal(t, int64(30), *received.RouteSpec.RouteTimeoutSeconds)
 }
 
+// newMigrateCmd builds a minimal migrate cobra tree wired to a test HTTP server.
+func newMigrateCmd(t *testing.T, serverURL, cluster, namespace, outputFmt string) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+
+	state := &root.State{
+		Client:    client.New(serverURL, "test-token", false),
+		Cluster:   cluster,
+		Namespace: namespace,
+		OutputFmt: outputFmt,
+	}
+
+	h := New(state)
+	parent := &cobra.Command{Use: "migrate"}
+	h.RegisterMigrateCommand(parent)
+
+	buf := &bytes.Buffer{}
+	parent.SetOut(buf)
+	parent.SetErr(buf)
+
+	return parent, buf
+}
+
+func TestMigrate(t *testing.T) {
+	var received apitypes.MigrateRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/api/v1/clusters/east/namespaces/ns1/capps/my-app/migrate", r.URL.Path)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.MigrateResponse{ //nolint:errcheck
+			Name:             "my-app",
+			SourceCluster:    "east",
+			SourceNamespace:  "ns1",
+			TargetCluster:    received.TargetCluster,
+			TargetNamespace:  received.TargetNamespace,
+			SourceDeleted:    false,
+			CopiedSecrets:    []string{"db-creds"},
+			CopiedConfigMaps: []string{"app-config"},
+		})
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "east", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west", "--target-namespace", "prod"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "west", received.TargetCluster)
+	assert.Equal(t, "prod", received.TargetNamespace)
+	assert.False(t, received.DeleteSource)
+
+	out := buf.String()
+	assert.Contains(t, out, `Migrated "my-app" from east/ns1 to west/prod`)
+	assert.Contains(t, out, "copied: 1 secrets, 1 configmaps")
+}
+
+func TestMigrateJSONOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.MigrateResponse{ //nolint:errcheck
+			Name:            "web",
+			SourceCluster:   "east",
+			SourceNamespace: "dev",
+			TargetCluster:   "west",
+			TargetNamespace: "prod",
+			SourceDeleted:   true,
+		})
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "east", "dev", "json")
+	cmd.SetArgs([]string{"capps", "web", "--target-cluster", "west", "--target-namespace", "prod"})
+	require.NoError(t, cmd.Execute())
+
+	var result apitypes.MigrateResponse
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &result))
+	assert.Equal(t, "web", result.Name)
+	assert.Equal(t, "west", result.TargetCluster)
+	assert.Equal(t, "prod", result.TargetNamespace)
+	assert.True(t, result.SourceDeleted)
+}
+
+func TestMigrateYAMLOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.MigrateResponse{ //nolint:errcheck
+			Name:            "api",
+			SourceCluster:   "c1",
+			SourceNamespace: "ns1",
+			TargetCluster:   "c2",
+			TargetNamespace: "ns2",
+		})
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "c1", "ns1", "yaml")
+	cmd.SetArgs([]string{"capps", "api", "--target-cluster", "c2", "--target-namespace", "ns2"})
+	require.NoError(t, cmd.Execute())
+
+	out := buf.String()
+	assert.Contains(t, out, "name: api")
+	assert.Contains(t, out, "targetCluster: c2")
+	assert.Contains(t, out, "targetNamespace: ns2")
+}
+
+func TestMigrateMissingCluster(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west", "--target-namespace", "prod"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--cluster is required")
+}
+
+func TestMigrateMissingNamespace(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west", "--target-namespace", "prod"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--namespace is required")
+}
+
+func TestMigrateMissingTargetCluster(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-namespace", "prod"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--target-cluster is required")
+}
+
+func TestMigrateMissingTargetNamespace(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--target-namespace is required")
+}
+
+func TestMigrateMissingName(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps"})
+	err := cmd.Execute()
+	require.Error(t, err)
+}
+
+func TestMigrateAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"error": map[string]any{
+				"code":    "CAPP_NOT_FOUND",
+				"message": `Capp "gone" not found`,
+				"status":  404,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	cmd, _ := newMigrateCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "gone", "--target-cluster", "west", "--target-namespace", "prod"})
+	err := cmd.Execute()
+	require.Error(t, err)
+
+	var apiErr *client.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, "CAPP_NOT_FOUND", apiErr.Code)
+}
+
+func TestMigrateDeleteSourceConfirmAbort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be called when user aborts confirmation")
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetIn(bytes.NewBufferString("n\n"))
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west", "--target-namespace", "prod", "--delete-source"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Contains(t, buf.String(), "Aborted.")
+}
+
 func TestUpdate_RouteSpec_TLSWithoutHostname(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
