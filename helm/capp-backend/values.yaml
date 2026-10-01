@@ -128,6 +128,22 @@ config:
           cpu: "2000m"
           memory: "2Gi"
 
+  # On-demand per-capp benchmarking, powered by the capp-monitoring chart.
+  # The chart is self-contained and can be deployed into any namespace.
+  benchmarks:
+    enabled: false
+    chartRef: ""                     # OCI ref, e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"
+
+  # VictoriaMetrics / Prometheus-compatible metrics proxy.
+  # Proxies PromQL queries from the frontend to a VictoriaMetrics server
+  # for per-capp performance dashboards.
+  victoriaMetrics:
+    enabled: false
+    url: ""                          # e.g. "http://name-rcs.apps.ocp4.example.com"
+    caCert: ""                       # base64-encoded PEM CA bundle (optional)
+    insecure: false
+    timeoutSeconds: 30
+
   # GitOps — push Capp values to a git repository for ArgoCD sync.
   # Disabled by default. Enable and provide credentials to activate.
   gitops:
