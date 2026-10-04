@@ -60,7 +60,7 @@ func TestPrepareCapp(t *testing.T) {
 	}
 
 	t.Run("strips cluster-specific metadata", func(t *testing.T) {
-		result := prepareCapp(source, "target-ns")
+		result := prepareCapp(source, "target-ns", "")
 
 		assert.Equal(t, types.UID(""), result.UID)
 		assert.Empty(t, result.ResourceVersion)
@@ -73,12 +73,12 @@ func TestPrepareCapp(t *testing.T) {
 	})
 
 	t.Run("sets target namespace", func(t *testing.T) {
-		result := prepareCapp(source, "other-ns")
+		result := prepareCapp(source, "other-ns", "")
 		assert.Equal(t, "other-ns", result.Namespace)
 	})
 
 	t.Run("preserves name labels and spec", func(t *testing.T) {
-		result := prepareCapp(source, "target-ns")
+		result := prepareCapp(source, "target-ns", "")
 
 		assert.Equal(t, "my-app", result.Name)
 		assert.Equal(t, map[string]string{"app": "test"}, result.Labels)
@@ -87,7 +87,7 @@ func TestPrepareCapp(t *testing.T) {
 
 	t.Run("does not mutate source", func(t *testing.T) {
 		original := source.DeepCopy()
-		_ = prepareCapp(source, "target-ns")
+		_ = prepareCapp(source, "target-ns", "")
 
 		assert.Equal(t, original.UID, source.UID)
 		assert.Equal(t, original.Namespace, source.Namespace)
@@ -98,7 +98,7 @@ func TestPrepareCapp(t *testing.T) {
 		withHostname := source.DeepCopy()
 		withHostname.Spec.RouteSpec.Hostname = hostname
 
-		result := prepareCapp(withHostname, "target-ns")
+		result := prepareCapp(withHostname, "target-ns", "")
 
 		require.Contains(t, result.Annotations, migrationBypassAnnotation)
 		assert.Equal(t, "true", result.Annotations[migrationBypassAnnotation])
@@ -106,7 +106,7 @@ func TestPrepareCapp(t *testing.T) {
 	})
 
 	t.Run("no bypass annotation when hostname is empty", func(t *testing.T) {
-		result := prepareCapp(source, "target-ns")
+		result := prepareCapp(source, "target-ns", "")
 		assert.NotContains(t, result.Annotations, migrationBypassAnnotation)
 	})
 
@@ -115,10 +115,20 @@ func TestPrepareCapp(t *testing.T) {
 		withHostname.Spec.RouteSpec.Hostname = hostname
 		withHostname.Annotations = nil
 
-		result := prepareCapp(withHostname, "target-ns")
+		result := prepareCapp(withHostname, "target-ns", "")
 
 		require.NotNil(t, result.Annotations)
 		assert.Equal(t, "true", result.Annotations[migrationBypassAnnotation])
+	})
+
+	t.Run("overrides hostname and skips bypass when targetHostname set", func(t *testing.T) {
+		withHostname := source.DeepCopy()
+		withHostname.Spec.RouteSpec.Hostname = hostname
+
+		result := prepareCapp(withHostname, "target-ns", "new.example.com")
+
+		assert.Equal(t, "new.example.com", result.Spec.RouteSpec.Hostname)
+		assert.NotContains(t, result.Annotations, migrationBypassAnnotation)
 	})
 }
 
@@ -432,4 +442,69 @@ func TestCopyDependentResources(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create failed", "original error must be returned, not cleanup error")
 	})
+}
+
+func TestResolveTargetHostname(t *testing.T) {
+	tests := []struct {
+		name           string
+		sourceHostname string
+		targetHostname string
+		deleteSource   bool
+		want           string
+		wantErr        string
+	}{
+		{
+			name:           "copy without hostname succeeds",
+			sourceHostname: "", targetHostname: "", deleteSource: false,
+			want: "",
+		},
+		{
+			name:           "copy with hostname requires targetHostname",
+			sourceHostname: "app.example.com", targetHostname: "", deleteSource: false,
+			wantErr: "targetHostname is required",
+		},
+		{
+			name:           "copy with same targetHostname rejected",
+			sourceHostname: "app.example.com", targetHostname: "app.example.com", deleteSource: false,
+			wantErr: "targetHostname must differ",
+		},
+		{
+			name:           "copy with different targetHostname succeeds",
+			sourceHostname: "app.example.com", targetHostname: "new.example.com", deleteSource: false,
+			want: "new.example.com",
+		},
+		{
+			name:           "rejects targetHostname when source has no hostname",
+			sourceHostname: "", targetHostname: "new.example.com", deleteSource: false,
+			wantErr: "targetHostname cannot be set",
+		},
+		{
+			name:           "move with hostname without targetHostname uses bypass",
+			sourceHostname: "app.example.com", targetHostname: "", deleteSource: true,
+			want: "",
+		},
+		{
+			name:           "move with same targetHostname treated as absent",
+			sourceHostname: "app.example.com", targetHostname: "app.example.com", deleteSource: true,
+			want: "",
+		},
+		{
+			name:           "move with different targetHostname overrides",
+			sourceHostname: "app.example.com", targetHostname: "new.example.com", deleteSource: true,
+			want: "new.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveTargetHostname(tt.sourceHostname, tt.targetHostname, tt.deleteSource)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

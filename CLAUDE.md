@@ -52,7 +52,7 @@ GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list
        /api/v1/clusters/:cluster/namespaces/:namespace/capps[/:name]         (CRUD)
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — enable Git sync / re-sync; returns 501 if gitops feature is disabled in backend
 DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — disable Git sync (deletes values file); returns 501 if gitops feature is disabled in backend
-POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate  (auth + cluster) — migrate Capp to another cluster/namespace with dependent resources
+POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate  (auth + cluster) — migrate Capp to another cluster/namespace with dependent resources; requires targetHostname on copy when source has a custom hostname
        /api/v1/clusters/:cluster/namespaces/:namespace/configmaps[/:name]    (CRUD)
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/configmaps/names     (auth + cluster) — list configmap names only
        /api/v1/clusters/:cluster/namespaces/:namespace/secrets[/:name]       (CRUD)

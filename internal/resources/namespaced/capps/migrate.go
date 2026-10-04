@@ -21,11 +21,15 @@ var migrationBypassAnnotation = consts.CappAPIGroup + "/skip-dns-check"
 // prepareCapp returns a deep copy of source suitable for creation on the target cluster.
 // It strips cluster-specific metadata (UID, resourceVersion, creationTimestamp, status,
 // managedFields, ownerReferences) and sets the namespace to targetNamespace.
-// If the source Capp has a hostname set, the DNS bypass annotation is added.
-func prepareCapp(source *cappv1alpha1.Capp, targetNamespace string) *cappv1alpha1.Capp {
+func prepareCapp(source *cappv1alpha1.Capp, targetNamespace, targetHostname string) *cappv1alpha1.Capp {
 	target := source.DeepCopy()
 	stripMetadata(target, targetNamespace)
 	target.Status = cappv1alpha1.CappStatus{}
+
+	if targetHostname != "" {
+		target.Spec.RouteSpec.Hostname = targetHostname
+		return target
+	}
 
 	if source.Spec.RouteSpec.Hostname != "" {
 		if target.Annotations == nil {
@@ -153,4 +157,28 @@ func copyDependentResources(ctx context.Context, targetClient client.Client, tar
 	}
 
 	return nil
+}
+
+// resolveTargetHostname validates the targetHostname field against the source
+// Capp's hostname and the deleteSource flag. It returns the effective hostname
+// to pass to prepareCapp, or an error if the combination is invalid.
+func resolveTargetHostname(sourceHostname, targetHostname string, deleteSource bool) (string, error) {
+	if targetHostname != "" && sourceHostname == "" {
+		return "", apierrors.NewBadRequest("targetHostname cannot be set when the source Capp has no hostname")
+	}
+
+	if sourceHostname != "" && !deleteSource {
+		if targetHostname == "" {
+			return "", apierrors.NewBadRequest("targetHostname is required when copying a Capp with a custom hostname")
+		}
+		if targetHostname == sourceHostname {
+			return "", apierrors.NewBadRequest("targetHostname must differ from the source hostname")
+		}
+	}
+
+	if deleteSource && targetHostname == sourceHostname {
+		return "", nil
+	}
+
+	return targetHostname, nil
 }

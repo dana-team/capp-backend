@@ -460,6 +460,7 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 	var (
 		targetCluster   string
 		targetNamespace string
+		targetHostname  string
 		deleteSource    bool
 		skipConfirm     bool
 	)
@@ -500,6 +501,7 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 				TargetCluster:   targetCluster,
 				TargetNamespace: targetNamespace,
 				DeleteSource:    deleteSource,
+				TargetHostname:  targetHostname,
 			}
 
 			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/migrate", cluster, ns, cappName)
@@ -529,6 +531,7 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 
 	cmd.Flags().StringVar(&targetCluster, "target-cluster", "", "target cluster name (required)")
 	cmd.Flags().StringVar(&targetNamespace, "target-namespace", "", "target namespace (required)")
+	cmd.Flags().StringVar(&targetHostname, "target-hostname", "", "replacement hostname for the target Capp")
 	cmd.Flags().BoolVar(&deleteSource, "delete-source", false, "delete the source Capp after migration")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
 	parent.AddCommand(cmd)

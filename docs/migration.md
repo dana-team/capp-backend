@@ -22,7 +22,8 @@ The target is specified in the request body.
 {
   "targetCluster": "production-west",
   "targetNamespace": "team-beta",
-  "deleteSource": false
+  "deleteSource": false,
+  "targetHostname": "new-app.example.com"
 }
 ```
 
@@ -31,6 +32,7 @@ The target is specified in the request body.
 | `targetCluster` | string | yes | Name of the target cluster. |
 | `targetNamespace` | string | yes | Namespace on the target cluster. |
 | `deleteSource` | boolean | no | Delete the source Capp after successful creation on the target. Defaults to `false`. When the delete fails, the response is still `200` with `"sourceDeleted": false` — the Capp exists on both clusters and you can retry the delete separately. |
+| `targetHostname` | string | conditional | Replacement hostname for the target Capp. Required on copy (`deleteSource=false`) when the source has a custom hostname; must differ from the source. Optional on move (`deleteSource=true`) to rename the hostname. Must not be set when the source has no hostname. |
 
 ---
 
@@ -57,10 +59,21 @@ exists on the target, the request fails with `409 Conflict` before any writes.
 
 ## DNS and hostname migration
 
-When a Capp has a `routeSpec.hostname`, the migrate handler adds a bypass
-annotation so the target cluster's webhook does not reject the create due to
-the hostname already being in use. When `deleteSource` is `true` and the
-source is successfully deleted, the annotation is automatically removed.
+When a Capp has a `routeSpec.hostname`, copying it without a different
+`targetHostname` is rejected to prevent duplicate DNS CNAME records across
+clusters.
+
+**Copy (`deleteSource=false`):** `targetHostname` is required and must differ
+from the source hostname. The target Capp is created with the new hostname and
+no bypass annotation — the operator webhook validates global uniqueness.
+
+**Move (`deleteSource=true`):** `targetHostname` is optional. If omitted, the
+existing hostname is preserved via a bypass annotation that is removed after
+the source is deleted. If `targetHostname` is provided and differs from the
+source, the bypass annotation is skipped and the webhook validates the new
+hostname.
+
+`targetHostname` must not be set when the source has no hostname.
 
 > **Prerequisite:** The `container-app-operator` must include bypass annotation
 > support. See
@@ -72,7 +85,7 @@ source is successfully deleted, the annotation is automatically removed.
 
 | Status | Condition |
 |---|---|
-| 400 | Invalid request body or same cluster and namespace as source |
+| 400 | Invalid request body, same cluster and namespace as source, or invalid `targetHostname` (missing on copy with hostname, same as source on copy, or set when source has no hostname) |
 | 403 | Target namespace denied, user lacks RBAC, or target webhook rejected the Capp |
 | 404 | Source Capp not found, target cluster not configured, or target namespace missing |
 | 409 | Capp, Secret, or ConfigMap already exists on the target |
@@ -99,7 +112,17 @@ target cluster's `CappConfig` to resolve.
 
 ## Examples
 
-### Migrate without deleting the source
+### Copy a Capp with a custom hostname
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"targetCluster": "production-west", "targetNamespace": "team-beta", "targetHostname": "new-app.example.com"}' \
+  https://capp.example.com/api/v1/clusters/production-east/namespaces/team-alpha/capps/my-app/migrate
+```
+
+### Copy without a custom hostname
 
 ```bash
 curl -X POST \

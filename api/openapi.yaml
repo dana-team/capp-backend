@@ -1058,6 +1058,15 @@ components:
           description: If true, delete the source Capp after successful creation on the target.
           default: false
           example: false
+        targetHostname:
+          type: string
+          description: >-
+            Replacement hostname for the target Capp. Required on copy
+            (deleteSource=false) when the source has a custom hostname; must
+            differ from the source hostname. Optional on move
+            (deleteSource=true) to rename the hostname during migration.
+            Must not be set when the source has no hostname.
+          example: new-app.example.com
 
     MigrateResponse:
       type: object
@@ -2228,10 +2237,15 @@ paths:
         `dana.io/capp-managed=true`). Optionally deletes the source Capp after
         successful creation on the target.
 
-        If the source Capp has a hostname set, a DNS bypass annotation is added to
-        the target Capp to prevent the webhook from rejecting the create due to a
-        duplicate hostname. The annotation is automatically removed after the source
-        is deleted.
+        **Hostname handling:** When the source Capp has a custom hostname
+        (`routeSpec.hostname`), copying without a different `targetHostname`
+        is rejected to prevent duplicate DNS CNAME records. On move
+        (`deleteSource=true`), `targetHostname` is optional — if omitted the
+        existing hostname is preserved via a DNS bypass annotation that is
+        removed after the source is deleted. If `targetHostname` is provided
+        and differs from the source, the bypass annotation is skipped and the
+        operator webhook validates the new hostname's global uniqueness.
+        `targetHostname` must not be set when the source has no hostname.
 
         Same-cluster migration to a different namespace is supported. Migrating to
         the same cluster and namespace is rejected.

@@ -937,7 +937,7 @@ func TestMigrate(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
-	t.Run("bypass annotation set when hostname present", func(t *testing.T) {
+	t.Run("copy with hostname uses target hostname and skips bypass", func(t *testing.T) {
 		sourceCapp := &cappv1alpha1.Capp{
 			ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "ns1"},
 			Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{Hostname: "app.example.com"}},
@@ -956,12 +956,14 @@ func TestMigrate(t *testing.T) {
 		e := migrateEngine(t, sourceClient, mgr)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			TargetHostname: "new.example.com",
 		})
 
 		require.Equal(t, http.StatusOK, w.Code)
 		var created cappv1alpha1.Capp
 		require.NoError(t, targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "my-app"}, &created))
-		assert.Equal(t, "true", created.Annotations[migrationBypassAnnotation])
+		assert.Equal(t, "new.example.com", created.Spec.RouteSpec.Hostname)
+		assert.NotContains(t, created.Annotations, migrationBypassAnnotation)
 	})
 
 	t.Run("bypass annotation not set without hostname", func(t *testing.T) {
@@ -1180,5 +1182,134 @@ func TestMigrate(t *testing.T) {
 		var created cappv1alpha1.Capp
 		require.NoError(t, targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "my-app"}, &created))
 		assert.Equal(t, "true", created.Annotations[migrationBypassAnnotation])
+	})
+
+	t.Run("copy with hostname without targetHostname rejected", func(t *testing.T) {
+		sourceCapp := &cappv1alpha1.Capp{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "ns1"},
+			Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{Hostname: "app.example.com"}},
+		}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, sourceCapp)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
+				return targetClient, nil
+			},
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("copy with hostname same targetHostname rejected", func(t *testing.T) {
+		sourceCapp := &cappv1alpha1.Capp{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "ns1"},
+			Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{Hostname: "app.example.com"}},
+		}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, sourceCapp)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
+				return targetClient, nil
+			},
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			TargetHostname: "app.example.com",
+		})
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("copy without hostname rejects targetHostname", func(t *testing.T) {
+		sourceCapp := makeCapp("my-app", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, sourceCapp)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
+				return targetClient, nil
+			},
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			TargetHostname: "new.example.com",
+		})
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("move with different targetHostname skips bypass", func(t *testing.T) {
+		sourceCapp := &cappv1alpha1.Capp{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "ns1"},
+			Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{Hostname: "app.example.com"}},
+		}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, sourceCapp)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
+				return targetClient, nil
+			},
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			DeleteSource: true, TargetHostname: "new.example.com",
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var created cappv1alpha1.Capp
+		require.NoError(t, targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "my-app"}, &created))
+		assert.Equal(t, "new.example.com", created.Spec.RouteSpec.Hostname)
+		assert.NotContains(t, created.Annotations, migrationBypassAnnotation)
+	})
+
+	t.Run("move with same targetHostname uses bypass", func(t *testing.T) {
+		sourceCapp := &cappv1alpha1.Capp{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "ns1"},
+			Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{Hostname: "app.example.com"}},
+		}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, sourceCapp)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
+				return targetClient, nil
+			},
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			DeleteSource: true, TargetHostname: "app.example.com",
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var created cappv1alpha1.Capp
+		require.NoError(t, targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "my-app"}, &created))
+		assert.Equal(t, "app.example.com", created.Spec.RouteSpec.Hostname)
+		assert.NotContains(t, created.Annotations, migrationBypassAnnotation)
 	})
 }

@@ -464,6 +464,13 @@ func (h *Handler) migrate(c *gin.Context) {
 		return
 	}
 
+	sourceHostname := sourceCapp.Spec.RouteSpec.Hostname
+	effectiveHostname, err := resolveTargetHostname(sourceHostname, req.TargetHostname, req.DeleteSource)
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
 	secrets, configMaps, err := listManagedResources(ctx, sourceClient, namespace)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("list managed resources: %w", err)))
@@ -475,7 +482,7 @@ func (h *Handler) migrate(c *gin.Context) {
 		return
 	}
 
-	targetCapp := prepareCapp(&sourceCapp, req.TargetNamespace)
+	targetCapp := prepareCapp(&sourceCapp, req.TargetNamespace, effectiveHostname)
 	if err := targetClient.Create(ctx, targetCapp); err != nil {
 		if cleanupErr := cleanupResources(ctx, targetClient, req.TargetNamespace, secrets, configMaps); cleanupErr != nil {
 			_ = c.Error(fmt.Errorf("rollback copied resources: %w", cleanupErr))

@@ -306,6 +306,7 @@ type MigrateRequest struct {
 	TargetCluster   string `json:"targetCluster"    binding:"required"`
 	TargetNamespace string `json:"targetNamespace"  binding:"required"`
 	DeleteSource    bool   `json:"deleteSource"`
+	TargetHostname  string `json:"targetHostname,omitempty"`
 }
 
 // MigrateResponse is returned on successful migration.

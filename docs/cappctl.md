@@ -474,26 +474,33 @@ Migrates a Capp to another cluster or namespace. Copies the Capp and its managed
 
 **Optional flags:**
 
-| Flag              | Short | Description                                         |
-|-------------------|-------|-----------------------------------------------------|
-| `--delete-source` |       | Delete the source Capp after migration               |
-| `--yes`           | `-y`  | Skip confirmation prompt (only applies with `--delete-source`) |
+| Flag                 | Short | Description                                         |
+|----------------------|-------|-----------------------------------------------------|
+| `--target-hostname`  |       | Replacement hostname for the target Capp; required on copy when source has a hostname |
+| `--delete-source`    |       | Delete the source Capp after migration               |
+| `--yes`              | `-y`  | Skip confirmation prompt (only applies with `--delete-source`) |
 
 **Examples:**
 
 ```bash
-# Copy a Capp to another cluster
+# Copy a Capp without a custom hostname
 cappctl migrate capps my-app --cluster east --namespace team-a \
   --target-cluster west --target-namespace team-a
 
-# Migrate and delete the source
+# Copy a Capp with a custom hostname (required when source has one)
+cappctl migrate capps my-app --cluster east --namespace team-a \
+  --target-cluster west --target-namespace team-a \
+  --target-hostname new-app.example.com
+
+# Move and rename hostname
+cappctl migrate capps my-app --cluster east --namespace team-a \
+  --target-cluster west --target-namespace team-b --delete-source \
+  --target-hostname new-app.example.com -y
+
+# Move keeping the same hostname
 cappctl migrate capps my-app --cluster east --namespace team-a \
   --target-cluster west --target-namespace team-b --delete-source
 # → Migrate Capp "my-app" from east/team-a to west/team-b and DELETE source? [y/N]
-
-# Skip confirmation
-cappctl migrate capps my-app --cluster east --namespace team-a \
-  --target-cluster west --target-namespace team-b --delete-source -y
 ```
 
 ---
