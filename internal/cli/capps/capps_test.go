@@ -322,10 +322,33 @@ func TestMigrate(t *testing.T) {
 	assert.Equal(t, "west", received.TargetCluster)
 	assert.Equal(t, "prod", received.TargetNamespace)
 	assert.False(t, received.DeleteSource)
+	assert.Empty(t, received.TargetHostname)
 
 	out := buf.String()
 	assert.Contains(t, out, `Migrated "my-app" from east/ns1 to west/prod`)
 	assert.Contains(t, out, "copied: 1 secrets, 1 configmaps")
+}
+
+func TestMigrateTargetHostname(t *testing.T) {
+	var received apitypes.MigrateRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.MigrateResponse{ //nolint:errcheck
+			Name:            "my-app",
+			SourceCluster:   "east",
+			SourceNamespace: "ns1",
+			TargetCluster:   "west",
+			TargetNamespace: "prod",
+		})
+	}))
+	defer srv.Close()
+
+	cmd, _ := newMigrateCmd(t, srv.URL, "east", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west", "--target-namespace", "prod", "--target-hostname", "new.example.com"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "new.example.com", received.TargetHostname)
 }
 
 func TestMigrateJSONOutput(t *testing.T) {
