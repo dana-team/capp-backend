@@ -109,6 +109,11 @@ data:
           limits:
             cpu: {{ .Values.config.resources.cappSizes.large.limits.cpu | quote }}
             memory: {{ .Values.config.resources.cappSizes.large.limits.memory | quote }}
+      {{- if (dig "resources" "benchmarks" "enabled" false .Values.config) }}
+      benchmarks:
+        enabled: true
+        chartRef: {{ .Values.config.resources.benchmarks.chartRef | quote }}
+      {{- end }}
 
     {{- if .Values.config.gitops.enabled }}
     gitops:

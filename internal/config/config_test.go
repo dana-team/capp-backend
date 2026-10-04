@@ -88,6 +88,10 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.InDelta(t, 0.1, cfg.Tracing.SampleRate, 0.0001)
 	assert.True(t, cfg.Resources.Namespaces.Enabled)
 	assert.True(t, cfg.Resources.Capps.Enabled)
+
+	// Benchmark defaults
+	assert.False(t, cfg.Resources.Benchmarks.Enabled)
+	assert.Empty(t, cfg.Resources.Benchmarks.ChartRef)
 }
 
 func TestLoad_FromFile(t *testing.T) {
@@ -436,4 +440,62 @@ func TestValidate_GitOpsPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ── Benchmark config tests ───────────────────────────────────────────────────
+
+func TestValidate_Benchmarks(t *testing.T) {
+	tests := []struct {
+		name       string
+		benchmarks BenchmarkConfig
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name:       "disabled — no validation",
+			benchmarks: BenchmarkConfig{Enabled: false},
+		},
+		{
+			name: "enabled with chartRef — valid",
+			benchmarks: BenchmarkConfig{
+				Enabled:  true,
+				ChartRef: "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0",
+			},
+		},
+		{
+			name:       "enabled without chartRef — error",
+			benchmarks: BenchmarkConfig{Enabled: true},
+			wantErr:    true,
+			errContain: "resources.benchmarks.chartRef is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Resources.Benchmarks = tt.benchmarks
+			err := Validate(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContain)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestLoad_BenchmarkFromFile(t *testing.T) {
+	cfg := loadTempConfig(t, `
+clusters:
+  - name: dev
+    credential:
+      inline:
+        apiServer: "https://dev.example.com:6443"
+resources:
+  benchmarks:
+    enabled: true
+    chartRef: "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"
+`)
+	assert.True(t, cfg.Resources.Benchmarks.Enabled)
+	assert.Equal(t, "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0", cfg.Resources.Benchmarks.ChartRef)
 }
