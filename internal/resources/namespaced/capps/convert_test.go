@@ -844,3 +844,45 @@ func TestFromK8s_CustomResources_RoundTrip(t *testing.T) {
 	assert.Equal(t, "500m", resp.Resources.Limits.CPU)
 	assert.Equal(t, "512Mi", resp.Resources.Limits.Memory)
 }
+
+func TestToK8s_ImagePullSecrets(t *testing.T) {
+	req := minimalRequest()
+	req.ImagePullSecrets = []string{"ghcr-pull-secret", "quay-pull-secret"}
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Equal(t, []corev1.LocalObjectReference{
+		{Name: "ghcr-pull-secret"},
+		{Name: "quay-pull-secret"},
+	}, capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets)
+}
+
+func TestToK8s_ImagePullSecrets_InvalidName(t *testing.T) {
+	req := minimalRequest()
+	req.ImagePullSecrets = []string{"Not_Valid"}
+	_, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Not_Valid")
+}
+
+func TestToK8s_ImagePullSecrets_Duplicate(t *testing.T) {
+	req := minimalRequest()
+	req.ImagePullSecrets = []string{"pull", "pull"}
+	_, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate")
+}
+
+func TestToK8s_UpdateClearsImagePullSecretsWhenNotProvided(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "old"}}
+	capp, err := ToK8s(minimalRequest(), existing, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Empty(t, capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets)
+}
+
+func TestFromK8s_ImagePullSecrets(t *testing.T) {
+	capp := minimalCapp()
+	capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "ghcr-pull-secret"}}
+	resp := FromK8s(capp, config.CappSizes{})
+	assert.Equal(t, []string{"ghcr-pull-secret"}, resp.ImagePullSecrets)
+}

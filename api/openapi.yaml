@@ -768,6 +768,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConfigMapVolume'
+        imagePullSecrets:
+          type: array
+          description: |
+            Names of Secrets (type kubernetes.io/dockerconfigjson) in the Capp's
+            namespace used to pull the container image from a private registry.
+            Written to the pod spec's imagePullSecrets. Replaced as a whole on
+            update; omit or send an empty list to clear. Names must be valid
+            DNS-1123 subdomains and unique (400 otherwise). Secret existence is
+            not validated.
+          items:
+            type: string
+          example: [ghcr-pull-secret]
         eventSourcesSpec:
           $ref: '#/components/schemas/EventSourcesSpec'
 
@@ -994,6 +1006,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConfigMapVolume'
+        imagePullSecrets:
+          type: array
+          description: Names of image pull Secrets referenced by the Capp's pod spec.
+          items:
+            type: string
+          example: [ghcr-pull-secret]
         eventSourcesSpec:
           $ref: '#/components/schemas/EventSourcesSpec'
         status:

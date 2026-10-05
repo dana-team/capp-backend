@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	kapis "knative.dev/pkg/apis"
 	knativev1 "knative.dev/serving/pkg/apis/serving/v1"
 )
@@ -75,32 +76,11 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	container.Name = req.ContainerName
 	container.Image = req.Image
 
-	container.Env = nil
-	for _, e := range req.Env {
-		ev := corev1.EnvVar{Name: e.Name}
-		if e.ValueFrom != nil {
-			bothSet := e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.ConfigMapKeyRef != nil
-			neitherSet := e.ValueFrom.SecretKeyRef == nil && e.ValueFrom.ConfigMapKeyRef == nil
-			if bothSet || neitherSet {
-				return nil, fmt.Errorf("env var %q: valueFrom must set exactly one of secretKeyRef or configMapKeyRef", e.Name)
-			}
-			ev.ValueFrom = &corev1.EnvVarSource{}
-			if e.ValueFrom.SecretKeyRef != nil {
-				ev.ValueFrom.SecretKeyRef = &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.SecretKeyRef.Name},
-					Key:                  e.ValueFrom.SecretKeyRef.Key,
-				}
-			} else {
-				ev.ValueFrom.ConfigMapKeyRef = &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.ConfigMapKeyRef.Name},
-					Key:                  e.ValueFrom.ConfigMapKeyRef.Key,
-				}
-			}
-		} else {
-			ev.Value = e.Value
-		}
-		container.Env = append(container.Env, ev)
+	env, err := envVarsToK8s(req.Env)
+	if err != nil {
+		return nil, err
 	}
+	container.Env = env
 
 	container.VolumeMounts = nil
 	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = nil
@@ -159,6 +139,13 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = extraVolumes
 	capp.Spec.ConfigurationSpec.Template.Spec.Containers = []corev1.Container{container}
 
+	// Image pull secrets: replaced as a whole, so omitting the field clears them.
+	pullSecrets, err := imagePullSecretsToK8s(req.ImagePullSecrets)
+	if err != nil {
+		return nil, err
+	}
+	capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets = pullSecrets
+
 	// Route spec.
 	capp.Spec.RouteSpec = cappv1alpha1.RouteSpec{}
 	if req.RouteSpec != nil {
@@ -199,7 +186,6 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	capp.Spec.VolumesSpec = cappv1alpha1.VolumesSpec{NFSVolumes: nfsVols}
 
 	// Event sources.
-	var err error
 	capp.Spec.EventSourcesSpec, err = eventSourcesSpecToK8s(req.EventSourcesSpec)
 	if err != nil {
 		return nil, err
@@ -484,6 +470,9 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 
 	// Secret and ConfigMap volumes.
 	podSpec := capp.Spec.ConfigurationSpec.Template.Spec
+	for _, ps := range podSpec.ImagePullSecrets {
+		resp.ImagePullSecrets = append(resp.ImagePullSecrets, ps.Name)
+	}
 	mountByName := make(map[string]string)
 	if len(containers) > 0 {
 		for _, vm := range containers[0].VolumeMounts {
@@ -673,4 +662,57 @@ func filterAnnotations(in map[string]string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+// imagePullSecretsToK8s validates Secret names and converts them to pod-spec
+// references. Existence of the Secrets is not checked, matching env and volume refs.
+func imagePullSecretsToK8s(names []string) ([]corev1.LocalObjectReference, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	refs := make([]corev1.LocalObjectReference, 0, len(names))
+	for _, name := range names {
+		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+			return nil, fmt.Errorf("imagePullSecrets: invalid secret name %q: %s", name, errs[0])
+		}
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("imagePullSecrets: duplicate secret name %q", name)
+		}
+		seen[name] = struct{}{}
+		refs = append(refs, corev1.LocalObjectReference{Name: name})
+	}
+	return refs, nil
+}
+
+// envVarsToK8s converts API env vars to container env vars. A valueFrom must
+// set exactly one of secretKeyRef or configMapKeyRef.
+func envVarsToK8s(vars []EnvVar) ([]corev1.EnvVar, error) {
+	var out []corev1.EnvVar
+	for _, e := range vars {
+		ev := corev1.EnvVar{Name: e.Name}
+		if e.ValueFrom != nil {
+			bothSet := e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.ConfigMapKeyRef != nil
+			neitherSet := e.ValueFrom.SecretKeyRef == nil && e.ValueFrom.ConfigMapKeyRef == nil
+			if bothSet || neitherSet {
+				return nil, fmt.Errorf("env var %q: valueFrom must set exactly one of secretKeyRef or configMapKeyRef", e.Name)
+			}
+			ev.ValueFrom = &corev1.EnvVarSource{}
+			if e.ValueFrom.SecretKeyRef != nil {
+				ev.ValueFrom.SecretKeyRef = &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.SecretKeyRef.Name},
+					Key:                  e.ValueFrom.SecretKeyRef.Key,
+				}
+			} else {
+				ev.ValueFrom.ConfigMapKeyRef = &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.ConfigMapKeyRef.Name},
+					Key:                  e.ValueFrom.ConfigMapKeyRef.Key,
+				}
+			}
+		} else {
+			ev.Value = e.Value
+		}
+		out = append(out, ev)
+	}
+	return out, nil
 }
