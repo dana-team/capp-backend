@@ -173,6 +173,11 @@ type CappRequest struct {
 	// ConfigMapVolumes lists Kubernetes ConfigMaps to mount as volumes. Optional.
 	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
 
+	// ImagePullSecrets lists Secret names (type kubernetes.io/dockerconfigjson)
+	// in the Capp's namespace used to pull the container image from a private
+	// registry. Optional. Replaced as a whole on update; omit to clear.
+	ImagePullSecrets []string `json:"imagePullSecrets,omitempty"`
+
 	// EventSourcesSpec lists Knative Eventing sources to attach to the Capp. Optional.
 	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
 }
@@ -275,6 +280,7 @@ type CappResponse struct {
 
 	SecretVolumes    []SecretVolume    `json:"secretVolumes,omitempty"`
 	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
+	ImagePullSecrets []string          `json:"imagePullSecrets,omitempty"`
 	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
 
 	Status CappStatusResponse `json:"status"`

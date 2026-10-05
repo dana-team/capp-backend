@@ -231,6 +231,34 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `GET` | `/readyz` | — | Readiness probe (healthy when ≥1 cluster is reachable) |
 | `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
 
+### Pulling images from a private registry
+
+A Capp can reference image pull secrets by name through `imagePullSecrets`. The backend writes them to the Capp's pod spec (`spec.configurationSpec.template.spec.imagePullSecrets`).
+
+1. Create a `kubernetes.io/dockerconfigjson` Secret in the Capp's namespace. Values are plain text; the backend base64-encodes them:
+
+   ```bash
+   curl -X POST "$BACKEND/api/v1/clusters/$CLUSTER/namespaces/$NS/secrets" \
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{
+       "name": "ghcr-pull-secret",
+       "type": "kubernetes.io/dockerconfigjson",
+       "data": {".dockerconfigjson": "{\"auths\":{\"ghcr.io\":{\"username\":\"me\",\"password\":\"<token>\",\"auth\":\"<base64 of me:token>\"}}}"}
+     }'
+   ```
+
+2. Reference it when creating or updating the Capp:
+
+   ```json
+   { "name": "my-app", "image": "ghcr.io/myorg/private-app:1.0.0", "imagePullSecrets": ["ghcr-pull-secret"] }
+   ```
+
+Notes:
+
+- **Full replace on update.** `PUT` replaces the list, like `env` and volumes. Omit the field or send `[]` to remove all pull secrets.
+- **Validation.** Names must be valid DNS-1123 subdomains and unique, otherwise the request fails with 400. The backend doesn't check that the Secret exists or has the right type; a missing Secret shows up later as an image pull error on the revision.
+- **Migration and Git sync.** Migrate copies all managed Secrets in the namespace, including pull secrets created through the API. GitOps values files embed the Capp spec, so `imagePullSecrets` is synced too.
+
 ## cappctl CLI
 
 `cappctl` is the official CLI for the capp-backend API.

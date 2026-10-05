@@ -43,6 +43,7 @@ func fullCappRequest() CappRequest {
 		NFSVolumes:       []NFSVolume{{Name: "nfs1", Server: "nfs.local", Path: "/export", Capacity: "10Gi"}},
 		SecretVolumes:    []SecretVolume{{Name: "sec-vol", SecretName: "my-secret", MountPath: "/secrets"}},
 		ConfigMapVolumes: []ConfigMapVolume{{Name: "cm-vol", ConfigMapName: "my-cm", MountPath: "/config"}},
+		ImagePullSecrets: []string{"ghcr-pull-secret"},
 		EventSourcesSpec: &EventSourcesSpec{Sources: []SourceConfig{
 			{
 				Name:             "ping1",

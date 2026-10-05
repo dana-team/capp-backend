@@ -69,7 +69,9 @@ GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list
 
 **ClusterManager** (`internal/cluster/manager.go`): Holds connections to all configured clusters, runs health checks every 30s, and creates per-request scoped clients.
 
-**DTO conversion** (`internal/resources/namespaced/capps/convert.go`): Converts between API request/response types and Kubernetes Capp resources. The CLI (`internal/cli/capps/capps.go`) imports these same types directly — no duplication.
+**DTO conversion** (`internal/resources/namespaced/capps/convert.go`): Converts between API request/response types and Kubernetes Capp resources. The CLI (`internal/cli/capps/capps.go`) imports these same types directly — no duplication. `TestConvertCoverage` (`drift_test.go`) fails when a new `CappRequest` field is not populated in `fullCappRequest()` and round-tripped through `ToK8s`/`FromK8s`, so every new field must be wired both ways.
+
+List fields are full-replace on update (`PUT`): `env`, `volumeMounts`, `secretVolumes`, `configMapVolumes`, `nfsVolumes` and `imagePullSecrets` are rebuilt from the request, so omitting one clears it. `imagePullSecrets` (`[]string` of Secret names) maps to the pod spec's `imagePullSecrets`; names are validated as DNS-1123 subdomains and must be unique, but Secret existence/type is not checked (same as env and volume refs).
 
 ### Configuration
 
