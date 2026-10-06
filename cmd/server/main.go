@@ -25,8 +25,10 @@ import (
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/gitops"
+	"github.com/dana-team/capp-backend/internal/helm"
 	"github.com/dana-team/capp-backend/internal/resources"
 	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
+	benchhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/benchmarks"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	cmhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	secrethandler "github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
@@ -120,12 +122,17 @@ func main() {
 		"capps":      cfg.Resources.Capps.Enabled,
 		"configmaps": cfg.Resources.Configmaps.Enabled,
 		"secrets":    cfg.Resources.Secrets.Enabled,
+		"benchmarks": cfg.Resources.Benchmarks.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New(logger))
 	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient, clusterMgr, cfg.Sizes))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
+	if cfg.Resources.Benchmarks.Enabled {
+		renderer := helm.NewRenderer(cfg.Resources.Benchmarks.ChartRef, logger)
+		registry.Register(benchhandler.New(renderer, logger))
+	}
 	// ── 8. Build and start HTTP server ────────────────────────────────────────
 	srv := server.New(cfg, authMgr, clusterMgr, registry, logger)
 
