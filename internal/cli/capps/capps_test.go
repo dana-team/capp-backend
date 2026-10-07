@@ -477,6 +477,53 @@ func TestMigrateDeleteSourceConfirmAbort(t *testing.T) {
 	assert.Contains(t, buf.String(), "Aborted.")
 }
 
+func TestUpdate_PreservesAllFields(t *testing.T) {
+	existing := apitypes.CappResponse{
+		Name:      "my-app",
+		Namespace: "ns1",
+		Image:     "old:v1",
+		SecretVolumes: []apitypes.SecretVolume{
+			{Name: "db-creds", SecretName: "db-secret", MountPath: "/etc/db"},
+		},
+		ConfigMapVolumes: []apitypes.ConfigMapVolume{
+			{Name: "app-cfg", ConfigMapName: "app-config", MountPath: "/etc/cfg"},
+		},
+		ImagePullSecrets: []string{"registry-creds"},
+		EventSourcesSpec: &apitypes.EventSourcesSpec{
+			Sources: []apitypes.SourceConfig{
+				{Name: "ping", PingSourceConfig: &apitypes.PingSourceConfig{Schedule: "*/5 * * * *"}},
+			},
+		},
+	}
+
+	var received apitypes.CappRequest
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callCount++
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(existing) //nolint:errcheck
+			return
+		}
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		json.NewEncoder(w).Encode(apitypes.CappResponse{Name: "my-app", Image: "new:v2"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, buf := newUpdateCmd(t, srv.URL, "c1", "ns1")
+	cmd.SetArgs([]string{"capps", "my-app", "--image", "new:v2"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, 2, callCount)
+	assert.NotEmpty(t, buf.String())
+	assert.Equal(t, "new:v2", received.Image)
+	assert.Equal(t, existing.SecretVolumes, received.SecretVolumes)
+	assert.Equal(t, existing.ConfigMapVolumes, received.ConfigMapVolumes)
+	assert.Equal(t, existing.ImagePullSecrets, received.ImagePullSecrets)
+	assert.Equal(t, existing.EventSourcesSpec, received.EventSourcesSpec)
+}
+
 func TestUpdate_RouteSpec_TLSWithoutHostname(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
