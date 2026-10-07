@@ -260,17 +260,21 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 
 			// Seed request from current state to preserve all fields.
 			req := apitypes.CappRequest{
-				Name:          cappName,
-				Image:         current.Image,
-				ScaleSpec:     current.ScaleSpec,
-				State:         current.State,
-				ContainerName: current.ContainerName,
-				Size:          current.Size,
-				Env:           current.Env,
-				VolumeMounts:  current.VolumeMounts,
-				RouteSpec:     current.RouteSpec,
-				LogSpec:       current.LogSpec,
-				NFSVolumes:    current.NFSVolumes,
+				Name:             cappName,
+				Image:            current.Image,
+				ScaleSpec:        current.ScaleSpec,
+				State:            current.State,
+				ContainerName:    current.ContainerName,
+				Size:             current.Size,
+				Env:              current.Env,
+				VolumeMounts:     current.VolumeMounts,
+				RouteSpec:        current.RouteSpec,
+				LogSpec:          current.LogSpec,
+				NFSVolumes:       current.NFSVolumes,
+				SecretVolumes:    current.SecretVolumes,
+				ConfigMapVolumes: current.ConfigMapVolumes,
+				ImagePullSecrets: current.ImagePullSecrets,
+				EventSourcesSpec: current.EventSourcesSpec,
 			}
 
 			if cmd.Flags().Changed("image") {
