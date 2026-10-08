@@ -49,6 +49,9 @@ linters:
           - noctx
         path: _test\.go$
       - linters:
+          - goconst
+        path: _test\.go$
+      - linters:
           - noctx
         path: internal/testutil/
     paths:

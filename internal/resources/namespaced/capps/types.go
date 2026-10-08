@@ -326,3 +326,34 @@ type MigrateResponse struct {
 	CopiedSecrets    []string `json:"copiedSecrets,omitempty"`
 	CopiedConfigMaps []string `json:"copiedConfigMaps,omitempty"`
 }
+
+// ── Namespace-level migration types ───────────────────────────────────────────
+
+// NamespaceMigrateRequest is the body for POST .../capps/migrate.
+type NamespaceMigrateRequest struct {
+	TargetCluster   string            `json:"targetCluster"   binding:"required"`
+	TargetNamespace string            `json:"targetNamespace" binding:"required"`
+	DeleteSource    bool              `json:"deleteSource"`
+	FilterNames     []string          `json:"filterNames,omitempty"`
+	HostnameMap     map[string]string `json:"hostnameMap,omitempty"`
+}
+
+// CappMigrateResult is the per-Capp outcome in a namespace-level migration.
+type CappMigrateResult struct {
+	Name          string `json:"name"`
+	Migrated      bool   `json:"migrated"`
+	SourceDeleted bool   `json:"sourceDeleted"`
+	Error         string `json:"error,omitempty"`
+}
+
+// NamespaceMigrateResponse is returned by the namespace-level migrate endpoint.
+type NamespaceMigrateResponse struct {
+	SourceCluster    string              `json:"sourceCluster"`
+	SourceNamespace  string              `json:"sourceNamespace"`
+	TargetCluster    string              `json:"targetCluster"`
+	TargetNamespace  string              `json:"targetNamespace"`
+	CopiedSecrets    []string            `json:"copiedSecrets,omitempty"`
+	CopiedConfigMaps []string            `json:"copiedConfigMaps,omitempty"`
+	Results          []CappMigrateResult `json:"results"`
+	FailedCount      int                 `json:"failedCount"`
+}

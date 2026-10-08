@@ -1126,6 +1126,100 @@ components:
           description: Names of ConfigMaps copied to the target namespace.
           example: ["app-config"]
 
+    NamespaceMigrateRequest:
+      type: object
+      required: [targetCluster, targetNamespace]
+      properties:
+        targetCluster:
+          type: string
+          description: Name of the cluster to migrate the Capps to.
+          example: production-west
+        targetNamespace:
+          type: string
+          description: Namespace on the target cluster to create the Capps in.
+          example: team-beta
+        deleteSource:
+          type: boolean
+          description: If true, delete each source Capp after successful creation on the target.
+          default: false
+          example: false
+        filterNames:
+          type: array
+          items:
+            type: string
+          description: When non-empty, migrate only these Capps. All names must exist in the source namespace.
+          example: [app1, app2]
+        hostnameMap:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Per-Capp hostname overrides keyed by Capp name. Required for
+            Capps with a custom hostname when copying (deleteSource=false).
+            Keys must match Capp names in the resolved list.
+          example:
+            app1: app1-v2.example.com
+
+    CappMigrateResult:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the Capp.
+          example: my-app
+        migrated:
+          type: boolean
+          description: Whether the Capp was successfully created on the target.
+          example: true
+        sourceDeleted:
+          type: boolean
+          description: Whether the source Capp was successfully deleted. False when deleteSource was not requested or the delete failed.
+          example: false
+        error:
+          type: string
+          description: Error message when the Capp migration failed. Absent on success.
+
+    NamespaceMigrateResponse:
+      type: object
+      properties:
+        sourceCluster:
+          type: string
+          description: Cluster the Capps were migrated from.
+          example: production-east
+        sourceNamespace:
+          type: string
+          description: Namespace the Capps were migrated from.
+          example: team-alpha
+        targetCluster:
+          type: string
+          description: Cluster the Capps were migrated to.
+          example: production-west
+        targetNamespace:
+          type: string
+          description: Namespace the Capps were created in on the target cluster.
+          example: team-beta
+        copiedSecrets:
+          type: array
+          items:
+            type: string
+          description: Names of Secrets copied to the target namespace.
+          example: [db-creds]
+        copiedConfigMaps:
+          type: array
+          items:
+            type: string
+          description: Names of ConfigMaps copied to the target namespace.
+          example: [app-config]
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CappMigrateResult'
+          description: Per-Capp migration results.
+        failedCount:
+          type: integer
+          description: Number of Capps that failed to migrate.
+          example: 0
+
   parameters:
     clusterParam:
       name: cluster
@@ -2240,6 +2334,75 @@ paths:
           $ref: '#/components/responses/GitopsFailed'
         "503":
           description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/migrate:
+    post:
+      tags: [capps]
+      summary: Batch-migrate Capps in a namespace
+      description: |
+        Migrates all (or a filtered subset of) Capps in a namespace to a target
+        cluster and namespace. Dependent resources (Secrets and ConfigMaps labeled
+        `dana.io/capp-managed=true`) are copied once before the per-Capp loop.
+
+        The operation is best-effort: each Capp is migrated independently and
+        failures are recorded in the per-Capp `results` array without aborting
+        the remaining Capps.
+
+        **Hostname handling:** When a Capp has a custom hostname and
+        `deleteSource` is false, the `hostnameMap` must provide a different
+        target hostname for that Capp. When `deleteSource` is true,
+        `hostnameMap` is optional — omitted Capps keep their hostname via a
+        DNS bypass annotation removed after the source is deleted.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NamespaceMigrateRequest'
+      responses:
+        "200":
+          description: Migration completed. Inspect `results` and `failedCount` for per-Capp outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceMigrateResponse'
+        "400":
+          description: Invalid request body, same cluster and namespace, empty namespace, unknown filter name, or hostname validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Target namespace denied by allowed namespaces or user lacks RBAC on target cluster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Target cluster not configured or target namespace does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: A dependent Secret or ConfigMap already exists on the target namespace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Target cluster is currently unhealthy.
           content:
             application/json:
               schema:

@@ -2,12 +2,10 @@ package capps
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
@@ -15,7 +13,6 @@ import (
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
-	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -60,6 +57,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.GET("/:name", h.get)
 	ns.PUT("/:name", h.update)
 	ns.DELETE("/:name", h.delete)
+	ns.POST("/migrate", h.migrateNamespace) // static path; Gin prioritises over /:name/migrate
 	ns.POST("/:name/sync", h.sync)
 	ns.POST("/:name/migrate", h.migrate)
 	ns.DELETE("/:name/sync", h.unsync)
@@ -386,64 +384,12 @@ func (h *Handler) migrate(c *gin.Context) {
 		return
 	}
 
-	meta, err := extractClusterMeta(c)
-	if err != nil {
-		apierrors.Respond(c, apierrors.NewInternal(err))
-		return
-	}
-
-	if req.TargetCluster == meta.Name && req.TargetNamespace == namespace {
-		apierrors.Respond(c, apierrors.NewBadRequest("cannot migrate to the same cluster and namespace"))
-		return
-	}
-
-	credVal, exists := c.Get(string(middleware.CredentialKey))
-	if !exists {
-		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential not found in context")))
-		return
-	}
-	cred, ok := credVal.(auth.ClusterCredential)
+	mt, ok := h.resolveTarget(c, req.TargetCluster, req.TargetNamespace, namespace)
 	if !ok {
-		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential has unexpected type in context")))
-		return
-	}
-
-	targetCC, err := h.clusterMgr.Get(req.TargetCluster)
-	if err != nil {
-		if errors.Is(err, cluster.ErrClusterNotFound) {
-			apierrors.Respond(c, apierrors.NewClusterNotFound(req.TargetCluster))
-			return
-		}
-		apierrors.Respond(c, apierrors.NewInternal(err))
-		return
-	}
-	if !targetCC.IsHealthy() {
-		apierrors.Respond(c, apierrors.NewClusterUnhealthy(req.TargetCluster))
-		return
-	}
-
-	if !h.clusterMgr.IsNamespaceAllowed(targetCC, req.TargetNamespace) {
-		apierrors.Respond(c, apierrors.NewNamespaceDenied(req.TargetNamespace, req.TargetCluster))
-		return
-	}
-
-	targetClient, err := h.clusterMgr.ClientFor(targetCC, cred)
-	if err != nil {
-		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("build target client: %w", err)))
 		return
 	}
 
 	ctx := c.Request.Context()
-
-	var targetNS corev1.Namespace
-	if err := targetClient.Get(ctx, client.ObjectKey{Name: req.TargetNamespace}, &targetNS); err != nil {
-		if k8serrors.IsNotFound(err) {
-			apierrors.Respond(c, apierrors.NewNotFound("Namespace", req.TargetNamespace))
-			return
-		}
-		apierrors.Respond(c, err)
-		return
-	}
 
 	var sourceCapp cappv1alpha1.Capp
 	if err := sourceClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &sourceCapp); err != nil {
@@ -456,7 +402,7 @@ func (h *Handler) migrate(c *gin.Context) {
 	}
 
 	var existingTarget cappv1alpha1.Capp
-	if err := targetClient.Get(ctx, client.ObjectKey{Namespace: req.TargetNamespace, Name: name}, &existingTarget); err == nil {
+	if err := mt.targetClient.Get(ctx, client.ObjectKey{Namespace: req.TargetNamespace, Name: name}, &existingTarget); err == nil {
 		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf("Capp %q already exists", name)))
 		return
 	} else if !k8serrors.IsNotFound(err) {
@@ -477,14 +423,14 @@ func (h *Handler) migrate(c *gin.Context) {
 		return
 	}
 
-	if err := copyDependentResources(ctx, targetClient, req.TargetNamespace, secrets, configMaps); err != nil {
+	if err := copyDependentResources(ctx, mt.targetClient, req.TargetNamespace, secrets, configMaps); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
 
 	targetCapp := prepareCapp(&sourceCapp, req.TargetNamespace, effectiveHostname)
-	if err := targetClient.Create(ctx, targetCapp); err != nil {
-		if cleanupErr := cleanupResources(ctx, targetClient, req.TargetNamespace, secrets, configMaps); cleanupErr != nil {
+	if err := mt.targetClient.Create(ctx, targetCapp); err != nil {
+		if cleanupErr := cleanupResources(ctx, mt.targetClient, req.TargetNamespace, secrets, configMaps); cleanupErr != nil {
 			_ = c.Error(fmt.Errorf("rollback copied resources: %w", cleanupErr))
 		}
 		apierrors.Respond(c, err)
@@ -493,7 +439,7 @@ func (h *Handler) migrate(c *gin.Context) {
 
 	resp := MigrateResponse{
 		Name:            name,
-		SourceCluster:   meta.Name,
+		SourceCluster:   mt.meta.Name,
 		SourceNamespace: namespace,
 		TargetCluster:   req.TargetCluster,
 		TargetNamespace: req.TargetNamespace,
@@ -507,20 +453,147 @@ func (h *Handler) migrate(c *gin.Context) {
 	}
 
 	if req.DeleteSource {
-		if err := sourceClient.Delete(ctx, &sourceCapp); err != nil {
-			resp.SourceDeleted = false
-			c.JSON(http.StatusOK, resp)
-			return
+		deleted, err := deleteMigratedSource(ctx, sourceClient, mt.targetClient, &sourceCapp, targetCapp)
+		resp.SourceDeleted = deleted
+		if err != nil {
+			if !deleted {
+				c.JSON(http.StatusOK, resp)
+				return
+			}
+			_ = c.Error(err)
 		}
-		resp.SourceDeleted = true
+	}
 
-		if _, hasBypass := targetCapp.Annotations[migrationBypassAnnotation]; hasBypass {
-			patch := client.MergeFrom(targetCapp.DeepCopy())
-			delete(targetCapp.Annotations, migrationBypassAnnotation)
-			if err := targetClient.Patch(ctx, targetCapp, patch); err != nil {
-				_ = c.Error(fmt.Errorf("remove bypass annotation: %w", err))
+	c.JSON(http.StatusOK, resp)
+}
+
+// migrateNamespace handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/migrate
+// It batch-migrates Capps in a namespace to a target cluster/namespace.
+func (h *Handler) migrateNamespace(c *gin.Context) {
+	sourceClient := namespaced.ExtractClient(c)
+	if sourceClient == nil {
+		return
+	}
+	namespace := c.Param("namespace")
+
+	var req NamespaceMigrateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apierrors.Respond(c, apierrors.NewBadRequest(fmt.Sprintf("invalid request body: %s", err)))
+		return
+	}
+
+	mt, ok := h.resolveTarget(c, req.TargetCluster, req.TargetNamespace, namespace)
+	if !ok {
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	var cappList cappv1alpha1.CappList
+	if err := sourceClient.List(ctx, &cappList, client.InNamespace(namespace)); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	capps := cappList.Items
+	if len(req.FilterNames) > 0 {
+		byName := make(map[string]cappv1alpha1.Capp, len(capps))
+		for i := range capps {
+			byName[capps[i].Name] = capps[i]
+		}
+		filtered := make([]cappv1alpha1.Capp, 0, len(req.FilterNames))
+		for _, name := range req.FilterNames {
+			capp, exists := byName[name]
+			if !exists {
+				apierrors.Respond(c, apierrors.NewBadRequest(fmt.Sprintf("Capp %q not found in namespace %q", name, namespace)))
+				return
+			}
+			filtered = append(filtered, capp)
+		}
+		capps = filtered
+	}
+
+	if len(capps) == 0 {
+		apierrors.Respond(c, apierrors.NewBadRequest(fmt.Sprintf("no Capps found in namespace %q", namespace)))
+		return
+	}
+
+	if err := validateHostnameMap(capps, req.HostnameMap, req.DeleteSource); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	secrets, configMaps, err := listManagedResources(ctx, sourceClient, namespace)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("list managed resources: %w", err)))
+		return
+	}
+
+	if err := copyDependentResources(ctx, mt.targetClient, req.TargetNamespace, secrets, configMaps); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+
+	results := make([]CappMigrateResult, 0, len(capps))
+	failedCount := 0
+
+	for i := range capps {
+		sourceCapp := &capps[i]
+		result := CappMigrateResult{Name: sourceCapp.Name}
+
+		var existing cappv1alpha1.Capp
+		if err := mt.targetClient.Get(ctx, client.ObjectKey{Namespace: req.TargetNamespace, Name: sourceCapp.Name}, &existing); err == nil {
+			result.Error = fmt.Sprintf("Capp %q already exists on target", sourceCapp.Name)
+			failedCount++
+			results = append(results, result)
+			continue
+		} else if !k8serrors.IsNotFound(err) {
+			result.Error = err.Error()
+			failedCount++
+			results = append(results, result)
+			continue
+		}
+
+		targetHostname := req.HostnameMap[sourceCapp.Name]
+		effectiveHostname, _ := resolveTargetHostname(sourceCapp.Spec.RouteSpec.Hostname, targetHostname, req.DeleteSource)
+		targetCapp := prepareCapp(sourceCapp, req.TargetNamespace, effectiveHostname)
+
+		if err := mt.targetClient.Create(ctx, targetCapp); err != nil {
+			result.Error = err.Error()
+			failedCount++
+			results = append(results, result)
+			continue
+		}
+
+		result.Migrated = true
+
+		if req.DeleteSource {
+			deleted, err := deleteMigratedSource(ctx, sourceClient, mt.targetClient, sourceCapp, targetCapp)
+			result.SourceDeleted = deleted
+			if err != nil && !deleted {
+				result.Error = err.Error()
+			} else if err != nil {
+				_ = c.Error(err)
 			}
 		}
+
+		results = append(results, result)
+	}
+
+	resp := NamespaceMigrateResponse{
+		SourceCluster:   mt.meta.Name,
+		SourceNamespace: namespace,
+		TargetCluster:   req.TargetCluster,
+		TargetNamespace: req.TargetNamespace,
+		Results:         results,
+		FailedCount:     failedCount,
+	}
+
+	for i := range secrets {
+		resp.CopiedSecrets = append(resp.CopiedSecrets, secrets[i].Name)
+	}
+	for i := range configMaps {
+		resp.CopiedConfigMaps = append(resp.CopiedConfigMaps, configMaps[i].Name)
 	}
 
 	c.JSON(http.StatusOK, resp)

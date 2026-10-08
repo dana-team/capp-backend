@@ -2,11 +2,16 @@ package capps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
+	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,9 +19,102 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// migrateTarget holds the resolved target cluster state needed by migration
+// handlers. Returned by resolveTarget after all pre-flight checks pass.
+type migrateTarget struct {
+	meta         cluster.ClusterMeta
+	targetClient client.Client
+}
+
+// resolveTarget validates the migration target and returns a ready-to-use
+// migrateTarget. On failure it writes the error response to c and returns
+// nil, false.
+func (h *Handler) resolveTarget(c *gin.Context, targetCluster, targetNamespace, sourceNamespace string) (*migrateTarget, bool) {
+	meta, err := extractClusterMeta(c)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return nil, false
+	}
+
+	if targetCluster == meta.Name && targetNamespace == sourceNamespace {
+		apierrors.Respond(c, apierrors.NewBadRequest("cannot migrate to the same cluster and namespace"))
+		return nil, false
+	}
+
+	credVal, exists := c.Get(string(middleware.CredentialKey))
+	if !exists {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential not found in context")))
+		return nil, false
+	}
+	cred, ok := credVal.(auth.ClusterCredential)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential has unexpected type in context")))
+		return nil, false
+	}
+
+	targetCC, err := h.clusterMgr.Get(targetCluster)
+	if err != nil {
+		if errors.Is(err, cluster.ErrClusterNotFound) {
+			apierrors.Respond(c, apierrors.NewClusterNotFound(targetCluster))
+			return nil, false
+		}
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return nil, false
+	}
+	if !targetCC.IsHealthy() {
+		apierrors.Respond(c, apierrors.NewClusterUnhealthy(targetCluster))
+		return nil, false
+	}
+
+	if !h.clusterMgr.IsNamespaceAllowed(targetCC, targetNamespace) {
+		apierrors.Respond(c, apierrors.NewNamespaceDenied(targetNamespace, targetCluster))
+		return nil, false
+	}
+
+	targetClient, err := h.clusterMgr.ClientFor(targetCC, cred)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("build target client: %w", err)))
+		return nil, false
+	}
+
+	ctx := c.Request.Context()
+
+	var targetNS corev1.Namespace
+	if err := targetClient.Get(ctx, client.ObjectKey{Name: targetNamespace}, &targetNS); err != nil {
+		if k8serrors.IsNotFound(err) {
+			apierrors.Respond(c, apierrors.NewNotFound("Namespace", targetNamespace))
+			return nil, false
+		}
+		apierrors.Respond(c, err)
+		return nil, false
+	}
+
+	return &migrateTarget{meta: meta, targetClient: targetClient}, true
+}
+
 // migrationBypassAnnotation tells the operator webhook to skip the DNS
 // hostname uniqueness check during migration.
 var migrationBypassAnnotation = consts.CappAPIGroup + "/skip-dns-check"
+
+// deleteMigratedSource deletes the source Capp and removes the bypass
+// annotation from the target if present. Returns (true, nil) on full success,
+// (false, err) if the source delete fails, or (true, err) if only the
+// annotation patch fails.
+func deleteMigratedSource(ctx context.Context, sourceClient, targetClient client.Client, sourceCapp, targetCapp *cappv1alpha1.Capp) (bool, error) {
+	if err := sourceClient.Delete(ctx, sourceCapp); err != nil {
+		return false, err
+	}
+
+	if _, hasBypass := targetCapp.Annotations[migrationBypassAnnotation]; hasBypass {
+		patch := client.MergeFrom(targetCapp.DeepCopy())
+		delete(targetCapp.Annotations, migrationBypassAnnotation)
+		if err := targetClient.Patch(ctx, targetCapp, patch); err != nil {
+			return true, fmt.Errorf("remove bypass annotation: %w", err)
+		}
+	}
+
+	return true, nil
+}
 
 // prepareCapp returns a deep copy of source suitable for creation on the target cluster.
 // It strips cluster-specific metadata (UID, resourceVersion, creationTimestamp, status,
@@ -154,6 +252,31 @@ func copyDependentResources(ctx context.Context, targetClient client.Client, tar
 			return err
 		}
 		createdConfigMaps = append(createdConfigMaps, configMaps[i])
+	}
+
+	return nil
+}
+
+// validateHostnameMap checks that every hostnameMap key matches a Capp in the
+// list and that each Capp's hostname is valid per resolveTargetHostname. On
+// failure it returns a 400 error; on success it returns nil.
+func validateHostnameMap(capps []cappv1alpha1.Capp, hostnameMap map[string]string, deleteSource bool) error {
+	names := make(map[string]struct{}, len(capps))
+	for i := range capps {
+		names[capps[i].Name] = struct{}{}
+	}
+
+	for key := range hostnameMap {
+		if _, ok := names[key]; !ok {
+			return apierrors.NewBadRequest(fmt.Sprintf("hostnameMap contains unknown Capp name: %q", key))
+		}
+	}
+
+	for i := range capps {
+		targetHostname := hostnameMap[capps[i].Name]
+		if _, err := resolveTargetHostname(capps[i].Spec.RouteSpec.Hostname, targetHostname, deleteSource); err != nil {
+			return apierrors.NewBadRequest(fmt.Sprintf("Capp %q: %s", capps[i].Name, err.Error()))
+		}
 	}
 
 	return nil
