@@ -117,7 +117,7 @@ func (h *Handler) list(c *gin.Context) {
 		items[i].CanEdit = canCreate
 	}
 
-	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, CanCreate: canCreate})
+	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, Total: len(items), CanCreate: canCreate})
 }
 
 // canCreateCapps performs a SelfSubjectAccessReview to check whether the current
