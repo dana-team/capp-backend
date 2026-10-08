@@ -391,12 +391,6 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 	cmd.ValidArgsFunction = h.completeCappNames
 }
 
-type syncResult struct {
-	Enabled   bool   `json:"enabled"`
-	CommitSHA string `json:"commitSha,omitempty"`
-	Path      string `json:"path,omitempty"`
-}
-
 func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 	var disable, skipConfirm bool
 
@@ -427,7 +421,7 @@ func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 			}
 
 			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", cluster, ns, cappName)
-			var result syncResult
+			var result apitypes.SyncResponse
 			var err error
 			if disable {
 				err = h.state.Client.Delete(cmd.Context(), path, &result)

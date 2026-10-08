@@ -86,7 +86,7 @@ func TestSync_Success(t *testing.T) {
 		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(syncResult{ //nolint:errcheck
+		json.NewEncoder(w).Encode(apitypes.SyncResponse{ //nolint:errcheck
 			CommitSHA: "abc123",
 			Path:      "sites/site/ns1/my-app.yaml",
 		})
@@ -105,7 +105,7 @@ func TestSync_Success(t *testing.T) {
 func TestSync_JSONOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(syncResult{ //nolint:errcheck
+		json.NewEncoder(w).Encode(apitypes.SyncResponse{ //nolint:errcheck
 			CommitSHA: "def456",
 			Path:      "sites/test/prod/web.yaml",
 		})
@@ -116,7 +116,7 @@ func TestSync_JSONOutput(t *testing.T) {
 	cmd.SetArgs([]string{"capps", "web"})
 	require.NoError(t, cmd.Execute())
 
-	var result syncResult
+	var result apitypes.SyncResponse
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &result))
 	assert.Equal(t, "def456", result.CommitSHA)
 	assert.Equal(t, "sites/test/prod/web.yaml", result.Path)
@@ -125,7 +125,7 @@ func TestSync_JSONOutput(t *testing.T) {
 func TestSync_YAMLOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(syncResult{ //nolint:errcheck
+		json.NewEncoder(w).Encode(apitypes.SyncResponse{ //nolint:errcheck
 			CommitSHA: "aaa111",
 			Path:      "sites/site/ns/app.yaml",
 		})
@@ -214,7 +214,7 @@ func TestSync_Disable(t *testing.T) {
 		assert.Equal(t, "/api/v1/clusters/c1/namespaces/ns1/capps/my-app/sync", r.URL.Path)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(syncResult{ //nolint:errcheck
+		json.NewEncoder(w).Encode(apitypes.SyncResponse{ //nolint:errcheck
 			Enabled:   false,
 			CommitSHA: "def456",
 			Path:      "sites/c1/ns1/my-app.yaml",
