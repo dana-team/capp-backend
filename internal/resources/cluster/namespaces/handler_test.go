@@ -90,6 +90,7 @@ func TestList_VanillaK8s_Success(t *testing.T) {
 	var resp NamespaceListResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.NotNil(t, resp.Items)
+	assert.Equal(t, 1, resp.Total)
 }
 
 func TestList_VanillaK8s_Empty(t *testing.T) {
@@ -100,6 +101,7 @@ func TestList_VanillaK8s_Empty(t *testing.T) {
 	var resp NamespaceListResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Empty(t, resp.Items)
+	assert.Equal(t, 0, resp.Total)
 }
 
 func TestList_VanillaK8s_ReturnsNamespaceItem(t *testing.T) {
