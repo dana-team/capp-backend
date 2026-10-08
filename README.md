@@ -214,6 +214,7 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Delete a Capp |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Enable Git sync / re-sync |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Disable Git sync |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/migrate` | ✓ | Batch-migrate Capps to another cluster/namespace; copies dependent resources once; best-effort per-Capp results |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate` | ✓ | Migrate Capp to another cluster/namespace; requires `targetHostname` on copy when source has a hostname |
 | `GET` | `/api/v1/clusters/:cluster/configmaps` | ✓ | List all ConfigMaps across namespaces |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | List ConfigMaps in a namespace |

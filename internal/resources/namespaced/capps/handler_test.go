@@ -15,6 +15,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -1311,5 +1312,369 @@ func TestMigrate(t *testing.T) {
 		require.NoError(t, targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "my-app"}, &created))
 		assert.Equal(t, "app.example.com", created.Spec.RouteSpec.Hostname)
 		assert.NotContains(t, created.Annotations, migrationBypassAnnotation)
+	})
+}
+
+func TestMigrateNamespace(t *testing.T) {
+	targetCC := &cluster.ClusterClient{}
+	targetCC.SetHealthy(true)
+
+	defaultMgr := func(targetClient client.Client) *testutil.MockClusterManager {
+		return &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
+				return targetClient, nil
+			},
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
+		}
+	}
+
+	t.Run("success all capps", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		app2 := makeCapp("app2", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1, app2)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, "source-cluster", resp.SourceCluster)
+		assert.Equal(t, "ns1", resp.SourceNamespace)
+		assert.Equal(t, "target-cluster", resp.TargetCluster)
+		assert.Equal(t, "target-ns", resp.TargetNamespace)
+		assert.Len(t, resp.Results, 2)
+		assert.Equal(t, 0, resp.FailedCount)
+		for _, r := range resp.Results {
+			assert.True(t, r.Migrated)
+		}
+	})
+
+	t.Run("success with filter names", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		app2 := makeCapp("app2", "ns1")
+		app3 := makeCapp("app3", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1, app2, app3)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			FilterNames: []string{"app1", "app3"},
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Len(t, resp.Results, 2)
+		names := []string{resp.Results[0].Name, resp.Results[1].Name}
+		assert.Contains(t, names, "app1")
+		assert.Contains(t, names, "app3")
+	})
+
+	t.Run("success with dependent resources", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: "s1", Namespace: "ns1",
+			Labels: map[string]string{consts.ManagedLabelKey: consts.ManagedLabelValue},
+		}}
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+			Name: "cm1", Namespace: "ns1",
+			Labels: map[string]string{consts.ManagedLabelKey: consts.ManagedLabelValue},
+		}}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1, secret, cm)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, []string{"s1"}, resp.CopiedSecrets)
+		assert.Equal(t, []string{"cm1"}, resp.CopiedConfigMaps)
+	})
+
+	t.Run("bad request body", func(t *testing.T) {
+		sourceClient := testutil.FakeClient(t)
+		mgr := &testutil.MockClusterManager{}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.Post("/namespaces/ns1/capps/migrate", bytes.NewBufferString(`{}`))
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("same cluster and namespace", func(t *testing.T) {
+		sourceClient := testutil.FakeClient(t)
+		mgr := &testutil.MockClusterManager{}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "source-cluster", TargetNamespace: "ns1",
+		})
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("target cluster not found", func(t *testing.T) {
+		sourceClient := testutil.FakeClient(t)
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) {
+				return nil, cluster.ErrClusterNotFound
+			},
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "missing", TargetNamespace: "ns",
+		})
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("target cluster unhealthy", func(t *testing.T) {
+		sourceClient := testutil.FakeClient(t)
+		unhealthyCC := &cluster.ClusterClient{}
+		unhealthyCC.SetHealthy(false)
+
+		mgr := &testutil.MockClusterManager{
+			GetFn: func(name string) (*cluster.ClusterClient, error) { return unhealthyCC, nil },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "sick", TargetNamespace: "ns",
+		})
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	})
+
+	t.Run("target namespace denied", func(t *testing.T) {
+		sourceClient := testutil.FakeClient(t)
+		mgr := &testutil.MockClusterManager{
+			GetFn:                func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
+			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return false },
+		}
+		e := migrateEngine(t, sourceClient, mgr)
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "forbidden-ns",
+		})
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("target namespace missing", func(t *testing.T) {
+		sourceClient := testutil.FakeClient(t)
+		targetClient := testutil.FakeClient(t)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "nonexistent",
+		})
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("empty namespace", func(t *testing.T) {
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("names filter has unknown name", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			FilterNames: []string{"app1", "nonexistent"},
+		})
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("dependent resource conflict", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		sourceSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: "s1", Namespace: "ns1",
+			Labels: map[string]string{consts.ManagedLabelKey: consts.ManagedLabelValue},
+		}}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		targetSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1, sourceSecret)
+		targetClient := testutil.FakeClient(t, targetNS, targetSecret)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		assert.Equal(t, http.StatusConflict, w.Code)
+	})
+
+	t.Run("capp already exists on target", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		app2 := makeCapp("app2", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		existingTarget := makeCapp("app1", "target-ns")
+		sourceClient := testutil.FakeClient(t, app1, app2)
+		targetClient := testutil.FakeClient(t, targetNS, existingTarget)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, 1, resp.FailedCount)
+		assert.Len(t, resp.Results, 2)
+		for _, r := range resp.Results {
+			if r.Name == "app1" {
+				assert.False(t, r.Migrated)
+				assert.Contains(t, r.Error, "already exists")
+			} else {
+				assert.True(t, r.Migrated)
+			}
+		}
+	})
+
+	t.Run("capp create fails", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		app2 := makeCapp("app2", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1, app2)
+		targetClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if capp, ok := obj.(*cappv1alpha1.Capp); ok && capp.Name == "app1" {
+					return errors.New("simulated create failure")
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, 1, resp.FailedCount)
+		for _, r := range resp.Results {
+			if r.Name == "app1" {
+				assert.False(t, r.Migrated)
+				assert.Contains(t, r.Error, "simulated create failure")
+			} else {
+				assert.True(t, r.Migrated)
+			}
+		}
+	})
+
+	t.Run("delete source success", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		app2 := makeCapp("app2", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1, app2)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			DeleteSource: true,
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		for _, r := range resp.Results {
+			assert.True(t, r.Migrated)
+			assert.True(t, r.SourceDeleted)
+		}
+	})
+
+	t.Run("delete source partial failure", func(t *testing.T) {
+		app1 := makeCapp("app1", "ns1")
+		app2 := makeCapp("app2", "ns1")
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if obj.GetName() == "app1" {
+					return errors.New("simulated delete failure")
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		}, app1, app2)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			DeleteSource: true,
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		for _, r := range resp.Results {
+			assert.True(t, r.Migrated)
+			if r.Name == "app1" {
+				assert.False(t, r.SourceDeleted)
+			} else {
+				assert.True(t, r.SourceDeleted)
+			}
+		}
+	})
+
+	t.Run("hostname map applied", func(t *testing.T) {
+		app1 := &cappv1alpha1.Capp{
+			ObjectMeta: metav1.ObjectMeta{Name: "app1", Namespace: "ns1"},
+			Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{Hostname: "app1.example.com"}},
+		}
+		app2 := &cappv1alpha1.Capp{
+			ObjectMeta: metav1.ObjectMeta{Name: "app2", Namespace: "ns1"},
+			Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{Hostname: "app2.example.com"}},
+		}
+		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
+		sourceClient := testutil.FakeClient(t, app1, app2)
+		targetClient := testutil.FakeClient(t, targetNS)
+
+		e := migrateEngine(t, sourceClient, defaultMgr(targetClient))
+		w := e.PostJSON("/namespaces/ns1/capps/migrate", NamespaceMigrateRequest{
+			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
+			HostnameMap: map[string]string{
+				"app1": "app1-v2.example.com",
+				"app2": "app2-v2.example.com",
+			},
+		})
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp NamespaceMigrateResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, 0, resp.FailedCount)
+
+		var created1, created2 cappv1alpha1.Capp
+		require.NoError(t, targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "app1"}, &created1))
+		require.NoError(t, targetClient.Get(context.Background(), client.ObjectKey{Namespace: "target-ns", Name: "app2"}, &created2))
+		assert.Equal(t, "app1-v2.example.com", created1.Spec.RouteSpec.Hostname)
+		assert.Equal(t, "app2-v2.example.com", created2.Spec.RouteSpec.Hostname)
 	})
 }

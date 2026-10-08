@@ -444,6 +444,79 @@ func TestCopyDependentResources(t *testing.T) {
 	})
 }
 
+//nolint:unparam // name kept for clarity; all current callers happen to use "api"
+func makeCappWithHostname(name, hostname string) cappv1alpha1.Capp {
+	return cappv1alpha1.Capp{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: cappv1alpha1.CappSpec{
+			RouteSpec: cappv1alpha1.RouteSpec{Hostname: hostname},
+		},
+	}
+}
+
+func TestValidateHostnameMap(t *testing.T) {
+	tests := []struct {
+		name         string
+		capps        []cappv1alpha1.Capp
+		hostnameMap  map[string]string
+		deleteSource bool
+		wantErr      string
+	}{
+		{
+			name:    "nil hostname map no hostnames",
+			capps:   []cappv1alpha1.Capp{{ObjectMeta: metav1.ObjectMeta{Name: "api"}}, {ObjectMeta: metav1.ObjectMeta{Name: "worker"}}},
+			wantErr: "",
+		},
+		{
+			name:        "valid mapping copy mode",
+			capps:       []cappv1alpha1.Capp{makeCappWithHostname("api", "api.example.com")},
+			hostnameMap: map[string]string{"api": "api-v2.example.com"},
+			wantErr:     "",
+		},
+		{
+			name:         "no mapping needed move mode",
+			capps:        []cappv1alpha1.Capp{makeCappWithHostname("api", "api.example.com")},
+			deleteSource: true,
+			wantErr:      "",
+		},
+		{
+			name:        "unknown key",
+			capps:       []cappv1alpha1.Capp{{ObjectMeta: metav1.ObjectMeta{Name: "api"}}},
+			hostnameMap: map[string]string{"typo": "new.example.com"},
+			wantErr:     "unknown Capp name",
+		},
+		{
+			name:    "missing mapping copy mode",
+			capps:   []cappv1alpha1.Capp{makeCappWithHostname("api", "api.example.com")},
+			wantErr: "targetHostname is required",
+		},
+		{
+			name:        "same hostname copy mode",
+			capps:       []cappv1alpha1.Capp{makeCappWithHostname("api", "api.example.com")},
+			hostnameMap: map[string]string{"api": "api.example.com"},
+			wantErr:     "targetHostname must differ",
+		},
+		{
+			name:        "hostname set for capp without hostname",
+			capps:       []cappv1alpha1.Capp{{ObjectMeta: metav1.ObjectMeta{Name: "worker"}}},
+			hostnameMap: map[string]string{"worker": "new.example.com"},
+			wantErr:     "targetHostname cannot be set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateHostnameMap(tt.capps, tt.hostnameMap, tt.deleteSource)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestResolveTargetHostname(t *testing.T) {
 	tests := []struct {
 		name           string
