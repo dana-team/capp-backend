@@ -39,6 +39,9 @@ type handler struct{ state *root.State }
 // New returns a ResourceCommand for Capps.
 func New(state *root.State) resource.ResourceCommand { return &handler{state: state} }
 
+// useWithName is the Use line of every sub-command that targets one Capp.
+const useWithName = "capps <name>"
+
 func (h *handler) Name() string      { return "capps" }
 func (h *handler) Aliases() []string { return []string{"capp", "ca"} }
 
@@ -46,7 +49,7 @@ func (h *handler) RegisterGetCommand(parent *cobra.Command) {
 	var allNamespaces bool
 	cmd := &cobra.Command{
 		Use:     "capps [name]",
-		Aliases: []string{"capp", "ca"},
+		Aliases: h.Aliases(),
 		Short:   "List Capps or get one by name",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -111,7 +114,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:     "capps",
-		Aliases: []string{"capp", "ca"},
+		Aliases: h.Aliases(),
 		Short:   "Create a Capp",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cluster := h.state.Cluster
@@ -231,8 +234,8 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Update a Capp (fetch current, apply flags, PUT)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -352,8 +355,8 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 	var skipConfirm bool
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Delete a Capp",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -395,8 +398,8 @@ func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 	var disable, skipConfirm bool
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Enable or disable Git sync for a Capp",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -464,8 +467,8 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Migrate a Capp to another cluster or namespace",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

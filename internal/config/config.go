@@ -92,6 +92,12 @@ type RateLimitConfig struct {
 	MaxIPTracked int `mapstructure:"maxIPTracked"`
 }
 
+// Accepted values for AuthConfig.Mode.
+const (
+	AuthModePassthrough = "passthrough"
+	AuthModeOpenShift   = "openshift"
+)
+
 // AuthConfig holds all authentication-related settings.
 type AuthConfig struct {
 	// Mode selects the authentication strategy. One of:
@@ -363,7 +369,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.corsAllowedOrigins", []string{})
 
 	// Auth
-	v.SetDefault("auth.mode", "passthrough")
+	v.SetDefault("auth.mode", AuthModePassthrough)
 	v.SetDefault("auth.openshift.scopes", []string{"user:info", "user:check-access"})
 	v.SetDefault("auth.openshift.tokenCacheTTLSeconds", 60)
 	v.SetDefault("auth.rateLimit.enabled", true)

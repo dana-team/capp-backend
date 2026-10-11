@@ -30,6 +30,11 @@ linters:
     - usetesting
     - whitespace
   settings:
+    goconst:
+      # "status" is a JSON key, a metric label and a log field — unrelated
+      # uses that a shared constant would wrongly couple.
+      ignore-string-values:
+        - '^status$'
     revive:
       rules:
         - name: comment-spacings
@@ -47,6 +52,9 @@ linters:
         path: test/*
       - linters:
           - noctx
+        path: _test\.go$
+      - linters:
+          - goconst
         path: _test\.go$
       - linters:
           - noctx

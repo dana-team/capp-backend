@@ -8,8 +8,8 @@ import (
 
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
 var validAuthModes = map[string]struct{}{
-	"passthrough": {},
-	"openshift":   {},
+	AuthModePassthrough: {},
+	AuthModeOpenShift:   {},
 }
 
 // validGitOpsAuthMethods is the set of accepted values for GitOpsConfig.AuthMethod.
@@ -36,7 +36,7 @@ func Validate(cfg *Config) error {
 
 	// In openshift mode every cluster must have an inline token (SA token)
 	// because the backend uses impersonation instead of forwarding user tokens.
-	if cfg.Auth.Mode == "openshift" {
+	if cfg.Auth.Mode == AuthModeOpenShift {
 		for i, c := range cfg.Clusters {
 			if c.Credential.Inline == nil || c.Credential.Inline.Token == "" {
 				errs = append(errs, fmt.Errorf(
@@ -129,7 +129,7 @@ func validateAuth(auth *AuthConfig) []error {
 		return errs
 	}
 
-	if auth.Mode == "openshift" {
+	if auth.Mode == AuthModeOpenShift {
 		if auth.OpenShift.APIServer == "" {
 			errs = append(errs, errors.New(
 				"config: auth.openshift.apiServer is required when auth.mode is 'openshift'",

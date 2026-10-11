@@ -187,20 +187,13 @@ func Respond(c *gin.Context, err error) {
 	_ = c.Error(err)
 
 	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		c.AbortWithStatusJSON(apiErr.Status, gin.H{"error": apiErr})
-		return
+	if !errors.As(err, &apiErr) {
+		// Translate well-known Kubernetes API status errors; fall back to 500.
+		if apiErr = translateK8sError(err); apiErr == nil {
+			apiErr = NewInternal(err)
+		}
 	}
-
-	// Translate well-known Kubernetes API status errors.
-	if translated := translateK8sError(err); translated != nil {
-		c.AbortWithStatusJSON(translated.Status, gin.H{"error": translated})
-		return
-	}
-
-	// Fallback: 500.
-	internal := NewInternal(err)
-	c.AbortWithStatusJSON(internal.Status, gin.H{"error": internal})
+	c.AbortWithStatusJSON(apiErr.Status, gin.H{"error": apiErr})
 }
 
 // translateK8sError maps a Kubernetes API error to an APIError with a safe,

@@ -1,6 +1,6 @@
 module github.com/dana-team/capp-backend
 
-go 1.26.8
+go 1.27.1
 
 require (
 	github.com/dana-team/container-app-operator v0.10.1

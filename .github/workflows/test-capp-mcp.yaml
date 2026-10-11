@@ -43,7 +43,7 @@ permissions:
   contents: read
 
 env:
-  GOLANGCI_LINT_VERSION: v2.11.4
+  GOLANGCI_LINT_VERSION: v2.14.0
 
 jobs:
   # ── Go: lint + test ──────────────────────────────────────────────────────────
