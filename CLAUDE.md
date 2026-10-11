@@ -134,7 +134,7 @@ cappctl create   capps
 cappctl update   capps <name>
 cappctl delete   capps <name>
 cappctl sync     capps <name> [--disable]
-cappctl migrate  capps <name>
+cappctl migrate  capps [name]    # without a name, migrates all Capps in --namespace (batch mode); use --names to filter
 ```
 
 **Global flags:** `--server`, `--token`, `--cluster`, `--namespace`, `--context`, `--output` (table|wide|json|yaml), `--insecure`

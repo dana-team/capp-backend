@@ -432,13 +432,6 @@ func TestMigrateMissingTargetNamespace(t *testing.T) {
 	assert.Contains(t, err.Error(), "--target-namespace is required")
 }
 
-func TestMigrateMissingName(t *testing.T) {
-	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "ns1", "")
-	cmd.SetArgs([]string{"capps"})
-	err := cmd.Execute()
-	require.Error(t, err)
-}
-
 func TestMigrateAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -475,6 +468,169 @@ func TestMigrateDeleteSourceConfirmAbort(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 
 	assert.Contains(t, buf.String(), "Aborted.")
+}
+
+func TestMigrateBatchConfirmAbort(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetIn(bytes.NewBufferString("n\n"))
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod", "--delete-source"})
+	require.NoError(t, cmd.Execute())
+
+	assert.False(t, called, "server should not be called when user aborts")
+	assert.Contains(t, buf.String(), "Aborted.")
+}
+
+func batchResponse() apitypes.NamespaceMigrateResponse {
+	return apitypes.NamespaceMigrateResponse{
+		SourceCluster:   "east",
+		SourceNamespace: "ns1",
+		TargetCluster:   "west",
+		TargetNamespace: "prod",
+		Results: []apitypes.CappMigrateResult{
+			{Name: "app1", Migrated: true},
+			{Name: "app2", Migrated: true},
+		},
+	}
+}
+
+func TestMigrateBatch(t *testing.T) {
+	var received apitypes.NamespaceMigrateRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/api/v1/clusters/east/namespaces/ns1/capps/migrate", r.URL.Path)
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(batchResponse()) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "east", "ns1", "")
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "west", received.TargetCluster)
+	assert.Equal(t, "prod", received.TargetNamespace)
+
+	out := buf.String()
+	assert.Contains(t, out, "Migrated from east/ns1 to west/prod")
+	assert.Contains(t, out, "app1")
+	assert.Contains(t, out, "app2")
+}
+
+func TestMigrateBatchWithNames(t *testing.T) {
+	var received apitypes.NamespaceMigrateRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(batchResponse()) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, _ := newMigrateCmd(t, srv.URL, "east", "ns1", "")
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod", "--names", "app1", "--names", "app2"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, []string{"app1", "app2"}, received.FilterNames)
+}
+
+func TestMigrateBatchWithHostnameMap(t *testing.T) {
+	var received apitypes.NamespaceMigrateRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(batchResponse()) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, _ := newMigrateCmd(t, srv.URL, "east", "ns1", "")
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod", "--hostname-map", "app1=new.example.com"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, map[string]string{"app1": "new.example.com"}, received.HostnameMap)
+}
+
+func TestMigrateBatchDeleteSource(t *testing.T) {
+	var received apitypes.NamespaceMigrateRequest
+	resp := batchResponse()
+	resp.Results[0].SourceDeleted = true
+	resp.Results[1].SourceDeleted = true
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "east", "ns1", "")
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod", "--delete-source", "--yes"})
+	require.NoError(t, cmd.Execute())
+
+	assert.True(t, received.DeleteSource)
+	assert.Contains(t, buf.String(), "yes")
+}
+
+func TestMigrateBatchJSONOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(batchResponse()) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "east", "ns1", "json")
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod"})
+	require.NoError(t, cmd.Execute())
+
+	var result apitypes.NamespaceMigrateResponse
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &result))
+	assert.Equal(t, "west", result.TargetCluster)
+	assert.Len(t, result.Results, 2)
+}
+
+func TestMigrateBatchYAMLOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(batchResponse()) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, buf := newMigrateCmd(t, srv.URL, "east", "ns1", "yaml")
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod"})
+	require.NoError(t, cmd.Execute())
+
+	out := buf.String()
+	assert.Contains(t, out, "targetCluster: west")
+	assert.Contains(t, out, "targetNamespace: prod")
+}
+
+func TestMigrateBatchTargetHostnameRejected(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "--target-cluster", "west", "--target-namespace", "prod", "--target-hostname", "x.example.com"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--target-hostname requires a Capp name argument")
+}
+
+func TestMigratePerCappNamesRejected(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west", "--target-namespace", "prod", "--names", "app1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--names cannot be used with a positional name argument")
+}
+
+func TestMigratePerCappHostnameMapRejected(t *testing.T) {
+	cmd, _ := newMigrateCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--target-cluster", "west", "--target-namespace", "prod", "--hostname-map", "app1=new.example.com"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--hostname-map cannot be used with a positional name argument")
 }
 
 func TestUpdate_PreservesAllFields(t *testing.T) {

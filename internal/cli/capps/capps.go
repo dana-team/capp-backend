@@ -467,13 +467,15 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 		targetHostname  string
 		deleteSource    bool
 		skipConfirm     bool
+		filterNames     []string
+		hostnameMap     map[string]string
 	)
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
+		Use:     "capps [name]",
 		Aliases: []string{"capp", "ca"},
-		Short:   "Migrate a Capp to another cluster or namespace",
-		Args:    cobra.ExactArgs(1),
+		Short:   "Migrate one or all Capps to another cluster or namespace",
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cluster := h.state.Cluster
 			ns := h.state.Namespace
@@ -489,57 +491,148 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 			if targetNamespace == "" {
 				return fmt.Errorf("--target-namespace is required")
 			}
-			cappName := args[0]
 
-			if deleteSource && !skipConfirm {
-				fmt.Fprintf(cmd.OutOrStdout(), "Migrate Capp %q from %s/%s to %s/%s and DELETE source? [y/N] ", cappName, cluster, ns, targetCluster, targetNamespace) //nolint:errcheck
-				var answer string
-				fmt.Fscan(cmd.InOrStdin(), &answer) //nolint:errcheck
-				if answer != "y" && answer != "Y" {
-					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.") //nolint:errcheck
-					return nil
+			if len(args) == 1 {
+				if cmd.Flags().Changed("names") {
+					return fmt.Errorf("--names cannot be used with a positional name argument")
 				}
-			}
-
-			req := apitypes.MigrateRequest{
-				TargetCluster:   targetCluster,
-				TargetNamespace: targetNamespace,
-				DeleteSource:    deleteSource,
-				TargetHostname:  targetHostname,
-			}
-
-			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/migrate", cluster, ns, cappName)
-			var result apitypes.MigrateResponse
-			if err := h.state.Client.Post(cmd.Context(), path, req, &result); err != nil {
-				return err
-			}
-
-			switch h.state.OutputFmt {
-			case outputJSON:
-				return output.PrintJSON(cmd.OutOrStdout(), result)
-			case outputYAML:
-				return output.PrintYAML(cmd.OutOrStdout(), result)
-			default:
-				summary := fmt.Sprintf("Migrated %q from %s/%s to %s/%s", result.Name, result.SourceCluster, result.SourceNamespace, result.TargetCluster, result.TargetNamespace)
-				if len(result.CopiedSecrets) > 0 || len(result.CopiedConfigMaps) > 0 {
-					summary += fmt.Sprintf(" (copied: %d secrets, %d configmaps)", len(result.CopiedSecrets), len(result.CopiedConfigMaps))
+				if cmd.Flags().Changed("hostname-map") {
+					return fmt.Errorf("--hostname-map cannot be used with a positional name argument")
 				}
-				if result.SourceDeleted {
-					summary += " (source deleted)"
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), summary) //nolint:errcheck
+				return h.migratePerCapp(cmd, args[0], cluster, ns, targetCluster, targetNamespace, targetHostname, deleteSource, skipConfirm)
 			}
-			return nil
+
+			if cmd.Flags().Changed("target-hostname") {
+				return fmt.Errorf("--target-hostname requires a Capp name argument; use --hostname-map for batch migration")
+			}
+			return h.migrateBatch(cmd, cluster, ns, targetCluster, targetNamespace, deleteSource, skipConfirm, filterNames, hostnameMap)
 		},
 	}
 
 	cmd.Flags().StringVar(&targetCluster, "target-cluster", "", "target cluster name (required)")
 	cmd.Flags().StringVar(&targetNamespace, "target-namespace", "", "target namespace (required)")
-	cmd.Flags().StringVar(&targetHostname, "target-hostname", "", "replacement hostname for the target Capp")
-	cmd.Flags().BoolVar(&deleteSource, "delete-source", false, "delete the source Capp after migration")
+	cmd.Flags().StringVar(&targetHostname, "target-hostname", "", "replacement hostname for the target Capp (per-Capp mode only)")
+	cmd.Flags().BoolVar(&deleteSource, "delete-source", false, "delete source Capps after migration")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
+	cmd.Flags().StringArrayVar(&filterNames, "names", nil, "Capp names to migrate (batch mode only, repeatable)")
+	cmd.Flags().StringToStringVar(&hostnameMap, "hostname-map", nil, "per-Capp hostname overrides as name=hostname (batch mode only)")
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
+}
+
+func (h *handler) migratePerCapp(cmd *cobra.Command, cappName, cluster, ns, targetCluster, targetNamespace, targetHostname string, deleteSource, skipConfirm bool) error {
+	if deleteSource && !skipConfirm {
+		fmt.Fprintf(cmd.OutOrStdout(), "Migrate Capp %q from %s/%s to %s/%s and DELETE source? [y/N] ", cappName, cluster, ns, targetCluster, targetNamespace) //nolint:errcheck
+		var answer string
+		fmt.Fscan(cmd.InOrStdin(), &answer) //nolint:errcheck
+		if answer != "y" && answer != "Y" {
+			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.") //nolint:errcheck
+			return nil
+		}
+	}
+
+	req := apitypes.MigrateRequest{
+		TargetCluster:   targetCluster,
+		TargetNamespace: targetNamespace,
+		DeleteSource:    deleteSource,
+		TargetHostname:  targetHostname,
+	}
+
+	path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/migrate", cluster, ns, cappName)
+	var result apitypes.MigrateResponse
+	if err := h.state.Client.Post(cmd.Context(), path, req, &result); err != nil {
+		return err
+	}
+
+	switch h.state.OutputFmt {
+	case outputJSON:
+		return output.PrintJSON(cmd.OutOrStdout(), result)
+	case outputYAML:
+		return output.PrintYAML(cmd.OutOrStdout(), result)
+	default:
+		summary := fmt.Sprintf("Migrated %q from %s/%s to %s/%s", result.Name, result.SourceCluster, result.SourceNamespace, result.TargetCluster, result.TargetNamespace)
+		if len(result.CopiedSecrets) > 0 || len(result.CopiedConfigMaps) > 0 {
+			summary += fmt.Sprintf(" (copied: %d secrets, %d configmaps)", len(result.CopiedSecrets), len(result.CopiedConfigMaps))
+		}
+		if result.SourceDeleted {
+			summary += " (source deleted)"
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), summary) //nolint:errcheck
+	}
+	return nil
+}
+
+func (h *handler) migrateBatch(cmd *cobra.Command, cluster, ns, targetCluster, targetNamespace string, deleteSource, skipConfirm bool, filterNames []string, hostnameMap map[string]string) error {
+	if deleteSource && !skipConfirm {
+		count := "all"
+		if len(filterNames) > 0 {
+			count = fmt.Sprintf("%d", len(filterNames))
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Migrate %s Capps from %s/%s to %s/%s and DELETE sources? [y/N] ", count, cluster, ns, targetCluster, targetNamespace) //nolint:errcheck
+		var answer string
+		fmt.Fscan(cmd.InOrStdin(), &answer) //nolint:errcheck
+		if answer != "y" && answer != "Y" {
+			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.") //nolint:errcheck
+			return nil
+		}
+	}
+
+	req := apitypes.NamespaceMigrateRequest{
+		TargetCluster:   targetCluster,
+		TargetNamespace: targetNamespace,
+		DeleteSource:    deleteSource,
+		FilterNames:     filterNames,
+		HostnameMap:     hostnameMap,
+	}
+
+	path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/migrate", cluster, ns)
+	var result apitypes.NamespaceMigrateResponse
+	if err := h.state.Client.Post(cmd.Context(), path, req, &result); err != nil {
+		return err
+	}
+
+	w := cmd.OutOrStdout()
+	switch h.state.OutputFmt {
+	case outputJSON:
+		return output.PrintJSON(w, result)
+	case outputYAML:
+		return output.PrintYAML(w, result)
+	default:
+		return renderBatchMigrate(w, result, deleteSource)
+	}
+}
+
+func renderBatchMigrate(w io.Writer, resp apitypes.NamespaceMigrateResponse, deleteSource bool) error {
+	fmt.Fprintf(w, "Migrated from %s/%s to %s/%s\n", resp.SourceCluster, resp.SourceNamespace, resp.TargetCluster, resp.TargetNamespace) //nolint:errcheck
+
+	cols := []output.Column[apitypes.CappMigrateResult]{
+		{Header: "NAME", Value: func(r apitypes.CappMigrateResult) string { return r.Name }},
+		{Header: "MIGRATED", Value: func(r apitypes.CappMigrateResult) string {
+			if r.Migrated {
+				return "yes"
+			}
+			return "no"
+		}},
+		{Header: "SOURCE DELETED", Value: func(r apitypes.CappMigrateResult) string {
+			if !deleteSource {
+				return "-"
+			}
+			if r.SourceDeleted {
+				return "yes"
+			}
+			return "no"
+		}},
+		{Header: "ERROR", Value: func(r apitypes.CappMigrateResult) string { return r.Error }},
+	}
+	output.PrintTable(w, cols, resp.Results, false)
+
+	if len(resp.CopiedSecrets) > 0 || len(resp.CopiedConfigMaps) > 0 {
+		fmt.Fprintf(w, "Copied: %d secrets, %d configmaps\n", len(resp.CopiedSecrets), len(resp.CopiedConfigMaps)) //nolint:errcheck
+	}
+	if resp.FailedCount > 0 {
+		fmt.Fprintf(w, "Failed: %d of %d\n", resp.FailedCount, len(resp.Results)) //nolint:errcheck
+	}
+	return nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
