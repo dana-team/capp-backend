@@ -63,6 +63,12 @@ type cappMigrateInput struct {
 	capps.MigrateRequest
 }
 
+type cappMigrateNamespaceInput struct {
+	Cluster   string `json:"cluster" jsonschema:"the source cluster name"`
+	Namespace string `json:"namespace" jsonschema:"the source namespace to migrate Capps from"`
+	capps.NamespaceMigrateRequest
+}
+
 func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "capp_list",
@@ -190,6 +196,22 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 		var out capps.MigrateResponse
 		if err := c.Post(ctx, path, in.MigrateRequest, &out); err != nil {
 			return nil, capps.MigrateResponse{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "capp_migrate_namespace",
+		Description: "Batch-migrate all (or a filtered subset of) Capps in a namespace to a different cluster or namespace. Dependent Secrets and ConfigMaps are copied once before the Capps. Per-Capp results are returned so partial failures are visible.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappMigrateNamespaceInput) (*mcp.CallToolResult, capps.NamespaceMigrateResponse, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, capps.NamespaceMigrateResponse{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/migrate", in.Cluster, in.Namespace)
+		var out capps.NamespaceMigrateResponse
+		if err := c.Post(ctx, path, in.NamespaceMigrateRequest, &out); err != nil {
+			return nil, capps.NamespaceMigrateResponse{}, err
 		}
 		return nil, out, nil
 	})
