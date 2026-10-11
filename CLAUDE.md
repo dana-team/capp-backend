@@ -114,7 +114,8 @@ internal/
     resource/                   # ResourceCommand interface + registry
     root/                       # State struct, root Cobra command, PersistentPreRunE, token refresh
     auth/                       # login, logout, context commands
-    capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync
+    capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync/migrate/rollback
+    capprevisions/              # CappRevisions ResourceCommand: get only
   apierrors/                    # Canonical error types
 pkg/k8s/                        # Kubernetes scheme builder (CRD type registration)
 api/openapi.yaml                # OpenAPI 3.1 spec (embedded in binary)
@@ -138,6 +139,8 @@ cappctl update   capps <name>
 cappctl delete   capps <name>
 cappctl sync     capps <name> [--disable]
 cappctl migrate  capps <name>
+cappctl rollback capps <name> --to-revision N [-y]
+cappctl get      capprevisions --capp <name> [revision]
 ```
 
 **Global flags:** `--server`, `--token`, `--cluster`, `--namespace`, `--context`, `--output` (table|wide|json|yaml), `--insecure`
@@ -150,7 +153,7 @@ cappctl migrate  capps <name>
 
 **MCP integration:** `cappctl mcp-headers` (`internal/cli/auth/headers.go`) prints `{"Authorization": "Bearer <token>"}` after running the normal auth/refresh flow. Wire it up as a Claude Code MCP `headersHelper` so Claude Code re-runs it on every reconnect and on 401/403, picking up a refreshed token without restarting the session — see `claude mcp add-json` with `"headersHelper": "cappctl mcp-headers --context <name>"`.
 
-**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)` and `RegisterMigrateCommand(parent *cobra.Command)` — implement as no-ops if sync or migrate is not applicable to the resource.
+**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)`, `RegisterMigrateCommand(parent *cobra.Command)` and `RegisterRollbackCommand(parent *cobra.Command)` — implement as no-ops if sync, migrate or rollback is not applicable to the resource.
 
 ### Startup Sequence
 1. Load config (YAML + env vars) → validate

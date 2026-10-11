@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/dana-team/capp-backend/internal/cli/auth"
+	"github.com/dana-team/capp-backend/internal/cli/capprevisions"
 	"github.com/dana-team/capp-backend/internal/cli/capps"
 	"github.com/dana-team/capp-backend/internal/cli/completion"
 	"github.com/dana-team/capp-backend/internal/cli/resource"
@@ -18,6 +19,7 @@ func main() {
 
 	registry := resource.NewRegistry()
 	registry.Register(capps.New(state))
+	registry.Register(capprevisions.New(state))
 
 	rootCmd := root.New(state, registry)
 	rootCmd.Version = version

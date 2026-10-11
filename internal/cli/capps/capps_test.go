@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/cli/client"
@@ -536,4 +537,160 @@ func TestUpdate_RouteSpec_TLSWithoutHostname(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--hostname is required")
+}
+
+// newRollbackCmd builds a minimal rollback cobra tree wired to a test HTTP server.
+func newRollbackCmd(t *testing.T, serverURL, cluster, namespace, outputFmt string) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+
+	state := &root.State{
+		Client:    client.New(serverURL, "test-token", false),
+		Cluster:   cluster,
+		Namespace: namespace,
+		OutputFmt: outputFmt,
+	}
+
+	h := New(state)
+	parent := &cobra.Command{Use: "rollback"}
+	h.RegisterRollbackCommand(parent)
+
+	buf := &bytes.Buffer{}
+	parent.SetOut(buf)
+	parent.SetErr(buf)
+
+	return parent, buf
+}
+
+func TestRollback_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/api/v1/clusters/c1/namespaces/ns1/capps/my-app/revisions/4/rollback", r.URL.Path)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.CappResponse{ //nolint:errcheck
+			BareCappResponse: apitypes.BareCappResponse{Name: "my-app", Namespace: "ns1", Image: "img:rollback"},
+		})
+	}))
+	defer srv.Close()
+
+	cmd, buf := newRollbackCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "4", "-y"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Contains(t, buf.String(), "my-app")
+	assert.Contains(t, buf.String(), "img:rollback")
+}
+
+func TestRollback_ConfirmYes(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.CappResponse{ //nolint:errcheck
+			BareCappResponse: apitypes.BareCappResponse{Name: "my-app", Image: "img:v1"},
+		})
+	}))
+	defer srv.Close()
+
+	cmd, buf := newRollbackCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetIn(bytes.NewBufferString("y\n"))
+	cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "1"})
+	require.NoError(t, cmd.Execute())
+
+	assert.True(t, called)
+	assert.Contains(t, buf.String(), "to revision 1? This overwrites its current spec. [y/N]")
+	assert.Contains(t, buf.String(), "img:v1")
+}
+
+func TestRollback_ConfirmAborted(t *testing.T) {
+	for _, input := range []string{"n\n", "\n", "yes\n"} {
+		t.Run(strings.TrimSpace(input), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("server must not be called when rollback is aborted")
+			}))
+			defer srv.Close()
+
+			cmd, buf := newRollbackCmd(t, srv.URL, "c1", "ns1", "")
+			cmd.SetIn(bytes.NewBufferString(input))
+			cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "1"})
+			require.NoError(t, cmd.Execute())
+
+			assert.Contains(t, buf.String(), "Aborted.")
+		})
+	}
+}
+
+func TestRollback_JSONOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(apitypes.CappResponse{ //nolint:errcheck
+			BareCappResponse: apitypes.BareCappResponse{Name: "my-app", Image: "img:v2"},
+		})
+	}))
+	defer srv.Close()
+
+	cmd, buf := newRollbackCmd(t, srv.URL, "c1", "ns1", "json")
+	cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "2", "-y"})
+	require.NoError(t, cmd.Execute())
+
+	var result apitypes.CappResponse
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &result))
+	assert.Equal(t, "img:v2", result.Image)
+}
+
+func TestRollback_MissingToRevision(t *testing.T) {
+	cmd, _ := newRollbackCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--to-revision is required")
+}
+
+func TestRollback_NonPositiveToRevision(t *testing.T) {
+	cmd, _ := newRollbackCmd(t, "http://unused", "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "0"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--to-revision is required")
+}
+
+func TestRollback_MissingCluster(t *testing.T) {
+	cmd, _ := newRollbackCmd(t, "http://unused", "", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--cluster is required")
+}
+
+func TestRollback_MissingNamespace(t *testing.T) {
+	cmd, _ := newRollbackCmd(t, "http://unused", "c1", "", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--namespace is required")
+}
+
+func TestRollback_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"error": map[string]any{
+				"code":    "NOT_FOUND",
+				"message": `CappRevision "my-app revision 7" not found`,
+				"status":  404,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	cmd, _ := newRollbackCmd(t, srv.URL, "c1", "ns1", "")
+	cmd.SetArgs([]string{"capps", "my-app", "--to-revision", "7", "-y"})
+	err := cmd.Execute()
+	require.Error(t, err)
+
+	var apiErr *client.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, "NOT_FOUND", apiErr.Code)
 }
