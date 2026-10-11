@@ -28,6 +28,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources"
 	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	revhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
 	cmhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	secrethandler "github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
 	"github.com/dana-team/capp-backend/internal/server"
@@ -116,14 +117,16 @@ func main() {
 
 	// ── 7. Build resource registry ────────────────────────────────────────────
 	enabledResources := map[string]bool{
-		"namespaces": cfg.Resources.Namespaces.Enabled,
-		"capps":      cfg.Resources.Capps.Enabled,
-		"configmaps": cfg.Resources.Configmaps.Enabled,
-		"secrets":    cfg.Resources.Secrets.Enabled,
+		"namespaces":    cfg.Resources.Namespaces.Enabled,
+		"capps":         cfg.Resources.Capps.Enabled,
+		"capprevisions": cfg.Resources.Capprevisions.Enabled,
+		"configmaps":    cfg.Resources.Configmaps.Enabled,
+		"secrets":       cfg.Resources.Secrets.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New(logger))
 	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient, clusterMgr, cfg.Sizes))
+	registry.Register(revhandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
 	// ── 8. Build and start HTTP server ────────────────────────────────────────

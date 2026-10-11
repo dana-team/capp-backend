@@ -938,8 +938,9 @@ components:
         stateStatus:
           $ref: '#/components/schemas/StateStatusResponse'
 
-    CappResponse:
+    BareCappResponse:
       type: object
+      description: Capp metadata and spec, without status. Shared by CappResponse and CappRevisionResponse.
       properties:
         name:
           type: string
@@ -1018,13 +1019,45 @@ components:
           example: [ghcr-pull-secret]
         eventSourcesSpec:
           $ref: '#/components/schemas/EventSourcesSpec'
-        status:
-          $ref: '#/components/schemas/CappStatusResponse'
-        warnings:
+
+    CappResponse:
+      allOf:
+        - $ref: '#/components/schemas/BareCappResponse'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/CappStatusResponse'
+            warnings:
+              type: array
+              description: Side effects that failed while the cluster write itself succeeded. Absent on the happy path.
+              items:
+                $ref: '#/components/schemas/Warning'
+
+    CappRevisionResponse:
+      description: |
+        A historical snapshot of a Capp, recorded by the operator as a
+        CappRevision on every spec, label or annotation change. `name`,
+        `uid` and `createdAt` identify the CappRevision object; `labels`,
+        `annotations` and the spec fields are the Capp's as recorded.
+      allOf:
+        - $ref: '#/components/schemas/BareCappResponse'
+        - type: object
+          required: [revisionNumber]
+          properties:
+            revisionNumber:
+              type: integer
+              example: 3
+
+    CappRevisionListResponse:
+      type: object
+      properties:
+        items:
           type: array
-          description: Side effects that failed while the cluster write itself succeeded. Absent on the happy path.
           items:
-            $ref: '#/components/schemas/Warning'
+            $ref: '#/components/schemas/CappRevisionResponse'
+        total:
+          type: integer
+          example: 3
 
     Warning:
       type: object
@@ -1157,6 +1190,16 @@ components:
         type: string
       description: Object resource name.
       example: my-app
+
+    revisionParam:
+      name: revision
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+      description: CappRevision number (spec.revisionNumber).
+      example: 3
 
   responses:
     Unauthorized:
@@ -2242,6 +2285,130 @@ paths:
           $ref: '#/components/responses/InternalError'
         "502":
           $ref: '#/components/responses/GitopsFailed'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/revisions:
+    get:
+      tags: [capps]
+      summary: List a Capp's revisions
+      description: |
+        Lists the CappRevisions the operator recorded for the Capp (label
+        `rcs.dana.io/cappName`), newest first. Retention is governed by the
+        CappConfig `revisionHistoryLimit`.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Revisions of the Capp, newest first. Empty when none exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappRevisionListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/revisions/{revision}:
+    get:
+      tags: [capps]
+      summary: Get one revision of a Capp
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - $ref: '#/components/parameters/revisionParam'
+      responses:
+        "200":
+          description: The revision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappRevisionResponse'
+        "400":
+          description: Revision is not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/revisions/{revision}/rollback:
+    post:
+      tags: [capps]
+      summary: Roll a Capp back to a revision
+      description: |
+        Replaces the live Capp's spec, labels and annotations with those
+        recorded in the revision. The `rcs.dana.io/backup-to-git` label keeps
+        its current value. The operator records the result as a new revision.
+
+        When the Capp is Git-synced, the new values are pushed to the GitOps
+        repository; a push failure is reported in `warnings` and does not undo
+        the rollback.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - $ref: '#/components/parameters/revisionParam'
+      responses:
+        "200":
+          description: Capp rolled back.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "400":
+          description: Revision is not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Capp or revision not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: The Capp was modified concurrently; retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
         "503":
           description: Cluster is currently unhealthy.
           content:

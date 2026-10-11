@@ -140,6 +140,8 @@ resources:
     enabled: true
   capps:
     enabled: true
+  capprevisions:
+    enabled: true
 
   # On-demand per-capp benchmarking, powered by the capp-monitoring chart.
   # The chart is self-contained and can be deployed into any namespace.

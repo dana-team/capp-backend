@@ -433,29 +433,38 @@ func resourceSpecFromK8s(res corev1.ResourceRequirements) *ResourceSpec {
 // FromK8s converts a live rcs.dana.io/v1alpha1.Capp into a CappResponse DTO.
 // Status fields are included verbatim from the resource's Status sub-object.
 func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
-	resp := CappResponse{
-		Name:            capp.Name,
-		Namespace:       capp.Namespace,
-		UID:             string(capp.UID),
-		ResourceVersion: capp.ResourceVersion,
-		Labels:          capp.Labels,
-		Annotations:     filterAnnotations(capp.Annotations),
+	return CappResponse{
+		BareCappResponse: BareFromK8s(capp.ObjectMeta, capp.Spec, sizes),
+		Status:           buildStatus(capp),
+	}
+}
+
+// BareFromK8s converts Capp metadata and spec into a BareCappResponse. It is
+// shared by FromK8s and CappRevision conversion, which has no status.
+func BareFromK8s(meta metav1.ObjectMeta, spec cappv1alpha1.CappSpec, sizes config.CappSizes) BareCappResponse {
+	resp := BareCappResponse{
+		Name:            meta.Name,
+		Namespace:       meta.Namespace,
+		UID:             string(meta.UID),
+		ResourceVersion: meta.ResourceVersion,
+		Labels:          meta.Labels,
+		Annotations:     filterAnnotations(meta.Annotations),
 
 		ScaleSpec: ScaleSpec{
-			Metric:            capp.Spec.ScaleSpec.Metric,
-			MinReplicas:       capp.Spec.ScaleSpec.MinReplicas,
-			MaxReplicas:       capp.Spec.ScaleSpec.MaxReplicas,
-			ScaleDelaySeconds: capp.Spec.ScaleSpec.ScaleDelaySeconds,
+			Metric:            spec.ScaleSpec.Metric,
+			MinReplicas:       spec.ScaleSpec.MinReplicas,
+			MaxReplicas:       spec.ScaleSpec.MaxReplicas,
+			ScaleDelaySeconds: spec.ScaleSpec.ScaleDelaySeconds,
 		},
-		State: capp.Spec.State,
+		State: spec.State,
 	}
 
-	if !capp.CreationTimestamp.IsZero() {
-		resp.CreatedAt = capp.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z")
+	if !meta.CreationTimestamp.IsZero() {
+		resp.CreatedAt = meta.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z")
 	}
 
 	// Extract the first container's details.
-	containers := capp.Spec.ConfigurationSpec.Template.Spec.Containers
+	containers := spec.ConfigurationSpec.Template.Spec.Containers
 	if len(containers) > 0 {
 		c := containers[0]
 		resp.Image = c.Image
@@ -469,7 +478,7 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 	}
 
 	// Secret and ConfigMap volumes.
-	podSpec := capp.Spec.ConfigurationSpec.Template.Spec
+	podSpec := spec.ConfigurationSpec.Template.Spec
 	for _, ps := range podSpec.ImagePullSecrets {
 		resp.ImagePullSecrets = append(resp.ImagePullSecrets, ps.Name)
 	}
@@ -500,7 +509,7 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 	}
 
 	// Route spec.
-	if rs := capp.Spec.RouteSpec; rs.Hostname != "" || rs.TlsEnabled || rs.RouteTimeoutSeconds != nil {
+	if rs := spec.RouteSpec; rs.Hostname != "" || rs.TlsEnabled || rs.RouteTimeoutSeconds != nil {
 		resp.RouteSpec = &RouteSpec{
 			Hostname:            rs.Hostname,
 			TLSEnabled:          rs.TlsEnabled,
@@ -509,7 +518,7 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 	}
 
 	// Log spec.
-	if ls := capp.Spec.LogSpec; ls.Type != "" {
+	if ls := spec.LogSpec; ls.Type != "" {
 		resp.LogSpec = &LogSpec{
 			Type:           string(ls.Type),
 			Host:           ls.Host,
@@ -521,7 +530,7 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 	}
 
 	// NFS volumes.
-	for _, v := range capp.Spec.VolumesSpec.NFSVolumes {
+	for _, v := range spec.VolumesSpec.NFSVolumes {
 		capacity := ""
 		if q, ok := v.Capacity[corev1.ResourceStorage]; ok {
 			capacity = q.String()
@@ -535,9 +544,9 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 	}
 
 	// Event sources spec.
-	if len(capp.Spec.EventSourcesSpec.Sources) > 0 {
-		sources := make([]SourceConfig, 0, len(capp.Spec.EventSourcesSpec.Sources))
-		for _, s := range capp.Spec.EventSourcesSpec.Sources {
+	if len(spec.EventSourcesSpec.Sources) > 0 {
+		sources := make([]SourceConfig, 0, len(spec.EventSourcesSpec.Sources))
+		for _, s := range spec.EventSourcesSpec.Sources {
 			sc := SourceConfig{Name: s.Name}
 			if s.URI != nil {
 				sc.URI = s.URI.String()
@@ -561,9 +570,6 @@ func FromK8s(capp *cappv1alpha1.Capp, sizes config.CappSizes) CappResponse {
 		}
 		resp.EventSourcesSpec = &EventSourcesSpec{Sources: sources}
 	}
-
-	// Status conditions.
-	resp.Status = buildStatus(capp)
 
 	return resp
 }

@@ -105,6 +105,8 @@ config:
       enabled: true
     capps:
       enabled: true
+    capprevisions:
+      enabled: true
     cappSizes:
       small:
         requests:
