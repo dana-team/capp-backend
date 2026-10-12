@@ -59,6 +59,13 @@ spec:
                     name: {{ include "capp-backend.secretName" . }}
                     key: gitopsToken
               {{- end }}
+              {{- if (dig "resources" "benchmarks" "enabled" false .Values.config) }}
+              - name: CAPP_RESOURCES_BENCHMARKS_VMURLS
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" . }}
+                    key: benchmarkVmURLs
+              {{- end }}
             volumeMounts:
               - name: config
                 mountPath: /etc/capp

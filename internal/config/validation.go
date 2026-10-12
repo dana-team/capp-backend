@@ -213,9 +213,15 @@ func validateBenchmarks(b *BenchmarkConfig) []error {
 
 	var errs []error
 
-	if b.ChartRef == "" {
+	if b.Image == "" {
 		errs = append(errs, errors.New(
-			"config: resources.benchmarks.chartRef is required when resources.benchmarks.enabled is true",
+			"config: resources.benchmarks.image is required when resources.benchmarks.enabled is true",
+		))
+	}
+	if len(compactVMURLs(b.VMURLs)) == 0 {
+		errs = append(errs, errors.New(
+			"config: resources.benchmarks.vmURLs is required when resources.benchmarks.enabled is true; "+
+				"set via CAPP_RESOURCES_BENCHMARKS_VMURLS environment variable",
 		))
 	}
 

@@ -114,7 +114,7 @@ data:
       {{- if (dig "resources" "benchmarks" "enabled" false .Values.config) }}
       benchmarks:
         enabled: true
-        chartRef: {{ .Values.config.resources.benchmarks.chartRef | quote }}
+        image: {{ required "config.resources.benchmarks.image is required when benchmarks are enabled" .Values.config.resources.benchmarks.image | quote }}
       {{- end }}
 
     {{- if .Values.config.gitops.enabled }}

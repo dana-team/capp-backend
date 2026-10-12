@@ -130,11 +130,11 @@ config:
           cpu: "2000m"
           memory: "2Gi"
 
-  # On-demand per-capp benchmarking, powered by the capp-monitoring chart.
-  # The chart is self-contained and can be deployed into any namespace.
+  # On-demand per-capp benchmarking. The backend creates a Job from image.
+  # vmURLs are injected from secret.benchmarkVmURLs, not set here.
   benchmarks:
     enabled: false
-    chartRef: ""                     # OCI ref, e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"
+    image: ""                        # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
 
   # GitOps — push Capp values to a git repository for ArgoCD sync.
   # Disabled by default. Enable and provide credentials to activate.
@@ -164,6 +164,12 @@ secret:
   # GitOps token. Required when config.gitops.authMethod is "token".
   # Override: --set secret.gitopsToken="<personal-access-token>"
   gitopsToken: ""
+
+  # VictoriaMetrics base URLs. The monitoring stack writes to two instances.
+  # Required when config.resources.benchmarks.enabled is true.
+  # Injected as CAPP_RESOURCES_BENCHMARKS_VMURLS (comma-separated).
+  # Override: --set secret.benchmarkVmURLs[0]="http://vm-a.monitoring.svc:8428" --set secret.benchmarkVmURLs[1]="http://vm-b.monitoring.svc:8428"
+  benchmarkVmURLs: []
 
   # SSH private key for GitOps. Required when config.gitops.authMethod is "ssh".
   # Override: --set-file secret.sshKey=/path/to/private/key
