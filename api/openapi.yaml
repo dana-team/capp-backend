@@ -257,6 +257,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NamespaceItem'
+        total:
+          type: integer
+          format: int32
+          example: 2
         canCreate:
           type: boolean
           description: Whether the authenticated user has permission to create new namespaces in this cluster.

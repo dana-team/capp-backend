@@ -3,6 +3,7 @@ package namespaces
 // NamespaceListResponse is the response envelope for the list endpoint.
 type NamespaceListResponse struct {
 	Items     []NamespaceItem `json:"items"`
+	Total     int             `json:"total"`
 	CanCreate bool            `json:"canCreate"`
 }
 
