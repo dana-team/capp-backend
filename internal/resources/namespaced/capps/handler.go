@@ -190,7 +190,7 @@ func (h *Handler) update(c *gin.Context) {
 	backup := h.isGitSyncEnabledForCapp(&existing)
 	var meta cluster.ClusterMeta
 	if backup {
-		meta, err = extractClusterMeta(c)
+		meta, err = ExtractClusterMeta(c)
 		if err != nil {
 			apierrors.Respond(c, apierrors.NewInternal(err))
 			return
@@ -205,7 +205,7 @@ func (h *Handler) update(c *gin.Context) {
 	resp := FromK8s(updated, h.sizes)
 	if backup {
 		if _, err := h.syncCappValues(ctx, meta, updated); err != nil {
-			resp.Warnings = append(resp.Warnings, backupWarning(c, err))
+			resp.Warnings = append(resp.Warnings, BackupWarning(c, err))
 		}
 	}
 
@@ -236,7 +236,7 @@ func (h *Handler) delete(c *gin.Context) {
 	var meta cluster.ClusterMeta
 	if backup {
 		var err error
-		meta, err = extractClusterMeta(c)
+		meta, err = ExtractClusterMeta(c)
 		if err != nil {
 			apierrors.Respond(c, apierrors.NewInternal(err))
 			return
@@ -250,7 +250,7 @@ func (h *Handler) delete(c *gin.Context) {
 
 	if backup {
 		if _, err := h.gitops.DeleteValues(ctx, meta.Name, namespace, name); err != nil {
-			c.JSON(http.StatusOK, DeleteResponse{Warnings: []Warning{backupWarning(c, err)}})
+			c.JSON(http.StatusOK, DeleteResponse{Warnings: []Warning{BackupWarning(c, err)}})
 			return
 		}
 	}
@@ -303,7 +303,7 @@ func (h *Handler) setGitSync(c *gin.Context, enable bool) {
 		return
 	}
 
-	meta, err := extractClusterMeta(c)
+	meta, err := ExtractClusterMeta(c)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewInternal(err))
 		return
@@ -355,7 +355,9 @@ func (h *Handler) isGitSyncEnabledForCapp(capp *cappv1alpha1.Capp) bool {
 	return h.isGitOpsConfigured() && k8s.HasBackupLabel(capp.Labels)
 }
 
-func backupWarning(c *gin.Context, err error) Warning {
+// BackupWarning records err on the request and returns the warning attached
+// to a response whose cluster write succeeded but whose Git backup failed.
+func BackupWarning(c *gin.Context, err error) Warning {
 	_ = c.Error(fmt.Errorf("git backup: %w", err))
 	return Warning{
 		Code:    apierrors.CodeGitopsFailed,
@@ -364,11 +366,16 @@ func backupWarning(c *gin.Context, err error) Warning {
 }
 
 func (h *Handler) syncCappValues(ctx context.Context, meta cluster.ClusterMeta, capp *cappv1alpha1.Capp) (string, error) {
+	return SyncCappValues(ctx, h.gitops, meta, capp)
+}
+
+// SyncCappValues renders capp's Helm values and pushes them to the GitOps repo.
+func SyncCappValues(ctx context.Context, gitops GitOpsSyncer, meta cluster.ClusterMeta, capp *cappv1alpha1.Capp) (string, error) {
 	valuesYAML, err := GenerateValues(capp)
 	if err != nil {
 		return "", fmt.Errorf("generate values: %w", err)
 	}
-	return h.gitops.SyncValues(ctx, meta.Name, capp.Namespace, capp.Name, valuesYAML)
+	return gitops.SyncValues(ctx, meta.Name, capp.Namespace, capp.Name, valuesYAML)
 }
 
 // migrate handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate
@@ -386,7 +393,7 @@ func (h *Handler) migrate(c *gin.Context) {
 		return
 	}
 
-	meta, err := extractClusterMeta(c)
+	meta, err := ExtractClusterMeta(c)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewInternal(err))
 		return
@@ -526,8 +533,8 @@ func (h *Handler) migrate(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// extractClusterMeta retrieves the ClusterMeta from the Gin context.
-func extractClusterMeta(c *gin.Context) (cluster.ClusterMeta, error) {
+// ExtractClusterMeta retrieves the ClusterMeta from the Gin context.
+func ExtractClusterMeta(c *gin.Context) (cluster.ClusterMeta, error) {
 	val, exists := c.Get(string(middleware.ClusterMetaKey))
 	if !exists {
 		return cluster.ClusterMeta{}, fmt.Errorf("ClusterMeta not found in context")

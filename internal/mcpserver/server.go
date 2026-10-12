@@ -6,7 +6,7 @@ type Config struct {
 	Backend Backend
 
 	// Enabled selectively disables tool sets by name (clusters, namespaces,
-	// capps, configmaps, secrets). A name absent from the map is enabled by default.
+	// capps, capprevisions, configmaps, secrets). A name absent from the map is enabled by default.
 	Enabled map[string]bool
 }
 
@@ -24,6 +24,7 @@ func NewServer(cfg Config) *mcp.Server {
 	registry.Register(ClusterToolSet{})
 	registry.Register(NamespaceToolSet{})
 	registry.Register(CappToolSet{})
+	registry.Register(CappRevisionToolSet{})
 	registry.Register(ConfigMapToolSet{})
 	registry.Register(SecretToolSet{})
 	registry.Mount(s, &cfg.Backend)

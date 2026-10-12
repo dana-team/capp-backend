@@ -256,8 +256,8 @@ type CappStatusResponse struct {
 	StateStatus    StateStatusResponse    `json:"stateStatus"`
 }
 
-// CappResponse is returned by all read and write endpoints.
-type CappResponse struct {
+// BareCappResponse contains the basic info of a Capp, without the status
+type BareCappResponse struct {
 	Name            string            `json:"name"`
 	Namespace       string            `json:"namespace"`
 	CreatedAt       string            `json:"createdAt,omitempty"`
@@ -282,11 +282,22 @@ type CappResponse struct {
 	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
 	ImagePullSecrets []string          `json:"imagePullSecrets,omitempty"`
 	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
+}
 
+// CappResponse is returned by all read and write endpoints.
+type CappResponse struct {
+	BareCappResponse
 	Status CappStatusResponse `json:"status"`
 
 	// Warnings reports side effects that failed while the requested cluster operation succeeded. for example, capp gitops backup operation failure.
 	Warnings []Warning `json:"warnings,omitempty"`
+}
+
+// CappRevisionResponse is a historical snapshot of a Capp, recorded by the
+// operator as a CappRevision on every spec, label or annotation change.
+type CappRevisionResponse struct {
+	BareCappResponse
+	RevisionNumber int `json:"revisionNumber"`
 }
 
 // Warning is a non-fatal problem attached to a successful response.
@@ -303,6 +314,12 @@ type DeleteResponse struct {
 type CappListResponse struct {
 	Items []CappResponse `json:"items"`
 	Total int            `json:"total"`
+}
+
+// CappRevisionListResponse is the envelope returned by the revision list endpoint.
+type CappRevisionListResponse struct {
+	Items []CappRevisionResponse `json:"items"`
+	Total int                    `json:"total"`
 }
 
 // ── Migration types ───────────────────────────────────────────────────────────

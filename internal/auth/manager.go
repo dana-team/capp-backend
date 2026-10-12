@@ -147,10 +147,10 @@ type OAuthAuthorizer interface {
 // method (if the concrete type implements it) to start background cleanup tasks.
 func New(cfg *config.Config) (AuthManager, error) {
 	switch cfg.Auth.Mode {
-	case "passthrough":
+	case config.AuthModePassthrough:
 		return newPassthroughManager(), nil
 
-	case "openshift":
+	case config.AuthModeOpenShift:
 		return newOpenShiftManager(cfg)
 
 	default:

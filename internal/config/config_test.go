@@ -88,6 +88,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.InDelta(t, 0.1, cfg.Tracing.SampleRate, 0.0001)
 	assert.True(t, cfg.Resources.Namespaces.Enabled)
 	assert.True(t, cfg.Resources.Capps.Enabled)
+	assert.True(t, cfg.Resources.Capprevisions.Enabled)
 
 	// Benchmark defaults
 	assert.False(t, cfg.Resources.Benchmarks.Enabled)

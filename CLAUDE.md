@@ -53,6 +53,9 @@ GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — enable Git sync / re-sync; returns 501 if gitops feature is disabled in backend
 DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — disable Git sync (deletes values file); returns 501 if gitops feature is disabled in backend
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate  (auth + cluster) — migrate Capp to another cluster/namespace with dependent resources; requires targetHostname on copy when source has a custom hostname
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions                     (auth + cluster) — list CappRevisions (label rcs.dana.io/cappName), newest first
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions/:revision           (auth + cluster) — get revision by number (spec.revisionNumber, not object name)
+POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions/:revision/rollback  (auth + cluster) — apply revision's spec/labels/annotations to live Capp (backup-to-git label kept as live); pushes to Git if synced
        /api/v1/clusters/:cluster/namespaces/:namespace/configmaps[/:name]    (CRUD)
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/configmaps/names     (auth + cluster) — list configmap names only
        /api/v1/clusters/:cluster/namespaces/:namespace/secrets[/:name]       (CRUD)
@@ -63,7 +66,7 @@ GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list
 
 ### Key Patterns
 
-**ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `namespaces`, `configmaps`, `secrets`. To add a new resource type, implement the interface and register it in `cmd/server/main.go`.
+**ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `capprevisions`, `namespaces`, `configmaps`, `secrets`. To add a new resource type, implement the interface and register it in `cmd/server/main.go`.
 
 **AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `Refresh`. Passthrough mode forwards the caller's bearer token as-is. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. `GET /api/v1/auth/mode` returns the active mode (used by cappctl auto-detection).
 
@@ -101,6 +104,7 @@ internal/
       namespaces/               # Namespace list + create handler (with SelfSubjectAccessReview filtering)
     namespaced/
       capps/                    # Capp CRUD, sync, migrate handler, DTO types, K8s conversion
+        revisions/              # CappRevision list/get/rollback handler (reuses capps DTOs + BareFromK8s)
       configmaps/               # ConfigMap CRUD handler (dana.io/capp-managed=true filter on list)
       secrets/                  # Secret CRUD handler
   cli/                          # cappctl CLI packages (no Gin/K8s imports)
@@ -110,7 +114,8 @@ internal/
     resource/                   # ResourceCommand interface + registry
     root/                       # State struct, root Cobra command, PersistentPreRunE, token refresh
     auth/                       # login, logout, context commands
-    capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync
+    capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync/migrate/rollback
+    capprevisions/              # CappRevisions ResourceCommand: get only
   apierrors/                    # Canonical error types
 pkg/k8s/                        # Kubernetes scheme builder (CRD type registration)
 api/openapi.yaml                # OpenAPI 3.1 spec (embedded in binary)
@@ -134,6 +139,8 @@ cappctl update   capps <name>
 cappctl delete   capps <name>
 cappctl sync     capps <name> [--disable]
 cappctl migrate  capps <name>
+cappctl rollback capps <name> --to-revision N [-y]
+cappctl get      capprevisions --capp <name> [revision]
 ```
 
 **Global flags:** `--server`, `--token`, `--cluster`, `--namespace`, `--context`, `--output` (table|wide|json|yaml), `--insecure`
@@ -146,7 +153,7 @@ cappctl migrate  capps <name>
 
 **MCP integration:** `cappctl mcp-headers` (`internal/cli/auth/headers.go`) prints `{"Authorization": "Bearer <token>"}` after running the normal auth/refresh flow. Wire it up as a Claude Code MCP `headersHelper` so Claude Code re-runs it on every reconnect and on 401/403, picking up a refreshed token without restarting the session — see `claude mcp add-json` with `"headersHelper": "cappctl mcp-headers --context <name>"`.
 
-**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)` and `RegisterMigrateCommand(parent *cobra.Command)` — implement as no-ops if sync or migrate is not applicable to the resource.
+**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)`, `RegisterMigrateCommand(parent *cobra.Command)` and `RegisterRollbackCommand(parent *cobra.Command)` — implement as no-ops if sync, migrate or rollback is not applicable to the resource.
 
 ### Startup Sequence
 1. Load config (YAML + env vars) → validate

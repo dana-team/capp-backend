@@ -87,6 +87,8 @@ data:
         enabled: {{ .Values.config.resources.namespaces.enabled }}
       capps:
         enabled: {{ .Values.config.resources.capps.enabled }}
+      capprevisions:
+        enabled: {{ .Values.config.resources.capprevisions.enabled }}
       cappSizes:
         small:
           requests:

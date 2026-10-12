@@ -92,6 +92,12 @@ type RateLimitConfig struct {
 	MaxIPTracked int `mapstructure:"maxIPTracked"`
 }
 
+// Accepted values for AuthConfig.Mode.
+const (
+	AuthModePassthrough = "passthrough"
+	AuthModeOpenShift   = "openshift"
+)
+
 // AuthConfig holds all authentication-related settings.
 type AuthConfig struct {
 	// Mode selects the authentication strategy. One of:
@@ -211,11 +217,12 @@ type ResourceToggle struct {
 // Disabling a resource removes its routes entirely at startup — no 404s,
 // no handler overhead.
 type ResourcesConfig struct {
-	Namespaces ResourceToggle  `mapstructure:"namespaces"`
-	Capps      ResourceToggle  `mapstructure:"capps"`
-	Configmaps ResourceToggle  `mapstructure:"configmaps"`
-	Secrets    ResourceToggle  `mapstructure:"secrets"`
-	Benchmarks BenchmarkConfig `mapstructure:"benchmarks"`
+	Namespaces    ResourceToggle  `mapstructure:"namespaces"`
+	Capps         ResourceToggle  `mapstructure:"capps"`
+	Capprevisions ResourceToggle  `mapstructure:"capprevisions"`
+	Configmaps    ResourceToggle  `mapstructure:"configmaps"`
+	Secrets       ResourceToggle  `mapstructure:"secrets"`
+	Benchmarks    BenchmarkConfig `mapstructure:"benchmarks"`
 }
 
 // BenchmarkConfig controls on-demand per-capp benchmarking, powered by
@@ -363,7 +370,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.corsAllowedOrigins", []string{})
 
 	// Auth
-	v.SetDefault("auth.mode", "passthrough")
+	v.SetDefault("auth.mode", AuthModePassthrough)
 	v.SetDefault("auth.openshift.scopes", []string{"user:info", "user:check-access"})
 	v.SetDefault("auth.openshift.tokenCacheTTLSeconds", 60)
 	v.SetDefault("auth.rateLimit.enabled", true)
@@ -388,6 +395,7 @@ func setDefaults(v *viper.Viper) {
 	// Resources — all enabled by default
 	v.SetDefault("resources.namespaces.enabled", true)
 	v.SetDefault("resources.capps.enabled", true)
+	v.SetDefault("resources.capprevisions.enabled", true)
 	v.SetDefault("resources.configmaps.enabled", true)
 	v.SetDefault("resources.secrets.enabled", true)
 

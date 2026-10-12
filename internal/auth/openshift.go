@@ -80,6 +80,9 @@ type cachedIdentity struct {
 // oauthStateTTL is how long a CSRF state token remains valid.
 const oauthStateTTL = 10 * time.Minute
 
+// oauthClientIDParam is the OAuth 2.0 client identifier parameter name.
+const oauthClientIDParam = "client_id"
+
 // newOpenShiftManager builds an openShiftManager. It creates an in-cluster
 // K8s client for TokenReview and discovers OAuth endpoints from the configured
 // API server.
@@ -259,8 +262,8 @@ func (m *openShiftManager) Login(_ context.Context, _, _ string) (TokenPair, err
 // grant; the token arrives in the Location header fragment of the final redirect.
 func (m *openShiftManager) PasswordLogin(ctx context.Context, username, password string) (TokenPair, error) {
 	params := url.Values{
-		"response_type": {"token"},
-		"client_id":     {"openshift-challenging-client"},
+		"response_type":    {"token"},
+		oauthClientIDParam: {"openshift-challenging-client"},
 	}
 	authorizeURL := m.oauthMeta.AuthorizationEndpoint + "?" + params.Encode()
 
@@ -321,10 +324,10 @@ func (m *openShiftManager) PasswordLogin(ctx context.Context, username, password
 // OAuth token endpoint.
 func (m *openShiftManager) Refresh(ctx context.Context, refreshToken string) (TokenPair, error) {
 	form := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {m.cfg.ClientID},
-		"client_secret": {m.cfg.ClientSecret},
+		"grant_type":       {"refresh_token"},
+		"refresh_token":    {refreshToken},
+		oauthClientIDParam: {m.cfg.ClientID},
+		"client_secret":    {m.cfg.ClientSecret},
 	}
 
 	return m.oauthTokenRequest(ctx, form)
@@ -352,11 +355,11 @@ func (m *openShiftManager) GetAuthorizeURL(redirectURI string) (string, string, 
 	}
 
 	params := url.Values{
-		"client_id":     {m.cfg.ClientID},
-		"redirect_uri":  {redirectURI},
-		"response_type": {"code"},
-		"scope":         {strings.Join(m.cfg.Scopes, " ")},
-		"state":         {state},
+		oauthClientIDParam: {m.cfg.ClientID},
+		"redirect_uri":     {redirectURI},
+		"response_type":    {"code"},
+		"scope":            {strings.Join(m.cfg.Scopes, " ")},
+		"state":            {state},
 	}
 	return m.oauthMeta.AuthorizationEndpoint + "?" + params.Encode(), state, nil
 }
@@ -433,11 +436,11 @@ func (m *openShiftManager) OAuthExchange(ctx context.Context, code, redirectURI 
 		redirectURI = m.cfg.RedirectURI
 	}
 	form := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"redirect_uri":  {redirectURI},
-		"client_id":     {m.cfg.ClientID},
-		"client_secret": {m.cfg.ClientSecret},
+		"grant_type":       {"authorization_code"},
+		"code":             {code},
+		"redirect_uri":     {redirectURI},
+		oauthClientIDParam: {m.cfg.ClientID},
+		"client_secret":    {m.cfg.ClientSecret},
 	}
 
 	return m.oauthTokenRequest(ctx, form)

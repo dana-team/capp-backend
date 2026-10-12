@@ -3,7 +3,6 @@ package capps
 import (
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/output"
 	"github.com/dana-team/capp-backend/internal/cli/resource"
 	"github.com/dana-team/capp-backend/internal/cli/root"
+	"github.com/dana-team/capp-backend/internal/cli/utils"
 	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 )
 
@@ -28,7 +28,7 @@ var tableCols = []output.Column[apitypes.CappResponse]{
 	{Header: "IMAGE", Value: func(c apitypes.CappResponse) string { return c.Image }},
 	{Header: "STATE", Value: func(c apitypes.CappResponse) string { return c.State }},
 	{Header: "METRIC", Value: func(c apitypes.CappResponse) string { return c.ScaleSpec.Metric }},
-	{Header: "AGE", Value: func(c apitypes.CappResponse) string { return age(c.CreatedAt) }},
+	{Header: "AGE", Value: func(c apitypes.CappResponse) string { return utils.Age(c.CreatedAt) }},
 	{Header: "UID", Value: func(c apitypes.CappResponse) string { return c.UID }, Wide: true},
 }
 
@@ -39,6 +39,9 @@ type handler struct{ state *root.State }
 // New returns a ResourceCommand for Capps.
 func New(state *root.State) resource.ResourceCommand { return &handler{state: state} }
 
+// useWithName is the Use line of every sub-command that targets one Capp.
+const useWithName = "capps <name>"
+
 func (h *handler) Name() string      { return "capps" }
 func (h *handler) Aliases() []string { return []string{"capp", "ca"} }
 
@@ -46,7 +49,7 @@ func (h *handler) RegisterGetCommand(parent *cobra.Command) {
 	var allNamespaces bool
 	cmd := &cobra.Command{
 		Use:     "capps [name]",
-		Aliases: []string{"capp", "ca"},
+		Aliases: h.Aliases(),
 		Short:   "List Capps or get one by name",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -111,7 +114,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 
 	cmd := &cobra.Command{
 		Use:     "capps",
-		Aliases: []string{"capp", "ca"},
+		Aliases: h.Aliases(),
 		Short:   "Create a Capp",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cluster := h.state.Cluster
@@ -231,8 +234,8 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Update a Capp (fetch current, apply flags, PUT)",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -352,8 +355,8 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 	var skipConfirm bool
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Delete a Capp",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -395,8 +398,8 @@ func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
 	var disable, skipConfirm bool
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Enable or disable Git sync for a Capp",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -464,8 +467,8 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "capps <name>",
-		Aliases: []string{"capp", "ca"},
+		Use:     useWithName,
+		Aliases: h.Aliases(),
 		Short:   "Migrate a Capp to another cluster or namespace",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -531,6 +534,56 @@ func (h *handler) RegisterMigrateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&targetNamespace, "target-namespace", "", "target namespace (required)")
 	cmd.Flags().StringVar(&targetHostname, "target-hostname", "", "replacement hostname for the target Capp")
 	cmd.Flags().BoolVar(&deleteSource, "delete-source", false, "delete the source Capp after migration")
+	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
+	parent.AddCommand(cmd)
+	cmd.ValidArgsFunction = h.completeCappNames
+}
+
+func (h *handler) RegisterRollbackCommand(parent *cobra.Command) {
+	var (
+		toRevision  int
+		skipConfirm bool
+	)
+
+	cmd := &cobra.Command{
+		Use:     useWithName,
+		Aliases: h.Aliases(),
+		Short:   "Roll a Capp back to a previous revision",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cluster := h.state.Cluster
+			ns := h.state.Namespace
+			if cluster == "" {
+				return fmt.Errorf("--cluster is required")
+			}
+			if ns == "" {
+				return fmt.Errorf("--namespace is required")
+			}
+			if toRevision <= 0 {
+				return fmt.Errorf("--to-revision is required and must be a positive integer")
+			}
+			cappName := args[0]
+
+			if !skipConfirm {
+				fmt.Fprintf(cmd.OutOrStdout(), "Roll back Capp %q in namespace %q on cluster %q to revision %d? This overwrites its current spec. [y/N] ", cappName, ns, cluster, toRevision) //nolint:errcheck
+				var answer string
+				fmt.Fscan(cmd.InOrStdin(), &answer) //nolint:errcheck
+				if answer != "y" && answer != "Y" {
+					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.") //nolint:errcheck
+					return nil
+				}
+			}
+
+			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/revisions/%d/rollback", cluster, ns, cappName, toRevision)
+			var rolledBack apitypes.CappResponse
+			if err := h.state.Client.Post(cmd.Context(), path, nil, &rolledBack); err != nil {
+				return err
+			}
+			return h.render(cmd.OutOrStdout(), []apitypes.CappResponse{rolledBack}, rolledBack)
+		},
+	}
+
+	cmd.Flags().IntVar(&toRevision, "to-revision", 0, "revision number to roll back to (required)")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
@@ -622,31 +675,6 @@ func parseEnvPairs(pairs []string) ([]apitypes.EnvVar, error) {
 		}
 	}
 	return result, nil
-}
-
-// age converts an RFC3339 creation timestamp to a human-readable age string.
-func age(createdAt string) string {
-	if createdAt == "" {
-		return "<unknown>"
-	}
-	t, err := time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		t, err = time.Parse(time.RFC3339, createdAt)
-	}
-	if err != nil {
-		return "<unknown>"
-	}
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	}
 }
 
 // completeCappNames fetches capp names from the API for shell completion.
