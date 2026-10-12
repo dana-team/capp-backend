@@ -21,7 +21,6 @@ FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 
 COPY --from=builder /workspace/bin/server /server
-COPY --from=alpine/helm:3.22.0 /usr/bin/helm /usr/local/bin/helm
 
 # Run as the nonroot user provided by the distroless image (UID 65532).
 USER 65532:65532
