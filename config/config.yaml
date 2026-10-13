@@ -143,8 +143,9 @@ resources:
   capprevisions:
     enabled: true
 
-  # On-demand per-capp benchmarking, powered by the capp-monitoring chart.
-  # The chart is self-contained and can be deployed into any namespace.
+  # On-demand per-capp benchmarking. The backend creates a Job from image.
+  # The Job writes each sample to every vmURLs entry.
   # benchmarks:
   #   enabled: false
-  #   chartRef: ""                    # OCI ref, e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"
+  #   image: ""                       # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
+  #   vmURLs: []                      # or CAPP_RESOURCES_BENCHMARKS_VMURLS=url1,url2

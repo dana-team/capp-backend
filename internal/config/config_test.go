@@ -92,7 +92,8 @@ func TestLoad_Defaults(t *testing.T) {
 
 	// Benchmark defaults
 	assert.False(t, cfg.Resources.Benchmarks.Enabled)
-	assert.Empty(t, cfg.Resources.Benchmarks.ChartRef)
+	assert.Empty(t, cfg.Resources.Benchmarks.Image)
+	assert.Empty(t, cfg.Resources.Benchmarks.VMURLs)
 }
 
 func TestLoad_FromFile(t *testing.T) {
@@ -457,17 +458,33 @@ func TestValidate_Benchmarks(t *testing.T) {
 			benchmarks: BenchmarkConfig{Enabled: false},
 		},
 		{
-			name: "enabled with chartRef — valid",
+			name: "enabled with image and vmURLs — valid",
 			benchmarks: BenchmarkConfig{
-				Enabled:  true,
-				ChartRef: "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0",
+				Enabled: true,
+				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+				VMURLs: []string{
+					"http://vm-a.monitoring.svc:8428",
+					"http://vm-b.monitoring.svc:8428",
+				},
 			},
 		},
 		{
-			name:       "enabled without chartRef — error",
-			benchmarks: BenchmarkConfig{Enabled: true},
+			name: "enabled without image — error",
+			benchmarks: BenchmarkConfig{
+				Enabled: true,
+				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
+			},
 			wantErr:    true,
-			errContain: "resources.benchmarks.chartRef is required",
+			errContain: "resources.benchmarks.image is required",
+		},
+		{
+			name: "enabled without vmURLs — error",
+			benchmarks: BenchmarkConfig{
+				Enabled: true,
+				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+			},
+			wantErr:    true,
+			errContain: "resources.benchmarks.vmURLs is required",
 		},
 	}
 	for _, tt := range tests {
@@ -495,8 +512,34 @@ clusters:
 resources:
   benchmarks:
     enabled: true
-    chartRef: "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0"
+    image: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
+    vmURLs:
+      - "http://vm-a.monitoring.svc:8428"
+      - "http://vm-b.monitoring.svc:8428"
 `)
 	assert.True(t, cfg.Resources.Benchmarks.Enabled)
-	assert.Equal(t, "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0", cfg.Resources.Benchmarks.ChartRef)
+	assert.Equal(t, "ghcr.io/dana-team/capp-benchmark-runner:0.1.0", cfg.Resources.Benchmarks.Image)
+	assert.Equal(t, []string{
+		"http://vm-a.monitoring.svc:8428",
+		"http://vm-b.monitoring.svc:8428",
+	}, cfg.Resources.Benchmarks.VMURLs)
+}
+
+func TestLoad_BenchmarkVMURLsFromEnv(t *testing.T) {
+	t.Setenv("CAPP_RESOURCES_BENCHMARKS_VMURLS", "http://vm-a.monitoring.svc:8428, http://vm-b.monitoring.svc:8428")
+	cfg := loadTempConfig(t, `
+clusters:
+  - name: dev
+    credential:
+      inline:
+        apiServer: "https://dev.example.com:6443"
+resources:
+  benchmarks:
+    enabled: true
+    image: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
+`)
+	assert.Equal(t, []string{
+		"http://vm-a.monitoring.svc:8428",
+		"http://vm-b.monitoring.svc:8428",
+	}, cfg.Resources.Benchmarks.VMURLs)
 }

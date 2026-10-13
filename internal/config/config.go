@@ -225,17 +225,23 @@ type ResourcesConfig struct {
 	Benchmarks    BenchmarkConfig `mapstructure:"benchmarks"`
 }
 
-// BenchmarkConfig controls on-demand per-capp benchmarking, powered by
-// the capp-monitoring Helm chart. The chart is self-contained and can be
-// deployed into any namespace — no prior dependencies required.
+// BenchmarkConfig controls on-demand per-capp benchmarking. The backend
+// creates a Job from Image; the Job writes each sample to every VMURLs entry.
 type BenchmarkConfig struct {
 	// Enabled toggles the benchmark endpoints. Default: false.
 	Enabled bool `mapstructure:"enabled"`
 
-	// ChartRef is an OCI chart reference for the capp-monitoring Helm chart
-	// (e.g. "oci://gitlab.example.com/dana-team/charts/capp-monitoring:0.1.0").
-	// Required when enabled.
-	ChartRef string `mapstructure:"chartRef"`
+	// Image is the benchmark runner image. The image contains the benchmark
+	// scripts. Required when enabled.
+	// Example: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0".
+	Image string `mapstructure:"image"`
+
+	// VMURLs are VictoriaMetrics base URLs. The monitoring stack has two
+	// instances, and each sample is written to all of them. The Job appends
+	// /api/v1/import/prometheus and /api/v1/write to each entry.
+	// Required when enabled. Inject via CAPP_RESOURCES_BENCHMARKS_VMURLS
+	// as a comma-separated list.
+	VMURLs []string `mapstructure:"vmURLs"`
 }
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
@@ -355,7 +361,27 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// Viper's Unmarshal does not apply this variable when vmURLs is absent from
+	// the config file. The Helm chart injects the list only through the
+	// environment, as a comma-separated string. Env overrides a file value.
+	cfg.Resources.Benchmarks.VMURLs = compactVMURLs(cfg.Resources.Benchmarks.VMURLs)
+	if raw := os.Getenv("CAPP_RESOURCES_BENCHMARKS_VMURLS"); raw != "" {
+		cfg.Resources.Benchmarks.VMURLs = compactVMURLs(strings.Split(raw, ","))
+	}
+
 	return &cfg, nil
+}
+
+// compactVMURLs drops blank entries and trims surrounding space.
+func compactVMURLs(urls []string) []string {
+	out := make([]string, 0, len(urls))
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // setDefaults registers Viper default values for every config key.
