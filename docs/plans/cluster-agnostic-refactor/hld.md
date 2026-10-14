@@ -1,0 +1,41 @@
+**Purpose:** Describe the architecture, components, flows, and design rationale; detailed API contracts, implementation steps, and per-phase tests are outside this document's scope.
+
+**Audience:** Backend/frontend maintainers, automation owners, and directory/platform operators.
+
+## Summary
+
+- Phase 1 of the [plan](plan.md) adds direct LDAP search-and-bind for web users and unattended CLI automation. Capp-backend authenticates AD credentials and issues short-lived access tokens.
+- This supersedes the REST token-validation service proposal. Existing `openshift` and `passthrough` modes remain supported; OpenShift retirement is deferred.
+
+## Goals / Non-goals
+
+- **Goals:** one login path for people and dedicated AD automation accounts, interchangeable backend instances, and existing Kubernetes impersonation/RBAC.
+- **Non-goals:** OpenShift replacement, AD REST/ADFS broker integration in the new mode, LDAP-mode refresh tokens, session storage, immediate per-account revocation, authorization redesign, platform cleanup, and GitOps concurrency. Existing OpenShift login/refresh remain unchanged.
+
+## Architecture
+
+- **Mode selection:** add `ldap` alongside existing modes, selected at startup without automatic provider fallback. The following describes LDAP mode.
+- **LDAP adapter:** reuses `AuthManager.PasswordLogin`. A configured search account finds the target user's entry; a separate TLS-protected connection binds as that user using the submitted password. Only after success does the backend resolve groups and derive the canonical RBAC identity. Each login has isolated connections; a successful search never proves the user's identity.
+- **Token issuer/verifier:** backend-signed tokens carry the canonical username/groups. Replicas share issuer/audience, signing/trust configuration, and token policy, allowing local verification without LDAP calls or sticky sessions. Private keys remain deployment secrets; rotation retains retiring public keys until their tokens expire.
+- **Clients/authorization:** web users log in over HTTPS. Automation submits its own AD credentials non-interactively from a secret store; the CLI persists only token/expiry and context metadata. Verified tokens populate existing `ClusterCredential` impersonation fields; per-cluster credentials, impersonation permissions, and matching RoleBindings remain necessary. Empty external groups do not remove user-based or implicit Kubernetes authenticated-group permissions.
+- **Assumptions:** direct LDAP access and search-and-bind are confirmed. Operators supply CA trust, search bases/filters, canonical attributes, required group coverage, automation account credentials, and synchronized replica configuration/clocks.
+
+## Workflow / Sequence
+
+- **Login:** client posts credentials; backend searches, performs a separate target-user bind, resolves groups, and returns a signed token plus expiry. Failed or partial authentication issues no token.
+- **Resource access:** any instance verifies signature, token purpose, issuer, audience, expiry, and identity before existing Kubernetes authorization; no directory lookup is needed.
+- **Expiry:** clients log in again; automation repeats login using its secret store. No user password or LDAP refresh token is persisted.
+
+## Security
+
+- Require verified LDAPS or mandatory StartTLS before binds, and HTTPS for client login. Escape search values, reject empty passwords, isolate bind state, and never log credentials/tokens or persist submitted passwords.
+- Use established LDAP/JWT libraries, pinned signing algorithms/configured keys, and Secret-backed credentials. Existing optional rate limits apply per client IP and backend instance, not per AD account; they do not provide fleet-wide account-lockout protection. Directory operators own AD lockout policy, and platform operators configure any gateway-level distributed login-abuse controls. Do not automatically retry bad passwords.
+- LDAP password login does not automatically inherit ADFS SSO/MFA. Automation acts as its own AD account; directory search privileges confer no capp permissions. App tokens do not constitute a new OAuth authorization-server protocol.
+
+## Failure modes
+
+- **Directory/configuration failure:** new logins fail closed with sanitized dependency errors; existing unexpired tokens remain usable through local verification. Failed group resolution must not become an empty identity.
+- **Credentials:** reject unsuccessful/ambiguous logins with generic messages and no partial token issuance.
+- **Account lockout:** stale automation secrets or repeated attempts across clients/replicas can lock AD accounts despite per-IP limits. Automation owners stop failing jobs and rotate stale secrets; directory/platform operators handle lockout recovery and review directory/gateway policy.
+- **Stale identity/revocation:** logout discards the client token; password/account/group changes may not affect issued tokens until expiry. No per-token revocation store exists; withdrawing a signing key invalidates its tokens after fleet configuration updates.
+- **Fleet inconsistency:** mismatched trust/configuration/clocks can reject valid tokens; report sanitized directory, token, and configuration failures.
