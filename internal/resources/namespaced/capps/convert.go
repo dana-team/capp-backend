@@ -574,55 +574,15 @@ func BareFromK8s(meta metav1.ObjectMeta, spec cappv1alpha1.CappSpec, sizes confi
 	return resp
 }
 
-// buildStatus flattens the multi-level Capp status into a single condition
-// list that the frontend's Conditions table can render without traversing
-// nested objects.
+// buildStatus converts the Capp status for the UI. Only the Capp's own
+// conditions are returned; the embedded child statuses are deprecated.
 func buildStatus(capp *cappv1alpha1.Capp) CappStatusResponse {
-	conditions := make([]ConditionResponse, 0, len(capp.Status.Conditions)+len(capp.Status.KnativeObjectStatus.Conditions)+len(capp.Status.LoggingStatus.Conditions)+len(capp.Status.RouteStatus.DomainMappingObjectStatus.Conditions))
-
-	// Top-level conditions (from the Capp controller).
+	conditions := make([]ConditionResponse, 0, len(capp.Status.Conditions))
 	for _, c := range capp.Status.Conditions {
 		conditions = append(conditions, ConditionResponse{
-			Source:             "capp",
 			Type:               c.Type,
 			Status:             string(c.Status),
 			LastTransitionTime: c.LastTransitionTime.UTC().Format("2006-01-02T15:04:05Z"),
-			Reason:             c.Reason,
-			Message:            c.Message,
-		})
-	}
-
-	// Knative service conditions.
-	for _, c := range capp.Status.KnativeObjectStatus.Conditions {
-		conditions = append(conditions, ConditionResponse{
-			Source:             "knative",
-			Type:               string(c.Type),
-			Status:             string(c.Status),
-			LastTransitionTime: c.LastTransitionTime.Inner.UTC().Format("2006-01-02T15:04:05Z"),
-			Reason:             c.Reason,
-			Message:            c.Message,
-		})
-	}
-
-	// Logging conditions.
-	for _, c := range capp.Status.LoggingStatus.Conditions {
-		conditions = append(conditions, ConditionResponse{
-			Source:             "logging",
-			Type:               c.Type,
-			Status:             string(c.Status),
-			LastTransitionTime: c.LastTransitionTime.UTC().Format("2006-01-02T15:04:05Z"),
-			Reason:             c.Reason,
-			Message:            c.Message,
-		})
-	}
-
-	// Route conditions.
-	for _, c := range capp.Status.RouteStatus.DomainMappingObjectStatus.Conditions {
-		conditions = append(conditions, ConditionResponse{
-			Source:             "route.domainmapping",
-			Type:               string(c.Type),
-			Status:             string(c.Status),
-			LastTransitionTime: c.LastTransitionTime.Inner.UTC().Format("2006-01-02T15:04:05Z"),
 			Reason:             c.Reason,
 			Message:            c.Message,
 		})

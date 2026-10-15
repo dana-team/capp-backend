@@ -8,6 +8,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kapis "knative.dev/pkg/apis"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 	knativev1 "knative.dev/serving/pkg/apis/serving/v1"
 
 	"github.com/stretchr/testify/assert"
@@ -885,4 +887,26 @@ func TestFromK8s_ImagePullSecrets(t *testing.T) {
 	capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "ghcr-pull-secret"}}
 	resp := FromK8s(capp, config.CappSizes{})
 	assert.Equal(t, []string{"ghcr-pull-secret"}, resp.ImagePullSecrets)
+}
+
+func TestFromK8s_StatusOnlyCappConditions(t *testing.T) {
+	capp := minimalCapp()
+	capp.Status.Conditions = []metav1.Condition{
+		{Type: "Ready", Status: metav1.ConditionFalse, Reason: "ServingNotReady", Message: "ContainerMissing: image not found"},
+		{Type: "ServingReady", Status: metav1.ConditionFalse, Reason: "ContainerMissing", Message: "image not found"},
+	}
+	// Deprecated sub-statuses are populated to assert FromK8s ignores them.
+	capp.Status.KnativeObjectStatus.Conditions = duckv1.Conditions{{Type: kapis.ConditionReady, Status: corev1.ConditionFalse}} //nolint:staticcheck // SA1019: intentionally set to verify it is ignored
+	capp.Status.LoggingStatus.Conditions = []metav1.Condition{{Type: "SyslogNGFlowReady", Status: metav1.ConditionTrue}}        //nolint:staticcheck // SA1019: intentionally set to verify it is ignored
+
+	resp := FromK8s(capp, config.CappSizes{})
+	require.Len(t, resp.Status.Conditions, 2)
+	assert.Equal(t, ConditionResponse{
+		Type:               "Ready",
+		Status:             "False",
+		LastTransitionTime: "0001-01-01T00:00:00Z",
+		Reason:             "ServingNotReady",
+		Message:            "ContainerMissing: image not found",
+	}, resp.Status.Conditions[0])
+	assert.Equal(t, "ServingReady", resp.Status.Conditions[1].Type)
 }

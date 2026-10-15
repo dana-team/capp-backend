@@ -3,7 +3,7 @@ module github.com/dana-team/capp-backend
 go 1.27.1
 
 require (
-	github.com/dana-team/container-app-operator v0.10.1
+	github.com/dana-team/container-app-operator v0.11.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
@@ -41,13 +41,13 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
-	github.com/cert-manager/cert-manager v1.21.1 // indirect
+	github.com/cert-manager/cert-manager v1.21.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cisco-open/operator-tools v0.37.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/crossplane/crossplane-runtime/v2 v2.4.0 // indirect
-	github.com/crossplane/crossplane/apis/v2 v2.4.0 // indirect
+	github.com/crossplane/crossplane/apis/v2 v2.4.2 // indirect
 	github.com/crossplane/upjet/v2 v2.4.1-0.20260911065406-6d9f367b87f4 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/dana-team/nfspvc-operator v0.5.3 // indirect
@@ -176,7 +176,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
