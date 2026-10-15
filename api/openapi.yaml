@@ -790,14 +790,11 @@ components:
     ConditionResponse:
       type: object
       properties:
-        source:
-          type: string
-          description: |
-            Sub-system that produced this condition.
-            One of: "capp", "knative", "logging", "route.domainmapping".
-          example: knative
         type:
           type: string
+          description: |
+            One of: "Ready", "VolumesReady", "ServingReady", "RouteReady",
+            "EventingReady", "LoggingReady".
           example: Ready
         status:
           type: string
@@ -808,10 +805,10 @@ components:
           format: date-time
         reason:
           type: string
-          example: RevisionReady
+          example: Ready
         message:
           type: string
-          example: Revision is ready.
+          example: Capp is ready
 
     PingSourceConfig:
       type: object

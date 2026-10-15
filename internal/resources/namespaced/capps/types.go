@@ -215,11 +215,8 @@ type EventSourcesSpec struct {
 
 // ── Response types ────────────────────────────────────────────────────────────
 
-// ConditionResponse is a single status condition flattened for the UI.
+// ConditionResponse is a single Capp status condition.
 type ConditionResponse struct {
-	// Source identifies which sub-system produced this condition
-	// (e.g. "knative", "logging", "route.certificate").
-	Source             string `json:"source"`
 	Type               string `json:"type"`
 	Status             string `json:"status"`
 	LastTransitionTime string `json:"lastTransitionTime,omitempty"`
