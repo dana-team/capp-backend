@@ -4,7 +4,7 @@
 
 ## Scope
 
-- Implements phase 1 of the [HLD](hld.md): add `ldap` authentication for web users and unattended CLI automation. Supersedes the earlier REST-adapter proposal; no `external` mode or AD REST API integration is required.
+- Implements phase 1 of the [HLD](hld.md): add `ldap` authentication for web users and unattended CLI automation.
 - Preserve all existing OpenShift/passthrough configuration, routes, CLI flows, cache/cleanup, default selection, and deployment resources. Exclude LDAP-mode refresh/session storage, ADFS SSO/MFA integration, authorization redesign, and other roadmap phases.
 
 ## Goals

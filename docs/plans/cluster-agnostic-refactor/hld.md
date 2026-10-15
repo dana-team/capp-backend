@@ -4,13 +4,14 @@
 
 ## Summary
 
-- Phase 1 of the [plan](plan.md) adds direct LDAP search-and-bind for web users and unattended CLI automation. Capp-backend authenticates AD credentials and issues short-lived access tokens.
-- This supersedes the REST token-validation service proposal. Existing `openshift` and `passthrough` modes remain supported; OpenShift retirement is deferred.
+- Based on the [research](research.md), phase 1 of the [plan](plan.md) adds direct LDAP search-and-bind for web users and unattended CLI automation. Capp-backend authenticates AD credentials and issues short-lived access tokens.
+- Existing `openshift` and `passthrough` modes remain supported.
 
 ## Goals / Non-goals
 
 - **Goals:** one login path for people and dedicated AD automation accounts, interchangeable backend instances, and existing Kubernetes impersonation/RBAC.
 - **Non-goals:** OpenShift replacement, AD REST/ADFS broker integration in the new mode, LDAP-mode refresh tokens, session storage, immediate per-account revocation, authorization redesign, platform cleanup, and GitOps concurrency. Existing OpenShift login/refresh remain unchanged.
+- **Open questions:** broader authorization, automation-credential alternatives, and ADFS integration remain in [research](research.md#open-questions); they do not change this design's scope.
 
 ## Architecture
 
