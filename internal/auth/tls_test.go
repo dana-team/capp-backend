@@ -17,6 +17,49 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBuildTLSTransport(t *testing.T) {
+	caCertB64 := base64.StdEncoding.EncodeToString(selfSignedCACertPEM(t))
+	cases := []struct {
+		name      string
+		caCertB64 string
+		wantError string
+	}{
+		{name: "custom CA", caCertB64: caCertB64},
+		{name: "invalid base64", caCertB64: "not-valid-base64!!!", wantError: "decoding CACert"},
+		{
+			name:      "invalid PEM",
+			caCertB64: base64.StdEncoding.EncodeToString([]byte("this is not a PEM certificate")),
+			wantError: "no valid PEM",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			transport, err := buildTLSTransport(tc.caCertB64)
+			if tc.wantError != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantError)
+				assert.Nil(t, transport)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, transport)
+			require.NotNil(t, transport.TLSClientConfig)
+			assert.NotNil(t, transport.TLSClientConfig.RootCAs)
+			assert.Equal(t, uint16(tls.VersionTLS12), transport.TLSClientConfig.MinVersion)
+			assert.False(t, transport.TLSClientConfig.InsecureSkipVerify)
+		})
+	}
+}
+
+func TestBuildTLSConfig(t *testing.T) {
+	tlsConfig, err := buildTLSConfig("")
+	require.NoError(t, err)
+	require.NotNil(t, tlsConfig)
+	assert.Nil(t, tlsConfig.RootCAs)
+	assert.Equal(t, uint16(tls.VersionTLS12), tlsConfig.MinVersion)
+	assert.False(t, tlsConfig.InsecureSkipVerify)
+}
+
 func selfSignedCACertPEM(t *testing.T) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -35,37 +78,4 @@ func selfSignedCACertPEM(t *testing.T) []byte {
 	require.NoError(t, err)
 
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-}
-
-func TestBuildTLSTransport_ValidCert(t *testing.T) {
-	pemBytes := selfSignedCACertPEM(t)
-	b64 := base64.StdEncoding.EncodeToString(pemBytes)
-
-	transport, err := buildTLSTransport(b64)
-	require.NoError(t, err)
-	require.NotNil(t, transport)
-	require.NotNil(t, transport.TLSClientConfig)
-	require.NotNil(t, transport.TLSClientConfig.RootCAs)
-}
-
-func TestBuildTLSTransport_InvalidBase64(t *testing.T) {
-	_, err := buildTLSTransport("not-valid-base64!!!")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decoding CACert")
-}
-
-func TestBuildTLSTransport_InvalidPEM(t *testing.T) {
-	b64 := base64.StdEncoding.EncodeToString([]byte("this is not a PEM certificate"))
-	_, err := buildTLSTransport(b64)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no valid PEM")
-}
-
-func TestBuildTLSTransport_HasMinTLSVersion(t *testing.T) {
-	pemBytes := selfSignedCACertPEM(t)
-	b64 := base64.StdEncoding.EncodeToString(pemBytes)
-
-	transport, err := buildTLSTransport(b64)
-	require.NoError(t, err)
-	assert.Equal(t, uint16(tls.VersionTLS12), transport.TLSClientConfig.MinVersion)
 }
