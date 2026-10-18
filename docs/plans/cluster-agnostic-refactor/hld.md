@@ -40,3 +40,9 @@
 - **Account lockout:** stale automation secrets or repeated attempts across clients/replicas can lock AD accounts despite per-IP limits. Automation owners stop failing jobs and rotate stale secrets; directory/platform operators handle lockout recovery and review directory/gateway policy.
 - **Stale identity/revocation:** logout discards the client token; password/account/group changes may not affect issued tokens until expiry. No per-token revocation store exists; withdrawing a signing key invalidates its tokens after fleet configuration updates.
 - **Fleet inconsistency:** mismatched trust/configuration/clocks can reject valid tokens; report sanitized directory, token, and configuration failures.
+
+## Open Questions
+
+1. **StartTLS requirement** — confirm whether LDAPS is available in every required
+   environment, or whether any environment requires StartTLS and cannot enable
+   LDAPS. Can this integration support LDAPS only?
