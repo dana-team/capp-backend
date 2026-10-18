@@ -7,7 +7,7 @@
 ## Scope and dependencies
 
 - Implements phase 2 of the [authentication HLD](../hld.md), following [phase 1](../phase-1/lld.md). The CLI consumes phase 1's [API and error contracts](../phase-1/lld.md#4-api-and-error-contracts) and [token contract](../phase-1/lld.md#3-access-token-issuance-and-verification); these remain the authoritative backend specifications.
-- T07 depends on phase 1's T06 API contract; T08 depends on T07. Delivery requires the phase 1 backend. Backend implementation does not depend on this phase.
+- Phase 2 T01 depends on phase 1's T06 API contract; phase 2 T02 depends on phase 2 T01. Delivery requires the phase 1 backend. Backend implementation does not depend on this phase.
 - Preserve existing OpenShift/passthrough CLI behavior. Exclude backend authentication changes, new refresh/session mechanisms, ADFS integration, and frontend implementation.
 
 ## Deliverables
