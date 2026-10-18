@@ -1,22 +1,25 @@
+# Phase 1 — LDAP backend and deployment
+
 **Purpose:** Specify implementable deliverables, contracts, and tests within the stated scope; revisiting the architecture or implementing source code is outside this document's scope.
 
-**Audience:** Backend maintainers, automation owners, and directory/platform integrators.
+**Audience:** Backend maintainers, API consumers, and directory/platform integrators.
 
 ## Scope
 
-- Implements phase 1 of the [HLD](hld.md): add `ldap` authentication for web users and unattended CLI automation.
+- Implements authentication phase 1 of the [HLD](../hld.md): deliver LDAP authentication through the HTTPS API, deployment configuration, and impersonation permissions.
+- LDAP CLI implementation, token import, CLI expiry behavior, and CLI documentation belong to [phase 2](../phase-2/lld.md). Phase 1 has no dependency on their completion. Frontend implementation remains outside this repository.
 - Preserve all existing OpenShift/passthrough configuration, routes, CLI flows, cache/cleanup, default selection, and deployment resources. Exclude LDAP-mode refresh/session storage, ADFS SSO/MFA integration, authorization redesign, and other roadmap phases.
 
 ## Goals
 
 - Authenticate through LDAP search-and-bind, issue backend access tokens, and verify them on any instance without a directory call per resource request.
-- Reuse existing auth/API/CLI contracts; never authenticate a target user merely because the search account found their entry.
+- Reuse existing auth/API contracts; never authenticate a target user merely because the search account found their entry.
 
 ## Deliverables
 
 ### 1. Configuration and mode wiring
 
-- Extend `AuthConfig`, `setDefaults`, `Load`, and `Validate` in [internal/config](../../../internal/config/config.go) with `AuthModeLDAP = "ldap"`, `LDAPConfig`, and `AuthConfig.LDAP`. Preserve existing modes/defaults and validate LDAP settings only when selected. Retain existing per-cluster inline-token requirements for OpenShift and extend them to LDAP impersonation.
+- Extend `AuthConfig`, `setDefaults`, `Load`, and `Validate` in [internal/config](../../../../../internal/config/config.go) with `AuthModeLDAP = "ldap"`, `LDAPConfig`, and `AuthConfig.LDAP`. Preserve existing modes/defaults and validate LDAP settings only when selected. Retain existing per-cluster inline-token requirements for OpenShift and extend them to LDAP impersonation.
 - Define the following keys under `auth.ldap`; fields follow existing PascalCase/mapstructure conventions:
 
 | Keys | Type / default | Contract |
@@ -37,8 +40,8 @@
 
 ### 2. LDAP manager and search-and-bind
 
-- Add private `ldapManager` in `internal/auth/ldap.go`, implementing existing [AuthManager](../../../internal/auth/manager.go); add its factory case without changing existing cases or public method signatures. Add `github.com/go-ldap/ldap/v3`; reuse its `Bind`, `Search`, `SearchWithPaging`, `EscapeFilter`, request/result types, and result-code constants. Define a private interface in `auth` containing only `Bind`, `Search`, and `SearchWithPaging`; `*ldap.Conn` implements it directly. Keep connection setup and cleanup outside this operations interface; do not introduce another LDAP protocol implementation.
-- Extract private `buildTLSConfig(caCertB64 string) (*tls.Config, error)` from existing [buildTLSTransport](../../../internal/auth/tls.go) for both LDAP and the current HTTP wrapper, preserving OpenShift TLS behavior. Verify certificates/hostnames; never downgrade after failed StartTLS. Use standard dial/TLS deadlines and context cancellation to close connections, since synchronous LDAP binds do not take a context.
+- Add private `ldapManager` in `internal/auth/ldap.go`, implementing existing [AuthManager](../../../../../internal/auth/manager.go); add its factory case without changing existing cases or public method signatures. Add `github.com/go-ldap/ldap/v3`; reuse its `Bind`, `Search`, `SearchWithPaging`, `EscapeFilter`, request/result types, and result-code constants. Define a private interface in `auth` containing only `Bind`, `Search`, and `SearchWithPaging`; `*ldap.Conn` implements it directly. Keep connection setup and cleanup outside this operations interface; do not introduce another LDAP protocol implementation.
+- Extract private `buildTLSConfig(caCertB64 string) (*tls.Config, error)` from existing [buildTLSTransport](../../../../../internal/auth/tls.go) for both LDAP and the current HTTP wrapper, preserving OpenShift TLS behavior. Verify certificates/hostnames; never downgrade after failed StartTLS. Use standard dial/TLS deadlines and context cancellation to close connections, since synchronous LDAP binds do not take a context.
 - `PasswordLogin`: reject empty username/password before network calls, preserving password bytes. Under one configured deadline, establish TLS, bind the search connection with configured credentials, and subtree-search for the escaped username. Require exactly one result, returning generic bad credentials for no/ambiguous matches. Never follow referrals with credentials.
 - On a second, independently TLS-protected connection, bind using the returned user DN and submitted password; close it after verification. Never rebind a shared search connection as a user or reuse another login's bind state. Do not retry rejected credentials.
 - After successful user bind, resolve groups on the search-account connection with the escaped verified DN and paged search (page size 500). Use only requested canonical attributes; reject missing/multivalued username, malformed group identities, partial results, referrals, or search errors. Deduplicate groups; preserve canonical case. Reject whitespace-only identities, surrounding whitespace, and externally supplied `system:` names.
@@ -47,10 +50,10 @@
 
 ### 3. Access-token issuance and verification
 
-- Reuse `github.com/golang-jwt/jwt/v5` (v5.3.1 checksums already in [go.sum](../../../go.sum)); declare a direct dependency. Use library `MapClaims`, `NewWithClaims`, `SignedString`, PEM key parsers, and `ParseWithClaims` rather than custom JWT/crypto code.
+- Reuse `github.com/golang-jwt/jwt/v5` (v5.3.1 checksums already in [go.sum](../../../../../go.sum)); declare a direct dependency. Use library `MapClaims`, `NewWithClaims`, `SignedString`, PEM key parsers, and `ParseWithClaims` rather than custom JWT/crypto code.
 - Issue only after complete authentication/group resolution: header `alg=EdDSA`, `typ=JWT`, required `kid`; claims `iss`, `aud`, `sub` (canonical RBAC username), `groups` (string array, including empty), `iat`, `exp`, and `token_use="access"`. Default lifetime is 15 minutes. Return existing `TokenPair` with `AccessToken`, matching `ExpiresAt`, and `RefreshToken=""`.
 - `Authenticate`: read the Authorization bearer token and use `ParseWithClaims` with `WithValidMethods`, `WithIssuer`, `WithAudience`, `WithExpirationRequired`, and `WithIssuedAt`. Resolve only locally configured `kid` keys and pin EdDSA; additionally require numeric `iat`/`exp`, access-token purpose, nonblank subject, and valid groups. Enforce expiry, future-issued-at/not-before checks with zero leeway initially, and issuance identity restrictions. Never use `ParseUnverified`, token-provided remote keys, AD REST validation, or a live LDAP lookup here.
-- Populate existing `ClusterCredential.ImpersonateUser/Groups`; keep `BearerToken` empty so only configured cluster credentials reach Kubernetes. Reuse [ClusterManager.ClientFor](../../../internal/cluster/manager.go).
+- Populate existing `ClusterCredential.ImpersonateUser/Groups`; keep `BearerToken` empty so only configured cluster credentials reach Kubernetes. Reuse [ClusterManager.ClientFor](../../../../../internal/cluster/manager.go).
 - All instances receive consistent signing/trust configuration. Rotation: distribute the new public key first, activate its private key/ID, and keep retiring verification keys until their last issued tokens expire. Key removal is fleet-wide token invalidation after rollout, not immediate per-user logout.
 
 ### 4. API and error contracts
@@ -71,28 +74,23 @@
 
 - Reuse `NewBadRequest`, `NewUnauthorized`, `NewNotSupported`, `APIError`, and `Respond`; do not introduce another error envelope. Reuse configured login rate limiting, which is optional, per client IP and backend instance, not per AD account or fleet-wide lockout protection. Do not log bodies, passwords, tokens, private keys, or raw authentication diagnostics.
 
-### 5. CLI automation and web integration
-
-- Extend existing CLI login with `ldap` mode and new boolean `--password-stdin`; reuse `--username`, `loginWithPassword`, mode detection, and context persistence. LDAP unattended login requires a username and password from `cmd.InOrStdin()`; it never prompts or opens a browser. Read bounded input (16 KiB maximum), strip at most one terminal LF/CRLF, and preserve all other password bytes.
-- In LDAP mode, require a certificate-verified HTTPS backend; reject `--insecure`, missing stdin/username, empty passwords, password-in-argument usage, and combining `--token` with password-login flags. Preserve existing flag behavior for other modes. Permit existing `--token` import as an alternative; the backend validates it on use.
-- For LDAP credential login, configure the existing CLI HTTP client through `http.Client.CheckRedirect` to return an error on every redirect, including same-origin redirects; never replay credentials to a redirected URL or save a context after a redirect failure. Keep this policy isolated to LDAP credential requests so existing OpenShift/passthrough behavior remains unchanged.
-- Store only mode, access token, expiry, and existing context metadata using current 0600 persistence; never store the AD password or refresh credentials. Clear previous token/refresh metadata when replacing a context. For LDAP contexts, known expiry produces `LDAP access token expired; run cappctl login again`; no automatic refresh, browser fallback, or hidden password retry. Automation explicitly repeats login from its secret store as needed.
 - Web integration requirement: submit username/password over HTTPS to the same login endpoint, retain the returned token securely, send it in the Authorization header, and return to login on expiry. Frontend source implementation remains outside this backend repository.
 
-### 6. Deployment and documentation
+### 5. Deployment and documentation
 
 - Extend existing Helm ConfigMap/Secret/Deployment/Capp wiring for LDAP settings. Inject the search password and signing private key from Secrets, preserving existing naming/labels/ownership; ordinary directory settings and public verification keys are configuration. Ship no real credentials or generated keys in sample files.
 - Enable service-account use and impersonator Role/Binding for both OpenShift and LDAP. Keep TokenReview permissions, OAuth secrets/annotations, and existing refresh/cache wiring OpenShift-only. Preserve existing Projects access and extend it to LDAP where unchanged namespace listing requires it; platform redesign remains deferred.
-- Update OpenAPI, README, sample configuration, and CLI help for the third mode, unattended login, token expiry/rotation, group/RoleBinding prerequisites, and lack of LDAP-mode refresh or ADFS SSO/MFA. Preserve existing-mode documentation.
+- Update OpenAPI, README, sample configuration, and contributor guidance for the third backend mode, HTTPS API usage, token expiry/rotation, group/RoleBinding prerequisites, and lack of LDAP-mode refresh or ADFS SSO/MFA. State that LDAP CLI support, including token import, arrives in phase 2; preserve existing-mode documentation. CLI help and unattended CLI examples belong to phase 2.
 - Document operational prerequisites: directory operators own AD account-lockout policy/recovery; platform operators configure any gateway-level distributed login-abuse controls. Automation owners stop jobs on rejected credentials and rotate stale secrets rather than retrying bad passwords; per-IP limits do not prevent account lockout across clients/replicas. No new distributed limiter is part of this scope.
 
-### 7. Tests and acceptance
+### 6. Tests and acceptance
 
 - **Directory/config:** mode-gated validation and environment precedence; escaped search values; unique lookup; correct DN/password bind; no user bind after failed lookup; no group search/token issuance after failed bind; incomplete/paged group results fail closed; empty group results remain distinct from failure. Use the private three-method operations interface as the test seam, with independent clients per login. Test doubles implement those methods explicitly without embedding an uninitialized library interface.
 - **Transport/concurrency:** TLS before credentials, certificate/hostname rejection, StartTLS failure with no plaintext fallback, timeout/cancellation cleanup, and concurrent logins with no credential/bind-state crossover. Exercise both explicit cancellation and deadline expiry before the StartTLS response and during the TLS handshake after a successful response. Verify caller-context propagation to both connections in a focused unit test. Cover concurrent isolation with overlapping real-transport logins through the same directory instance for both LDAPS and StartTLS, with distinct user credentials and connection cleanup assertions. Preserve the existing transport and failure combinations. Keep existing OpenShift TLS tests.
 - **Tokens/API:** cross-instance issuance/verification and overlapping-key rotation; tampering, unknown key, wrong algorithm/issuer/audience/purpose, missing/expired/time-invalid claims, reserved identities, and no LDAP calls during token authentication. Reuse existing `MockAuthManager` for route/status/envelope tests; assert no handler execution after auth failure and sanitized logs.
-- **CLI:** non-TTY stdin login without prompts/browser, HTTPS/verification requirements, exact secret-byte handling, invalid flag/input cases, no saved password/refresh token, context replacement, and deterministic expired-token error. Cover rejected redirects, including 307/308 cross-origin and HTTPS-to-HTTP targets and same-origin redirects; assert no redirected request and no context save. Retain OpenShift browser/password/direct-token/refresh and passthrough regressions.
 - **Deployment:** render both Deployment/Capp variants for all three modes; verify LDAP Secrets and impersonation-only RBAC, unchanged OpenShift OAuth/TokenReview artifacts, and unchanged passthrough/default behavior. Implementation acceptance uses targeted tests, repository `make test` (race detection), `make lint`, and Helm lint/template checks; outer Go test names follow PascalCase conventions.
+
+Phase 1 is complete when the deployed backend authenticates LDAP credentials, issues tokens verifiable across consistently configured instances, and supports Kubernetes impersonation with the documented RBAC prerequisites. API/operator documentation and backend/deployment checks must pass; CLI implementation is not a completion condition.
 
 ## Assumptions and prerequisites
 
@@ -102,5 +100,5 @@
 
 ## Reuse checks
 
-- Checked existing [AuthManager/TokenPair/ClusterCredential](../../../internal/auth/manager.go), [TLS helper](../../../internal/auth/tls.go), [API errors](../../../internal/apierrors/errors.go), config loading/validation, [CLI password helpers](../../../internal/cli/auth/helpers.go), [CLI HTTP client](../../../internal/cli/client/client.go), [context persistence](../../../internal/cli/config/config.go), and [MockAuthManager](../../../internal/testutil/helpers.go). Proposed `LDAPConfig`, `AuthModeLDAP`, `ldapManager`, `buildTLSConfig`, `ErrDirectoryUnavailable`, and `--password-stdin` do not duplicate current repository symbols.
-- Checked primary library APIs: [go-ldap connection/bind/search/filter utilities](https://pkg.go.dev/github.com/go-ldap/ldap/v3), [JWT signing/verification/PEM parsers](https://pkg.go.dev/github.com/golang-jwt/jwt/v5@v5.3.1), [Cobra InOrStdin](https://pkg.go.dev/github.com/spf13/cobra#Command.InOrStdin), [standard HTTP redirect policy](https://pkg.go.dev/net/http#Client), and [standard context cancellation](https://pkg.go.dev/context#AfterFunc). Reuse these instead of new LDAP/JWT/CLI frameworks; the extracted TLS builder has both HTTP and LDAP callers.
+- Reuse [AuthManager/TokenPair/ClusterCredential](../../../../../internal/auth/manager.go), the [TLS helper](../../../../../internal/auth/tls.go), [API errors](../../../../../internal/apierrors/errors.go), configuration loading/validation, and [MockAuthManager](../../../../../internal/testutil/helpers.go). `LDAPConfig`, `AuthModeLDAP`, `ldapManager`, `buildTLSConfig`, and `ErrDirectoryUnavailable` extend these existing boundaries.
+- Use [go-ldap connection/bind/search/filter utilities](https://pkg.go.dev/github.com/go-ldap/ldap/v3), [JWT signing/verification/PEM parsers](https://pkg.go.dev/github.com/golang-jwt/jwt/v5@v5.3.1), and [standard context cancellation](https://pkg.go.dev/context#AfterFunc). Do not introduce another LDAP/JWT framework; the extracted TLS builder has both HTTP and LDAP callers.
