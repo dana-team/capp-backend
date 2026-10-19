@@ -22,6 +22,10 @@ Phase 1 is independently usable through the HTTPS API. LDAP support in `cappctl`
 
 ## Goals / Non-goals
 
+**Cluster independence means capp-backend is portable and its behavior does not depend on which cluster receives the request. It does not require every dependency to survive a cluster failure.**
+
+capp-backend can be deployed on any supported OCP cluster, with consistent request handling across instances that have equivalent configuration and access to the same dependencies. Instances must accept the same tokens and apply the same authorization rules. Global DNS and routing configuration are infrastructure responsibilities outside this work's scope. Cross-cluster failover is optional, not an acceptance requirement for this phase; shared authentication and other services are allowed.
+
 - **Goals:** one login path for people and dedicated AD automation accounts, interchangeable backend instances, and existing Kubernetes impersonation/RBAC.
 - **Non-goals:** OpenShift replacement, AD REST/ADFS broker integration in the new mode, LDAP-mode refresh tokens, session storage, immediate per-account revocation, authorization redesign, platform cleanup, and GitOps concurrency. Existing OpenShift login/refresh remain unchanged.
 - **Open questions:** broader authorization, automation-credential alternatives, and ADFS integration remain in [research](../research.md#open-questions); they do not change this design's scope.
