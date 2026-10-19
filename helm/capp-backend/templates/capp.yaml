@@ -45,6 +45,18 @@ spec:
                     name: {{ include "capp-backend.secretName" . }}
                     key: openshiftClientSecret
               {{- end }}
+              {{- if eq .Values.config.auth.mode "ldap" }}
+              - name: CAPP_AUTH_LDAP_BINDPASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" . }}
+                    key: ldapBindPassword
+              - name: CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" . }}
+                    key: ldapSigningPrivateKey
+              {{- end }}
               {{- range $i, $_ := .Values.secret.clusterTokens }}
               - name: CAPP_CLUSTERS_{{ $i }}_CREDENTIAL_INLINE_TOKEN
                 valueFrom:

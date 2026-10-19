@@ -1,5 +1,5 @@
-// Package auth implements the AuthManager interface and its two concrete
-// modes: passthrough and openshift.
+// Package auth implements the AuthManager interface and its three concrete
+// modes: passthrough, openshift, and ldap.
 //
 // Mode selection is determined at startup by the auth.mode config value and
 // never changes at runtime. All implementations are safe for concurrent use.
@@ -17,6 +17,10 @@
 //	              backend (fully stateless). On each request the token is
 //	              validated via TokenReview and the user's identity is used
 //	              for Kubernetes impersonation on all managed clusters.
+//
+//	ldap        — authenticates passwords through LDAP search-and-bind and
+//	              issues backend access tokens. Tokens are verified locally,
+//	              and their identities are used for Kubernetes impersonation.
 package auth
 
 import (
@@ -35,8 +39,8 @@ var (
 	// ErrUnauthenticated is returned when a request carries no valid credential.
 	ErrUnauthenticated = errors.New("request is not authenticated")
 
-	// ErrNotSupported is returned by Login/Refresh when the current auth mode
-	// does not implement token management (passthrough).
+	// ErrNotSupported is returned when the current auth mode does not implement
+	// the requested operation, including Login/Refresh in passthrough and LDAP modes.
 	ErrNotSupported = errors.New("operation not supported in current auth mode")
 
 	// ErrTokenExpired is returned when a token has passed its TTL.
@@ -48,6 +52,9 @@ var (
 	// ErrBadCredentials is returned by PasswordLogin when the identity provider
 	// rejects the provided username/password combination.
 	ErrBadCredentials = errors.New("invalid username or password")
+
+	// ErrDirectoryUnavailable reports directory failures without account diagnostics.
+	ErrDirectoryUnavailable = errors.New("directory service unavailable")
 )
 
 // ── Core types ────────────────────────────────────────────────────────────────
@@ -58,22 +65,23 @@ var (
 // In passthrough mode BearerToken is taken directly from the Authorization
 // header.
 //
-// In openshift mode BearerToken is empty and the ImpersonateUser/Groups
+// In openshift and ldap modes BearerToken is empty and the ImpersonateUser/Groups
 // fields are set. The cluster's service-account token is used for
 // authentication while impersonation headers enforce the user's RBAC identity.
 type ClusterCredential struct {
 	BearerToken string
 
 	// ImpersonateUser is the username to impersonate via the
-	// Impersonate-User header. Set only in openshift auth mode.
+	// Impersonate-User header. Set in openshift and ldap auth modes.
 	ImpersonateUser string
 
 	// ImpersonateGroups are the groups to impersonate via
-	// Impersonate-Group headers. Set only in openshift auth mode.
+	// Impersonate-Group headers. Set in openshift and ldap auth modes.
 	ImpersonateGroups []string
 }
 
-// TokenPair is issued by Login/PasswordLogin and OAuth exchange in openshift auth mode.
+// TokenPair is issued by Login/PasswordLogin and OAuth exchange in openshift mode,
+// and by PasswordLogin in ldap mode. LDAP tokens have no refresh token.
 type TokenPair struct {
 	// AccessToken is the short-lived bearer token sent in the Authorization header of
 	// subsequent API calls.
@@ -96,24 +104,26 @@ type AuthManager interface {
 	// Kubernetes client for the named cluster.
 	//
 	// Returns ErrUnauthenticated if the request carries no valid credential.
+	// In ldap mode, returns ErrTokenExpired for an expired access token.
 	Authenticate(ctx context.Context, clusterName string, r *http.Request) (ClusterCredential, error)
 
 	// Login validates a raw Kubernetes bearer token against the named cluster
 	// and, on success, returns a TokenPair (openshift mode only).
 	//
-	// Returns ErrNotSupported in passthrough mode.
+	// Returns ErrNotSupported in passthrough and ldap modes.
 	Login(ctx context.Context, clusterName string, token string) (TokenPair, error)
 
 	// PasswordLogin authenticates a user with username and password against an
-	// external identity provider (openshift mode only).
+	// external identity provider (openshift and ldap modes).
 	//
 	// Returns ErrNotSupported in passthrough mode.
 	// Returns ErrBadCredentials if the provider rejects the credentials.
+	// In ldap mode, returns ErrDirectoryUnavailable for directory failures.
 	PasswordLogin(ctx context.Context, username, password string) (TokenPair, error)
 
 	// Refresh exchanges a valid refresh token for a new TokenPair (openshift mode only).
 	//
-	// Returns ErrNotSupported in passthrough mode.
+	// Returns ErrNotSupported in passthrough and ldap modes.
 	Refresh(ctx context.Context, refreshToken string) (TokenPair, error)
 }
 
@@ -152,6 +162,9 @@ func New(cfg *config.Config) (AuthManager, error) {
 
 	case config.AuthModeOpenShift:
 		return newOpenShiftManager(cfg)
+
+	case config.AuthModeLDAP:
+		return newLDAPManager(cfg.Auth.LDAP)
 
 	default:
 		// Validate() should catch this before we reach New(), but guard anyway.

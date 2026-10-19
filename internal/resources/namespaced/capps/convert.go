@@ -20,12 +20,11 @@ import (
 // ToK8s converts a CappRequest into a rcs.dana.io/v1alpha1 Capp resource
 // suitable for creating or replacing via the Kubernetes API.
 //
-// Design notes:
-//   - Fields that the frontend did not populate are omitted from the spec so
-//     the Kubernetes API server can apply CRD defaulting (e.g. scaleSpec.metric
-//     defaults to "concurrency", state defaults to "enabled").
-//   - resourceVersion is NOT set here; the update handler reads it from the
-//     live object and sets it before calling Update.
+// Fields that the frontend did not populate are omitted from the spec so
+// the Kubernetes API server can apply CRD defaulting (e.g. scaleSpec.metric
+// defaults to "concurrency", state defaults to "enabled").
+// resourceVersion is NOT set here; the update handler reads it from the
+// live object and sets it before calling Update.
 func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes config.CappSizes) (*cappv1alpha1.Capp, error) {
 	capp := &cappv1alpha1.Capp{
 		TypeMeta: metav1.TypeMeta{

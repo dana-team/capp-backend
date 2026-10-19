@@ -1,15 +1,25 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/go-ldap/ldap/v3"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
 var validAuthModes = map[string]struct{}{
 	AuthModePassthrough: {},
 	AuthModeOpenShift:   {},
+	AuthModeLDAP:        {},
 }
 
 // validGitOpsAuthMethods is the set of accepted values for GitOpsConfig.AuthMethod.
@@ -34,15 +44,15 @@ func Validate(cfg *Config) error {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
 	}
 
-	// In openshift mode every cluster must have an inline token (SA token)
+	// In impersonation modes every cluster must have an inline token (SA token)
 	// because the backend uses impersonation instead of forwarding user tokens.
-	if cfg.Auth.Mode == AuthModeOpenShift {
+	if cfg.Auth.Mode == AuthModeOpenShift || cfg.Auth.Mode == AuthModeLDAP {
 		for i, c := range cfg.Clusters {
 			if c.Credential.Inline == nil || c.Credential.Inline.Token == "" {
 				errs = append(errs, fmt.Errorf(
-					"config: clusters[%d] (%q): credential.inline.token is required when auth.mode is 'openshift' "+
+					"config: clusters[%d] (%q): credential.inline.token is required when auth.mode is '%s' "+
 						"(used as the service-account token for K8s impersonation)",
-					i, c.Name,
+					i, c.Name, cfg.Auth.Mode,
 				))
 			}
 		}
@@ -122,7 +132,7 @@ func validateAuth(auth *AuthConfig) []error {
 
 	if _, ok := validAuthModes[auth.Mode]; !ok {
 		errs = append(errs, fmt.Errorf(
-			"config: auth.mode %q is not valid; must be one of: passthrough, openshift",
+			"config: auth.mode %q is not valid; must be one of: passthrough, openshift, ldap",
 			auth.Mode,
 		))
 		// Cannot validate mode-specific fields if mode is unknown.
@@ -152,9 +162,196 @@ func validateAuth(auth *AuthConfig) []error {
 			))
 		}
 	}
+	if auth.Mode == AuthModeLDAP {
+		errs = append(errs, validateLDAP(&auth.LDAP)...)
+	}
 
 	return errs
 }
+
+// validateLDAP checks only the selected LDAP mode and never contacts the directory.
+func validateLDAP(cfg *LDAPConfig) []error {
+	var errs []error
+	if err := validateLDAPURL(cfg.URL); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.CACert != "" {
+		pemBytes, err := base64.StdEncoding.DecodeString(cfg.CACert)
+		if err != nil || !x509.NewCertPool().AppendCertsFromPEM(pemBytes) {
+			errs = append(errs, errors.New("config: auth.ldap.caCert must be a base64 PEM CA bundle"))
+		}
+	}
+	errs = append(errs, validateLDAPDirectory(cfg)...)
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"issuer", cfg.Issuer}, {"audience", cfg.Audience},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			errs = append(errs, fmt.Errorf("config: auth.ldap.%s is required", field.name))
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value int
+	}{
+		{"timeoutSeconds", cfg.TimeoutSeconds}, {"tokenTTLSeconds", cfg.TokenTTLSeconds},
+	} {
+		if field.value <= 0 {
+			errs = append(errs, fmt.Errorf("config: auth.ldap.%s must be greater than 0", field.name))
+		}
+	}
+	return append(errs, validateLDAPKeys(cfg)...)
+}
+
+func validateLDAPURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "ldaps" || u.Hostname() == "" ||
+		u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") {
+		return errors.New("config: auth.ldap.url must be an ldaps:// host/port URL without credentials, path, query, or fragment")
+	}
+	if port := u.Port(); port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 {
+			return errors.New("config: auth.ldap.url port must be between 1 and 65535")
+		}
+	}
+	return nil
+}
+
+func validateLDAPDirectory(cfg *LDAPConfig) []error {
+	var errs []error
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"bindDN", cfg.BindDN}, {"userBaseDN", cfg.UserBaseDN}, {"groupBaseDN", cfg.GroupBaseDN},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			errs = append(errs, fmt.Errorf("config: auth.ldap.%s is required", field.name))
+		} else if _, err := ldap.ParseDN(field.value); err != nil {
+			errs = append(errs, fmt.Errorf("config: auth.ldap.%s must be a valid LDAP DN", field.name))
+		}
+	}
+	if cfg.BindPassword == "" {
+		errs = append(errs, errors.New("config: auth.ldap.bindPassword is required; supply it through a Secret or CAPP_AUTH_LDAP_BINDPASSWORD"))
+	}
+	for _, field := range []struct {
+		name        string
+		value       string
+		placeholder string
+	}{
+		{"userFilter", cfg.UserFilter, "{username}"}, {"groupFilter", cfg.GroupFilter, "{userDN}"},
+	} {
+		if err := validateLDAPFilter(field.name, field.value, field.placeholder); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"usernameAttribute", cfg.UsernameAttribute}, {"groupNameAttribute", cfg.GroupNameAttribute},
+	} {
+		if !ldapAttributePattern.MatchString(field.value) {
+			errs = append(errs, fmt.Errorf("config: auth.ldap.%s must be an LDAP attribute description", field.name))
+		}
+	}
+	return errs
+}
+
+// Attribute descriptions use RFC 4512 descriptors or numeric OIDs and optional options.
+var ldapAttributePattern = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9-]*|(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))+)(;[A-Za-z0-9-]+)*$`)
+
+func validateLDAPFilter(name, filter, placeholder string) error {
+	if strings.Count(filter, placeholder) != 1 {
+		return fmt.Errorf("config: auth.ldap.%s must contain exactly one %s placeholder", name, placeholder)
+	}
+	if _, err := ldap.CompileFilter(strings.ReplaceAll(filter, placeholder, "value")); err != nil {
+		return fmt.Errorf("config: auth.ldap.%s must be a valid LDAP filter", name)
+	}
+	return nil
+}
+
+func validateLDAPKeys(cfg *LDAPConfig) []error {
+	var errs []error
+	if !ldapKeyIDPattern.MatchString(cfg.SigningKeyID) {
+		errs = append(errs, errors.New("config: auth.ldap.signingKeyID must contain only lowercase ASCII letters, digits, '-' or '_' and be nonempty"))
+	}
+	parsedPrivate, err := jwt.ParseEdPrivateKeyFromPEM([]byte(cfg.SigningPrivateKey))
+	privateKey, ok := parsedPrivate.(ed25519.PrivateKey)
+	if err != nil || !ok {
+		errs = append(errs, errors.New("config: auth.ldap.signingPrivateKey must be a PEM Ed25519 private key"))
+	}
+	for id, value := range cfg.VerificationKeys {
+		if err := validateLDAPVerificationKeyID(id); err != nil {
+			errs = append(errs, err)
+		}
+		parsedPublic, err := jwt.ParseEdPublicKeyFromPEM([]byte(value))
+		publicKey, ok := parsedPublic.(ed25519.PublicKey)
+		if err != nil || !ok {
+			errs = append(errs, errors.New("config: auth.ldap.verificationKeys must contain PEM Ed25519 public keys"))
+			continue
+		}
+		if id == cfg.SigningKeyID && privateKey != nil && !publicKey.Equal(privateKey.Public()) {
+			errs = append(errs, errors.New("config: auth.ldap.verificationKeys conflicts with the active signing key ID"))
+		}
+	}
+	return errs
+}
+
+func validateLDAPFileKeyIDs(value any, path string) error {
+	var entries map[string]any
+	switch values := value.(type) {
+	case map[string]any:
+		entries = values
+	case map[any]any:
+		// YAML may decode numeric IDs as numbers; preserve Viper's string mapping
+		// without silently merging IDs that stringify identically.
+		entries = make(map[string]any, len(values))
+		for key, value := range values {
+			name := fmt.Sprint(key)
+			if _, exists := entries[name]; exists {
+				return errors.New("config: auth.ldap.verificationKeys contains conflicting key IDs")
+			}
+			entries[name] = value
+		}
+	}
+	for key, value := range entries {
+		if path == "" {
+			if err := validateLDAPVerificationKeyID(key); err != nil {
+				return err
+			}
+			continue
+		}
+		lower := strings.ToLower(key)
+		switch {
+		case lower == path:
+			if err := validateLDAPFileKeyIDs(value, ""); err != nil {
+				return err
+			}
+		case strings.HasPrefix(path, lower+"."):
+			if err := validateLDAPFileKeyIDs(value, path[len(key)+1:]); err != nil {
+				return err
+			}
+		case strings.HasPrefix(lower, path+"."):
+			if err := validateLDAPVerificationKeyID(key[len(path)+1:]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateLDAPVerificationKeyID(id string) error {
+	if !ldapKeyIDPattern.MatchString(id) {
+		return errors.New("config: auth.ldap.verificationKeys IDs must contain only lowercase ASCII letters, digits, '-' or '_' and be nonempty")
+	}
+	return nil
+}
+
+var ldapKeyIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // validateGitOps checks that gitops configuration is complete when enabled.
 func validateGitOps(g *GitOpsConfig) []error {

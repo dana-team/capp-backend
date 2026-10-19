@@ -8,8 +8,6 @@ import (
 
 // passthroughManager implements AuthManager for auth.mode = "passthrough".
 //
-// Design decision: token validation is intentionally lazy.
-//
 // In passthrough mode the client's Kubernetes bearer token is extracted from
 // the Authorization header and stored in a ClusterCredential. It is NOT
 // validated here by probing the cluster's /version endpoint. Instead,

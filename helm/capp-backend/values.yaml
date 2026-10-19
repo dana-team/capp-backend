@@ -66,6 +66,26 @@ config:
         - "user:info"
         - "user:check-access"
       tokenCacheTTLSeconds: 60
+    # LDAP settings. Required fields must be supplied when mode is "ldap".
+    # Credentials are configured in secret.ldapBindPassword/ldapSigningPrivateKey.
+    ldap:
+      url: ""              # ldaps:// only; verified TLS, default port 636
+      caCert: ""           # base64-encoded PEM CA bundle; empty uses system roots
+      bindDN: ""           # search-account DN
+      # Use OU/container bases covering required users/groups; AD domain-root
+      # searches can return referrals, which cause login to fail with HTTP 503.
+      userBaseDN: ""
+      userFilter: ""       # must contain exactly one {username} placeholder
+      usernameAttribute: "sAMAccountName"
+      groupBaseDN: ""
+      groupFilter: "(&(objectClass=group)(member={userDN}))" # direct membership
+      groupNameAttribute: "sAMAccountName"
+      timeoutSeconds: 10
+      tokenTTLSeconds: 900
+      issuer: ""           # shared across backend instances
+      audience: ""         # shared across backend instances
+      signingKeyID: ""     # lowercase letters/digits, '-' and '_' only
+      verificationKeys: {} # key ID -> PEM Ed25519 public key; active key is derived
     rateLimit:
       enabled: true
       requestsPerSecond: 20
@@ -161,6 +181,15 @@ secret:
   # Override: --set secret.openshiftClientSecret="<client-secret>"
   openshiftClientSecret: ""
 
+  # LDAP search-account password. Required when config.auth.mode is "ldap".
+  # Injected as CAPP_AUTH_LDAP_BINDPASSWORD.
+  ldapBindPassword: ""
+
+  # PEM Ed25519 signing private key. Required when config.auth.mode is "ldap".
+  # Injected as CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY.
+  # Override: --set-file secret.ldapSigningPrivateKey=/path/to/private/key
+  ldapSigningPrivateKey: ""
+
   # GitOps token. Required when config.gitops.authMethod is "token".
   # Override: --set secret.gitopsToken="<personal-access-token>"
   gitopsToken: ""
@@ -175,8 +204,16 @@ secret:
   # Override: --set-file secret.sshKey=/path/to/private/key
   sshKey: ""
 
-# ── Service Account (openshift mode) ──────────────────────────────────────────
-# Created when auth.mode is "openshift". The SA needs impersonation permissions.
+# ── User permissions ─────────────────────────────────────────────────────────
+rbac:
+  # Include OpenShift Projects API permissions in the capp-user role.
+  openShiftProjects: false
+
+# ── Service Account (openshift and ldap modes) ────────────────────────────────
+# Created when auth.mode is "openshift" or "ldap" and create is true.
+# Both modes bind impersonation permissions to this account; only OpenShift
+# receives OAuth annotations and TokenReview permissions.
+# Set create to false and name to an existing account to reuse it.
 serviceAccount:
   create: true
   name: "capp-backend"

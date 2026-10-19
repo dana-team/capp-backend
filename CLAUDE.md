@@ -68,7 +68,11 @@ GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list
 
 **ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `capprevisions`, `namespaces`, `configmaps`, `secrets`. To add a new resource type, implement the interface and register it in `cmd/server/main.go`.
 
-**AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `Refresh`. Passthrough mode forwards the caller's bearer token as-is. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. `GET /api/v1/auth/mode` returns the active mode (used by cappctl auto-detection).
+**AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `PasswordLogin`, and `Refresh`. Passthrough mode forwards the caller's bearer token as-is. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. LDAP mode verifies passwords with directory search-and-bind, issues EdDSA access tokens, and verifies them locally for Kubernetes impersonation without a directory call on resource requests. `GET /api/v1/auth/mode` returns the active mode.
+
+**LDAP contracts:** `POST /api/v1/auth/login` accepts `username`/`password` and returns the existing `TokenPair` with an empty `refreshToken` and `Cache-Control: no-store`. Verified LDAPS protects both the search-account connection and the separate target-user bind; complete group resolution is required before issuance. Unknown/ambiguous users and rejected user passwords return 401 / `UNAUTHORIZED` / `invalid credentials`; directory failures return sanitized 503 / `INTERNAL_ERROR` / `directory service unavailable`. Missing/invalid bearer tokens return 401 / `UNAUTHORIZED` / `request is not authenticated`; expired tokens return 401 / `UNAUTHORIZED` / `token has expired`. Raw-token login is unsupported, refresh returns 501 / `NOT_SUPPORTED` without parsing a body, and OAuth routes remain OpenShift-only. Preserve existing-mode behavior and never log credentials, tokens, keys, or raw directory diagnostics.
+
+LDAP clients submit passwords over HTTPS, retain access tokens securely, and log in again on expiry (900 seconds by default). LDAP has no refresh sessions, ADFS SSO, or MFA.
 
 **ClusterManager** (`internal/cluster/manager.go`): Holds connections to all configured clusters, runs health checks every 30s, and creates per-request scoped clients.
 
@@ -81,10 +85,17 @@ List fields are full-replace on update (`PUT`): `env`, `volumeMounts`, `secretVo
 Loaded from YAML file (`--config` flag) + environment variable overrides with `CAPP_` prefix and `_` separators (e.g., `CAPP_AUTH_MODE=openshift`). Priority: env vars > YAML > code defaults.
 
 Default config: `config/config.yaml`. Key settings:
-- `auth.mode`: passthrough | openshift
+- `auth.mode`: passthrough | openshift | ldap
+- `auth.ldap`: directory URL/CA, search DN/filter/attribute settings, login deadline, token lifetime, issuer/audience, and Ed25519 signing/trust keys; validated only in LDAP mode
 - `clusters[]`: array of cluster connections with credentials
 - `resources.<name>.enabled`: feature flags for resource handlers
 - `server.corsAllowedOrigins`: defaults to `localhost:3000` (capp-frontend dev server)
+
+`auth.ldap.url` accepts only `ldaps://` endpoints, with port 636 when omitted. Both directory connections verify certificates and hostnames before sending credentials. `auth.ldap.caCert` supplies a base64 PEM CA bundle; empty uses system roots. StartTLS is unsupported, and `ldap://` URLs fail startup validation.
+
+LDAP passwords and PEM private keys come from `CAPP_AUTH_LDAP_BINDPASSWORD` and `CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY`; Helm supplies them from `secret.ldapBindPassword` and `secret.ldapSigningPrivateKey`. Supply public `auth.ldap.verificationKeys` maps through mounted YAML, not JSON environment variables. Key IDs use lowercase ASCII letters/digits, `-`, and `_`. All replicas need consistent issuer/audience and signing/trust configuration plus synchronized clocks. Distribute a new public key before activating its private key, and retain retiring keys until their tokens expire. Directory account/password/group changes do not revoke issued tokens; removing a signing key fleet-wide invalidates all its tokens after rollout.
+
+OpenShift and LDAP require inline service-account tokens with users/groups impersonation permissions for every managed cluster. Canonical usernames/groups must match User/Group RoleBindings; the default LDAP filter resolves direct membership only, without guaranteed nested/primary groups. Keep required Projects access for namespace listing. Helm grants TokenReview permissions and OAuth annotations only in OpenShift mode. Directory operators own AD lockout policy/recovery, platform operators own distributed gateway controls, and automation must stop on rejected credentials rather than retry. The optional backend rate limiter is per IP and per instance.
 
 ### Project Layout
 
@@ -95,7 +106,7 @@ cmd/
 internal/
   server/                       # Gin engine setup, route registration, auth route handlers
   config/                       # Config structs, Viper loading, validation
-  auth/                         # AuthManager implementations (passthrough, openshift)
+  auth/                         # AuthManager implementations (passthrough, openshift, ldap)
   cluster/                      # ClusterManager, health checks, credential loading
   gitops/                       # GitOps client: clone, commit, push per-capp values files to a remote repo
   middleware/                   # Auth, cluster, logging, metrics, CORS, rate limit, recovery

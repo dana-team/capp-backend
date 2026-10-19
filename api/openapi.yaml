@@ -7,14 +7,21 @@ info:
 
     ## Authentication
 
-    The backend supports two auth modes configured server-side:
+    The backend supports three auth modes configured server-side:
 
     - **passthrough** — supply a raw Kubernetes `Bearer <token>` on every request.
     - **openshift** — use `/api/v1/auth/openshift/authorize` to get an OAuth URL,
       then POST the code to `/api/v1/auth/openshift/callback`.
+    - **ldap** — POST `username` and `password` over HTTPS to `/api/v1/auth/login`.
+      Use the returned backend-issued access JWT on resource requests. Tokens
+      expire after 900 seconds by default; log in again instead of refreshing.
 
     Use `GET /api/v1/auth/mode` to discover which mode the server is running.
     All resource endpoints require the `Authorization: Bearer <token>` header.
+    LDAP tokens are verified locally and authorize Kubernetes impersonation;
+    they are not forwarded to Kubernetes. LDAP has no refresh sessions, OAuth
+    browser routes, ADFS SSO, or MFA. Web clients must retain tokens securely and
+    return to login on expiry.
   version: "0.1.0"
   contact:
     name: dana-team
@@ -43,10 +50,13 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: |
         In **passthrough** mode supply the raw Kubernetes ServiceAccount token.
-        In **openshift** mode supply the JWT returned by the login or callback endpoint.
+        In **openshift** mode supply an OpenShift access token, including one
+        returned by the login or callback endpoint.
+        In **ldap** mode supply the EdDSA access JWT returned by login. Missing
+        or invalid tokens return 401 / UNAUTHORIZED / "request is not authenticated";
+        expired tokens return 401 / UNAUTHORIZED / "token has expired".
 
   schemas:
     # ── Error ────────────────────────────────────────────────────────────────────
@@ -69,8 +79,12 @@ components:
     # ── Auth ─────────────────────────────────────────────────────────────────────
     LoginRequest:
       description: |
-        - **passthrough** mode: provide `cluster` and `token`.
+        - **passthrough** mode: `cluster` and `token` satisfy request validation,
+          but login returns 501 / NOT_SUPPORTED; send the bearer token directly
+          on resource requests instead.
         - **openshift** mode: provide `username` and `password` (Resource Owner Password flow).
+        - **ldap** mode: provide `username` and `password` over HTTPS. Raw
+          `cluster` and `token` fields cannot authenticate an LDAP user.
       oneOf:
         - title: ClusterTokenLogin
           type: object
@@ -78,34 +92,37 @@ components:
           properties:
             cluster:
               type: string
-              description: Cluster to authenticate against (passthrough mode).
+              description: Cluster field accepted by the unsupported passthrough login operation.
               example: production
             token:
               type: string
-              description: Raw Kubernetes Bearer token (passthrough mode).
+              description: Raw Kubernetes bearer token; passthrough login returns NOT_SUPPORTED.
               example: "eyJhbGci..."
-        - title: OpenShiftPasswordLogin
+        - title: PasswordLogin
           type: object
           required: [username, password]
           properties:
             username:
               type: string
-              description: Username (openshift mode, Resource Owner Password flow).
+              minLength: 1
+              description: Username for OpenShift password login or LDAP search-and-bind.
               example: admin
             password:
               type: string
-              description: Password (openshift mode).
-              example: "s3cr3t"
+              minLength: 1
+              writeOnly: true
+              description: User password for OpenShift or LDAP; submit only over HTTPS.
+              example: "<user-password>"
 
     TokenPair:
       type: object
       properties:
         accessToken:
           type: string
-          description: Short-lived JWT for API requests.
+          description: OpenShift access token or backend-issued EdDSA JWT in LDAP mode, used for API requests.
         refreshToken:
           type: string
-          description: Long-lived JWT for refreshing the access token.
+          description: OpenShift refresh token when supplied by the identity provider. Always an empty string in LDAP mode.
         expiresAt:
           type: string
           format: date-time
@@ -117,14 +134,14 @@ components:
       properties:
         refreshToken:
           type: string
-          description: Refresh token obtained from a previous login or refresh.
+          description: OpenShift refresh token obtained from a previous login, callback, or refresh. LDAP refresh is unsupported.
 
     AuthModeResponse:
       type: object
       properties:
         mode:
           type: string
-          enum: [passthrough, openshift]
+          enum: [passthrough, openshift, ldap]
           example: passthrough
 
     OpenShiftAuthorizeResponse:
@@ -1200,7 +1217,7 @@ components:
 
   responses:
     Unauthorized:
-      description: Missing or invalid credentials.
+      description: Missing, invalid, or expired credentials. In LDAP mode, invalid bearer tokens report "request is not authenticated" and expired tokens report "token has expired", both with code UNAUTHORIZED.
       content:
         application/json:
           schema:
@@ -1224,11 +1241,22 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     InternalError:
-      description: Unexpected server error.
+      description: Unexpected server error (INTERNAL_ERROR with message "internal server error").
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    DirectoryUnavailable:
+      description: LDAP TLS/network/deadline failure, search-account failure, or incomplete directory results. Raw directory diagnostics are not exposed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: directory service unavailable
+              status: 503
     GitopsFailed:
       description: Writing to the GitOps repository failed (`GITOPS_FAILED`). Only the sync endpoints return this, because there the Git write is the requested operation. Handlers whose primary job is a cluster write report a failed backup as a `warnings` entry on a 2xx response instead.
       content:
@@ -1258,12 +1286,20 @@ paths:
   /api/v1/auth/login:
     post:
       tags: [auth]
-      summary: Log in and obtain a token pair
+      summary: Log in with OpenShift or LDAP credentials
       description: |
-        - **passthrough** mode: provide `cluster` and `token`.
+        - **passthrough** mode: login is unsupported. A body containing `cluster`
+          and `token` returns 501 / NOT_SUPPORTED; missing fields return 400.
         - **openshift** mode: provide `username` and `password` (Resource Owner Password flow).
+          Returns OpenShift-managed tokens, not backend-issued JWTs.
+        - **ldap** mode: provide `username` and `password` over HTTPS. Search-and-bind
+          verifies the user and resolves canonical groups before issuing an EdDSA
+          access JWT. `refreshToken` is empty; the default lifetime is 900 seconds.
 
-        Returns a short-lived access JWT and a long-lived refresh JWT.
+        LDAP resource requests verify the token locally without directory calls.
+        Missing/empty username or password returns 400; unknown/ambiguous users
+        and rejected user passwords return 401 with "invalid credentials".
+        Directory dependency failures return sanitized 503 responses.
       security: []
       requestBody:
         required: true
@@ -1271,38 +1307,79 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+            examples:
+              ldap:
+                summary: LDAP password login
+                value:
+                  username: alice
+                  password: "<user-password>"
       responses:
         "200":
           description: Login successful.
+          headers:
+            Cache-Control:
+              description: Set to no-store for LDAP login responses.
+              schema:
+                type: string
+                example: no-store
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenPair'
+              examples:
+                ldap:
+                  summary: LDAP access token with illustrative expiry
+                  value:
+                    accessToken: "<access-jwt>"
+                    refreshToken: ""
+                    expiresAt: "2026-10-18T12:15:00Z"
         "400":
-          description: Missing or malformed request body.
+          description: Missing or malformed request body. Missing/empty LDAP or OpenShift credentials report BAD_REQUEST with "username and password are required".
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: BAD_REQUEST
+                  message: username and password are required
+                  status: 400
         "401":
-          $ref: '#/components/responses/Unauthorized'
-        "404":
-          description: Cluster not found.
+          description: LDAP or OpenShift password authentication failed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: invalid credentials
+                  status: 401
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "501":
+          description: Login is not supported in passthrough mode (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/DirectoryUnavailable'
 
   /api/v1/auth/refresh:
     post:
       tags: [auth]
-      summary: Refresh an expired access token
+      summary: Refresh an OpenShift access token
       description: |
-        Validates the supplied refresh token, extends the server-side session,
-        and issues a new JWT pair. Not available in passthrough mode.
+        Exchanges an OpenShift refresh token with the identity provider. The
+        backend stores no refresh session and does not issue its own JWT pair.
+        LDAP returns 501 / NOT_SUPPORTED without reading or requiring a body;
+        clients must log in again after expiry. Passthrough also returns 501
+        for a valid refresh body; missing/malformed bodies return 400.
       security: []
       requestBody:
-        required: true
+        description: Required in OpenShift mode; ignored in LDAP mode.
+        required: false
         content:
           application/json:
             schema:
@@ -1314,8 +1391,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenPair'
+        "400":
+          description: Missing or malformed refresh body in OpenShift or passthrough mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         "401":
           $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "501":
+          description: Refresh is unsupported in LDAP and passthrough modes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: NOT_SUPPORTED
+                  message: 'operation "Refresh" is not supported in the current configuration'
+                  status: 501
 
   /api/v1/auth/openshift/authorize:
     get:

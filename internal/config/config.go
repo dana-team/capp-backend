@@ -10,8 +10,10 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -74,6 +76,54 @@ type OpenShiftConfig struct {
 	TokenCacheTTLSeconds int `mapstructure:"tokenCacheTTLSeconds"`
 }
 
+// LDAPConfig configures directory search-and-bind and backend-issued access tokens.
+// Required fields apply only when auth.mode is ldap.
+type LDAPConfig struct {
+	// URL is the required directory endpoint. Use ldaps:// with verified TLS.
+	URL string `mapstructure:"url"`
+	// CACert is an optional base64 PEM CA bundle; empty uses system trust roots.
+	CACert string `mapstructure:"caCert"`
+	// BindDN is the required DN of the directory search account, not the target user.
+	BindDN string `mapstructure:"bindDN"`
+	// BindPassword is the required search-account password; supply it through
+	// a Secret or CAPP_AUTH_LDAP_BINDPASSWORD.
+	BindPassword string `mapstructure:"bindPassword"`
+
+	// UserBaseDN is the required root DN for user searches.
+	UserBaseDN string `mapstructure:"userBaseDN"`
+	// UserFilter is the required user search filter, containing exactly one
+	// {username} placeholder for an escaped value.
+	UserFilter string `mapstructure:"userFilter"`
+	// UsernameAttribute supplies the canonical username. Default: "sAMAccountName".
+	UsernameAttribute string `mapstructure:"usernameAttribute"`
+	// GroupBaseDN is the required root DN for group searches.
+	GroupBaseDN string `mapstructure:"groupBaseDN"`
+	// GroupFilter contains exactly one {userDN} placeholder for an escaped DN.
+	// Default: "(&(objectClass=group)(member={userDN}))" (direct membership).
+	GroupFilter string `mapstructure:"groupFilter"`
+	// GroupNameAttribute supplies group names for authorization. Default: "sAMAccountName".
+	GroupNameAttribute string `mapstructure:"groupNameAttribute"`
+
+	// TimeoutSeconds bounds the entire directory login; must be positive. Default: 10.
+	TimeoutSeconds int `mapstructure:"timeoutSeconds"`
+	// TokenTTLSeconds sets access-token lifetime; must be positive. Default: 900.
+	TokenTTLSeconds int `mapstructure:"tokenTTLSeconds"`
+	// Issuer is the required token-issuer identifier, consistent across backend instances.
+	Issuer string `mapstructure:"issuer"`
+	// Audience is the required intended-recipient identifier, consistent across backend instances.
+	Audience string `mapstructure:"audience"`
+
+	// SigningKeyID is the required active signing-key identifier used in token headers.
+	// Use only lowercase ASCII letters, digits, '-' or '_'.
+	SigningKeyID string `mapstructure:"signingKeyID"`
+	// SigningPrivateKey is the required PEM Ed25519 private key; supply it through
+	// a Secret or CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY.
+	SigningPrivateKey string `mapstructure:"signingPrivateKey"`
+	// VerificationKeys optionally maps retiring/future key IDs to PEM Ed25519 public keys.
+	// The active public key is derived from SigningPrivateKey.
+	VerificationKeys map[string]string `mapstructure:"verificationKeys"`
+}
+
 // RateLimitConfig controls per-IP request rate limiting.
 type RateLimitConfig struct {
 	// Enabled toggles rate limiting globally. Default: true.
@@ -96,6 +146,7 @@ type RateLimitConfig struct {
 const (
 	AuthModePassthrough = "passthrough"
 	AuthModeOpenShift   = "openshift"
+	AuthModeLDAP        = "ldap"
 )
 
 // AuthConfig holds all authentication-related settings.
@@ -104,9 +155,11 @@ type AuthConfig struct {
 	//   passthrough — the client's Kubernetes bearer token is forwarded directly
 	//                 to the cluster; no session is created server-side.
 	//   openshift   — OpenShift OAuth + K8s impersonation; fully stateless.
+	//   ldap        — directory search-and-bind + locally verified access tokens.
 	// Default: "passthrough".
 	Mode      string          `mapstructure:"mode"`
 	OpenShift OpenShiftConfig `mapstructure:"openshift"`
+	LDAP      LDAPConfig      `mapstructure:"ldap"`
 	RateLimit RateLimitConfig `mapstructure:"rateLimit"`
 }
 
@@ -331,8 +384,7 @@ func Load(path string) (*Config, error) {
 	v.AutomaticEnv()
 
 	if path != "" {
-		v.SetConfigFile(path)
-		if err := v.ReadInConfig(); err != nil {
+		if err := readConfigFile(v, path); err != nil {
 			return nil, err
 		}
 	}
@@ -372,6 +424,32 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func readConfigFile(v *viper.Viper, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	v.SetConfigFile(path)
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+		return err
+	}
+	if v.GetString("auth.mode") != AuthModeLDAP {
+		return nil
+	}
+
+	// Viper normalizes map keys, so check IDs against the original bytes before
+	// accepting the loaded configuration. Reuse its decoder for the file format.
+	decoder, err := viper.NewCodecRegistry().Decoder(strings.TrimPrefix(filepath.Ext(path), "."))
+	if err != nil {
+		return err
+	}
+	raw := make(map[string]any)
+	if err := decoder.Decode(data, raw); err != nil {
+		return err
+	}
+	return validateLDAPFileKeyIDs(raw, "auth.ldap.verificationkeys")
+}
+
 // compactVMURLs drops blank entries and trims surrounding space.
 func compactVMURLs(urls []string) []string {
 	out := make([]string, 0, len(urls))
@@ -399,6 +477,20 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.mode", AuthModePassthrough)
 	v.SetDefault("auth.openshift.scopes", []string{"user:info", "user:check-access"})
 	v.SetDefault("auth.openshift.tokenCacheTTLSeconds", 60)
+	// Register required scalar keys even when LDAP is absent from YAML so
+	// AutomaticEnv includes environment-only values during Unmarshal.
+	for _, key := range []string{
+		"url", "caCert", "bindDN", "bindPassword", "userBaseDN", "userFilter",
+		"groupBaseDN", "issuer", "audience", "signingKeyID", "signingPrivateKey",
+	} {
+		v.SetDefault("auth.ldap."+key, "")
+	}
+	v.SetDefault("auth.ldap.usernameAttribute", "sAMAccountName")
+	v.SetDefault("auth.ldap.groupFilter", "(&(objectClass=group)(member={userDN}))")
+	v.SetDefault("auth.ldap.groupNameAttribute", "sAMAccountName")
+	v.SetDefault("auth.ldap.timeoutSeconds", 10)
+	v.SetDefault("auth.ldap.tokenTTLSeconds", 900)
+	v.SetDefault("auth.ldap.verificationKeys", map[string]string{})
 	v.SetDefault("auth.rateLimit.enabled", true)
 	v.SetDefault("auth.rateLimit.requestsPerSecond", 20.0)
 	v.SetDefault("auth.rateLimit.burst", 40)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/gin-gonic/gin"
 )
 
@@ -53,9 +54,9 @@ func registerAuthRoutes(rg *gin.RouterGroup, mgr auth.AuthManager, mode string) 
 		c.JSON(200, authModeResponse{Mode: mode})
 	})
 	rg.POST("/login", loginHandler(mgr, mode))
-	rg.POST("/refresh", refreshHandler(mgr))
+	rg.POST("/refresh", refreshHandler(mgr, mode))
 
-	if mode == "openshift" {
+	if mode == config.AuthModeOpenShift {
 		rg.GET("/openshift/authorize", openshiftAuthorizeHandler(mgr))
 		rg.POST("/openshift/callback", openshiftCallbackHandler(mgr))
 	}
@@ -71,8 +72,7 @@ func loginHandler(mgr auth.AuthManager, mode string) gin.HandlerFunc {
 			return
 		}
 
-		// openshift supports username/password login.
-		if mode == "openshift" {
+		if mode == config.AuthModeOpenShift || mode == config.AuthModeLDAP {
 			if req.Username == "" || req.Password == "" {
 				apierrors.Respond(c, apierrors.NewBadRequest("username and password are required"))
 				return
@@ -84,10 +84,17 @@ func loginHandler(mgr auth.AuthManager, mode string) gin.HandlerFunc {
 					apierrors.Respond(c, apierrors.NewNotSupported("Login"))
 				case errors.Is(err, auth.ErrBadCredentials), errors.Is(err, auth.ErrUnauthenticated):
 					apierrors.Respond(c, apierrors.NewUnauthorized("invalid credentials"))
+				case mode == config.AuthModeLDAP && errors.Is(err, auth.ErrDirectoryUnavailable):
+					apierrors.Respond(c, &apierrors.APIError{
+						Code: apierrors.CodeInternal, Message: auth.ErrDirectoryUnavailable.Error(), Status: http.StatusServiceUnavailable,
+					})
 				default:
 					apierrors.Respond(c, apierrors.NewInternal(err))
 				}
 				return
+			}
+			if mode == config.AuthModeLDAP {
+				c.Header("Cache-Control", "no-store")
 			}
 			c.JSON(http.StatusOK, pair)
 			return
@@ -115,8 +122,12 @@ func loginHandler(mgr auth.AuthManager, mode string) gin.HandlerFunc {
 }
 
 // refreshHandler handles POST /api/v1/auth/refresh.
-func refreshHandler(mgr auth.AuthManager) gin.HandlerFunc {
+func refreshHandler(mgr auth.AuthManager, mode string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if mode == config.AuthModeLDAP {
+			apierrors.Respond(c, apierrors.NewNotSupported("Refresh"))
+			return
+		}
 		var req refreshRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
