@@ -46,7 +46,7 @@ capp-backend can be deployed on any supported OCP cluster, with consistent reque
 
 ## Security
 
-- Require verified LDAPS or mandatory StartTLS before binds, and HTTPS for client login. Escape search values, reject empty passwords, isolate bind state, and never log credentials/tokens or persist submitted passwords.
+- Require verified LDAPS before binds, and HTTPS for client login. Escape search values, reject empty passwords, isolate bind state, and never log credentials/tokens or persist submitted passwords.
 - Use established LDAP/JWT libraries, pinned signing algorithms/configured keys, and Secret-backed credentials. Existing optional rate limits apply per client IP and backend instance, not per AD account; they do not provide fleet-wide account-lockout protection. Directory operators own AD lockout policy, and platform operators configure any gateway-level distributed login-abuse controls. Do not automatically retry bad passwords.
 - LDAP password login does not automatically inherit ADFS SSO/MFA. Automation acts as its own AD account; directory search privileges confer no capp permissions. App tokens do not constitute a new OAuth authorization-server protocol.
 
@@ -58,8 +58,7 @@ capp-backend can be deployed on any supported OCP cluster, with consistent reque
 - **Stale identity/revocation:** logout discards the client token; password/account/group changes may not affect issued tokens until expiry. No per-token revocation store exists; withdrawing a signing key invalidates its tokens after fleet configuration updates.
 - **Fleet inconsistency:** mismatched trust/configuration/clocks can reject valid tokens; report sanitized directory, token, and configuration failures.
 
-## Open Questions
+## Resolved Questions
 
-1. **StartTLS requirement** — confirm whether LDAPS is available in every required
-   environment, or whether any environment requires StartTLS and cannot enable
-   LDAPS. Can this integration support LDAPS only?
+1. **StartTLS requirement** — StartTLS is not required; the required environments
+   support LDAPS. This integration uses LDAPS.
