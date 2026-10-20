@@ -30,6 +30,16 @@ capp-backend can be deployed on any supported OCP cluster, with consistent reque
 - **Non-goals:** OpenShift replacement, AD REST/ADFS broker integration in the new mode, LDAP-mode refresh tokens, session storage, immediate per-account revocation, authorization redesign, platform cleanup, and GitOps concurrency. Existing OpenShift login/refresh remain unchanged.
 - **Open questions:** broader authorization, automation-credential alternatives, and ADFS integration remain in [research](../research.md#open-questions); they do not change this design's scope.
 
+## Future work
+
+### Long-lived tokens and revocation
+
+Future work outside authentication phases 1–2:
+
+- Support long-lived tokens with clear expiration rules.
+- Let users and administrators view and revoke tokens.
+- Ensure revocation takes effect across all backend instances.
+
 ## Architecture
 
 - **Mode selection:** add `ldap` alongside existing modes, selected at startup without automatic provider fallback. The following describes LDAP mode.
