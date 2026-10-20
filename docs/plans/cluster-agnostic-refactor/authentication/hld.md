@@ -13,10 +13,10 @@
 
 Phase numbers are local to the authentication domain. Both phases use the same LDAP and token contracts.
 
-| Phase | Delivery | Specification | Tasks |
-| --- | --- | --- | --- |
-| 1 — LDAP backend and deployment | Authentication, tokens, API contracts, Helm configuration, impersonation permissions, and API/operator documentation | [LLD](phase-1/lld.md) | [Tasks](phase-1/tasks.md) |
-| 2 — LDAP CLI and automation | Secure unattended login, token import/storage, expiry handling, and CLI documentation | [LLD](phase-2/lld.md) | [Tasks](phase-2/tasks.md) |
+| Phase | Delivery |
+| --- | --- |
+| 1 — LDAP backend and deployment | Authentication, tokens, API contracts, Helm configuration, impersonation permissions, and API/operator documentation |
+| 2 — LDAP CLI and automation | Secure unattended login, token import/storage, expiry handling, and CLI documentation |
 
 Phase 1 is independently usable through the HTTPS API. LDAP support in `cappctl`, including token import, arrives in phase 2. Frontend implementation is outside this repository; phase 1 supplies the web integration API, not a completed web login UI. Phase 2 consumes phase 1's API without changing its authentication contract. Future ADFS integration remains separate roadmap work.
 
