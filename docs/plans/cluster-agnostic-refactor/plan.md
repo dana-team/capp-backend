@@ -2,6 +2,14 @@
 
 Make capp-backend cluster-agnostic so it can be deployed on N clusters behind a single global DNS, with any request succeeding regardless of which instance handles it.
 
+## Requirements
+
+- **Cluster independence:** operate consistently regardless of the hosting cluster.
+- **Compatibility:** preserve existing functionality and access controls through a smooth migration.
+- **Scope:** remain focused on platform management; introduce no new product capabilities as part of this refactor.
+- **Dependencies:** minimize reliance on additional external services.
+- **Scalability:** support growth across instances and clusters; disaster recovery is outside this refactor's scope.
+
 ## Plan
 
 Based on [research](research.md). Designs are grouped by domain, with phase numbers local to each domain. The delivery order is:
