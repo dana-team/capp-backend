@@ -1,9 +1,10 @@
 # capp-backend configuration
-# All values can be overridden by environment variables prefixed with CAPP_
+# Scalar values can be overridden by environment variables prefixed with CAPP_
 # using underscores as separators, e.g.:
 #   server.port          → CAPP_SERVER_PORT
 #   auth.mode            → CAPP_AUTH_MODE
 #   clusters[0].credential.inline.token → CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
+# Supply auth.ldap.verificationKeys as a map in mounted YAML, not JSON in an env var.
 
 # ── HTTP Server ───────────────────────────────────────────────────────────────
 server:
@@ -39,6 +40,11 @@ auth:
   #     POST /api/v1/auth/login authenticates users via OpenShift OAuth.
   #     The backend impersonates users on managed clusters using per-cluster
   #     service-account tokens. Fully stateless.
+  #
+  #   ldap
+  #     POST /api/v1/auth/login verifies directory credentials over TLS and
+  #     issues an access JWT for Kubernetes impersonation. No refresh, ADFS SSO,
+  #     MFA, or OAuth browser flow.
   mode: "passthrough"
 
   # OpenShift OAuth auth mode example:
@@ -56,8 +62,38 @@ auth:
   #     scopes: ["user:info", "user:check-access"]
   #     tokenCacheTTLSeconds: 60
 
+  # LDAP example: set mode to ldap and uncomment ldap below (under auth).
+  # Requires HTTPS for API password login and an inline service-account token
+  # with users/groups impersonation permissions on every managed cluster.
+  # ldap:
+  #   url: "ldaps://directory.example.com:636" # verified LDAPS only
+  #   caCert: ""              # base64 PEM CA bundle; empty uses system roots
+  #   bindDN: "CN=capp-reader,OU=Services,DC=example,DC=com"
+  #   bindPassword: ""        # inject only via CAPP_AUTH_LDAP_BINDPASSWORD
+  #   # Use OU/container bases covering required users/groups; AD domain-root
+  #   # searches can return referrals, which cause login to fail with HTTP 503.
+  #   userBaseDN: "OU=Users,DC=example,DC=com"
+  #   userFilter: "(sAMAccountName={username})" # exactly one {username}
+  #   usernameAttribute: "sAMAccountName"
+  #   groupBaseDN: "OU=Groups,DC=example,DC=com"
+  #   groupFilter: "(&(objectClass=group)(member={userDN}))" # exactly one {userDN}
+  #   groupNameAttribute: "sAMAccountName"
+  #   timeoutSeconds: 10      # positive total login deadline
+  #   tokenTTLSeconds: 900    # positive lifetime; log in again after expiry
+  #   issuer: "capp-backend"  # shared by every replica
+  #   audience: "capp-api"    # shared by every replica
+  #   signingKeyID: "key-2026" # lowercase letters/digits, '-' and '_' only
+  #   signingPrivateKey: ""   # PEM Ed25519; CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY only
+  #   verificationKeys: {}    # additional key ID -> PEM Ed25519 public key
+  # The active public key is derived from the private key. Distribute a new
+  # public key before activating it; retain old public keys until tokens expire.
+  # Use matching canonical User/Group RoleBindings; the default group filter
+  # covers direct membership, not guaranteed nested or primary membership.
+  # See README.md for HTTPS integration, key rotation, and lockout ownership.
+
   rateLimit:
-    # Toggle per-IP rate limiting globally.
+    # Toggle per-IP, per-instance rate limiting globally. This is not per-account
+    # or distributed AD lockout protection; directory operators own lockout policy.
     enabled: true
 
     # Sustained request rate per second (token bucket refill rate).
@@ -107,6 +143,8 @@ tracing:
 # name appears in every API path: /api/v1/clusters/{name}/...
 #
 # Credential: set exactly ONE of kubeconfigPath or inline.
+# OpenShift and LDAP require inline.token for every cluster; use the inline
+# option and remove kubeconfigPath for those modes.
 # Sensitive values (token, secretKey) must be injected via environment variables
 # — never committed in this file.
 clusters:

@@ -1,4 +1,4 @@
-{{- if eq .Values.config.auth.mode "openshift" }}
+{{- if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -9,7 +9,9 @@ rules:
   - apiGroups: [""]
     resources: ["users", "groups"]
     verbs: ["impersonate"]
+  {{- if eq .Values.config.auth.mode "openshift" }}
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]
+  {{- end }}
 {{- end }}

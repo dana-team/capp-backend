@@ -81,7 +81,7 @@ func TestConvertCoverage(t *testing.T) {
 
 	resp := FromK8s(capp, minimalSizes())
 
-	// Phase 1: verify ToK8s wrote fields correctly to the Capp object.
+	// Verify ToK8s wrote fields correctly to the Capp object.
 	t.Run("ToK8s", func(t *testing.T) {
 		assert.Equal(t, req.Name, capp.Name, "Name not written by ToK8s")
 		assert.Equal(t, req.State, capp.Spec.State, "State not written by ToK8s")
@@ -114,7 +114,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Len(t, capp.Spec.EventSourcesSpec.Sources, 2, "EventSourcesSpec.Sources not written by ToK8s")
 	})
 
-	// Phase 2: verify FromK8s reads fields correctly from the Capp object.
+	// Verify FromK8s reads fields correctly from the Capp object.
 	t.Run("FromK8s", func(t *testing.T) {
 		assert.Equal(t, req.Name, resp.Name, "Name not read by FromK8s")
 		assert.Equal(t, req.State, resp.State, "State not read by FromK8s")

@@ -1,6 +1,15 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+	"fmt"
+	"math/big"
 	"os"
 	"testing"
 
@@ -542,4 +551,298 @@ resources:
 		"http://vm-a.monitoring.svc:8428",
 		"http://vm-b.monitoring.svc:8428",
 	}, cfg.Resources.Benchmarks.VMURLs)
+}
+
+func TestLoad(t *testing.T) {
+	t.Run("LDAP defaults", func(t *testing.T) {
+		cfg, err := Load("")
+		require.NoError(t, err)
+		assert.Equal(t, LDAPConfig{
+			UsernameAttribute:  "sAMAccountName",
+			GroupFilter:        "(&(objectClass=group)(member={userDN}))",
+			GroupNameAttribute: "sAMAccountName",
+			TimeoutSeconds:     10,
+			TokenTTLSeconds:    900,
+			VerificationKeys:   map[string]string{},
+		}, cfg.Auth.LDAP)
+	})
+
+	t.Run("LDAP environment configuration", func(t *testing.T) {
+		want := validLDAPConfig(t)
+		want.CACert = "ca-from-environment"
+		want.UsernameAttribute = "uid"
+		want.GroupNameAttribute = "cn"
+		want.TimeoutSeconds = 20
+		want.TokenTTLSeconds = 600
+		want.VerificationKeys = map[string]string{}
+		t.Setenv("CAPP_AUTH_MODE", AuthModeLDAP)
+		for key, value := range map[string]string{
+			"URL": want.URL, "CACERT": want.CACert,
+			"BINDDN": want.BindDN, "BINDPASSWORD": want.BindPassword,
+			"USERBASEDN": want.UserBaseDN, "USERFILTER": want.UserFilter,
+			"USERNAMEATTRIBUTE": want.UsernameAttribute,
+			"GROUPBASEDN":       want.GroupBaseDN, "GROUPFILTER": want.GroupFilter,
+			"GROUPNAMEATTRIBUTE": want.GroupNameAttribute,
+			"TIMEOUTSECONDS":     "20", "TOKENTTLSECONDS": "600",
+			"ISSUER": want.Issuer, "AUDIENCE": want.Audience,
+			"SIGNINGKEYID": want.SigningKeyID, "SIGNINGPRIVATEKEY": want.SigningPrivateKey,
+		} {
+			t.Setenv("CAPP_AUTH_LDAP_"+key, value)
+		}
+		cfg, err := Load("")
+		require.NoError(t, err)
+		assert.Equal(t, AuthModeLDAP, cfg.Auth.Mode)
+		assert.Equal(t, want, cfg.Auth.LDAP)
+	})
+
+	t.Run("LDAP environment overrides file configuration", func(t *testing.T) {
+		want := validLDAPConfig(t)
+		want.CACert = "ca-from-file"
+		want.UsernameAttribute = "uid"
+		want.GroupNameAttribute = "cn"
+		want.TimeoutSeconds = 25
+		want.TokenTTLSeconds = 1200
+		// Surrounding password whitespace is significant, including via environment overrides.
+		want.BindPassword = " injected password "
+		t.Setenv("CAPP_AUTH_LDAP_BINDPASSWORD", want.BindPassword)
+		t.Setenv("CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY", want.SigningPrivateKey)
+		cfg := loadTempConfig(t, fmt.Sprintf(`
+auth:
+  mode: ldap
+  ldap:
+    url: %q
+    caCert: %q
+    bindDN: %q
+    bindPassword: ""
+    userBaseDN: %q
+    userFilter: %q
+    usernameAttribute: %q
+    groupBaseDN: %q
+    groupFilter: %q
+    groupNameAttribute: %q
+    timeoutSeconds: 25
+    tokenTTLSeconds: 1200
+    issuer: %q
+    audience: %q
+    signingKeyID: %q
+    signingPrivateKey: ""
+    verificationKeys:
+      key-1: %q
+`, want.URL, want.CACert, want.BindDN, want.UserBaseDN, want.UserFilter, want.UsernameAttribute,
+			want.GroupBaseDN, want.GroupFilter, want.GroupNameAttribute, want.Issuer, want.Audience,
+			want.SigningKeyID, want.VerificationKeys[want.SigningKeyID]))
+		assert.Equal(t, want, cfg.Auth.LDAP)
+	})
+
+	t.Run("LDAP verification keys", func(t *testing.T) {
+		_, publicPEM := ldapSigningKeys(t)
+		_, otherPublicPEM := ldapSigningKeys(t)
+		cases := []struct {
+			name      string
+			mode      string
+			envMode   string
+			settings  string
+			wantError bool
+		}{
+			{name: "accepts lowercase IDs", mode: AuthModeLDAP, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  key-2: %q\n", publicPEM)},
+			{name: "rejects uppercase ID", mode: AuthModeLDAP, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  KEY-2: %q\n", publicPEM), wantError: true},
+			{name: "rejects case-colliding IDs", mode: AuthModeLDAP, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  KEY-2: %q\n  key-2: %q\n", publicPEM, otherPublicPEM), wantError: true},
+			{name: "rejects uppercase ID alongside numeric YAML ID", mode: AuthModeLDAP, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  123: %q\n  KEY-2: %q\n", publicPEM, otherPublicPEM), wantError: true},
+			{name: "rejects numeric IDs that normalize identically", mode: AuthModeLDAP, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  123: %q\n  123.0: %q\n", publicPEM, otherPublicPEM), wantError: true},
+			{name: "rejects uppercase ID with mixed-case parents", mode: AuthModeLDAP, settings: fmt.Sprintf("AUTH:\n  LDAP:\n    VerificationKeys:\n      KEY-2: %q\n", publicPEM), wantError: true},
+			{name: "rejects uppercase dotted ID", mode: AuthModeLDAP, settings: fmt.Sprintf("auth.ldap.verificationKeys.KEY-2: %q\n", publicPEM), wantError: true},
+			{name: "environment selects LDAP", mode: AuthModePassthrough, envMode: AuthModeLDAP, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  KEY-2: %q\n", publicPEM), wantError: true},
+			{name: "environment selects passthrough", mode: AuthModeLDAP, envMode: AuthModePassthrough, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  KEY-2: %q\n", publicPEM)},
+			{name: "OpenShift ignores inactive LDAP keys", mode: AuthModeOpenShift, settings: fmt.Sprintf("auth.ldap.verificationKeys:\n  KEY-2: %q\n", publicPEM)},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if tc.envMode != "" {
+					t.Setenv("CAPP_AUTH_MODE", tc.envMode)
+				}
+				path := writeTempConfig(t, fmt.Sprintf("auth.mode: %s\n%s", tc.mode, tc.settings))
+				cfg, err := Load(path)
+				if tc.wantError {
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "auth.ldap.verificationKeys")
+					assert.NotContains(t, err.Error(), publicPEM)
+					return
+				}
+				require.NoError(t, err)
+				wantMode := tc.mode
+				if tc.envMode != "" {
+					wantMode = tc.envMode
+				}
+				require.Equal(t, wantMode, cfg.Auth.Mode)
+				if cfg.Auth.Mode == AuthModeLDAP {
+					assert.Equal(t, map[string]string{"key-2": publicPEM}, cfg.Auth.LDAP.VerificationKeys)
+				}
+			})
+		}
+	})
+}
+
+func TestValidateLDAP(t *testing.T) {
+	privatePEM, publicPEM := ldapSigningKeys(t)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	certificate := &x509.Certificate{SerialNumber: big.NewInt(1), IsCA: true, BasicConstraintsValid: true}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, certificate, certificate, publicKey, privateKey)
+	require.NoError(t, err)
+	caCert := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}))
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	otherPrivateDER, err := x509.MarshalPKCS8PrivateKey(otherKey)
+	require.NoError(t, err)
+	otherPrivatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: otherPrivateDER}))
+	otherPublicDER, err := x509.MarshalPKIXPublicKey(&otherKey.PublicKey)
+	require.NoError(t, err)
+	otherPublicPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: otherPublicDER}))
+	cases := []struct {
+		name      string
+		change    func(*LDAPConfig)
+		wantError string
+	}{
+		{name: "accepts matching active public key", change: func(*LDAPConfig) {}},
+		{name: "accepts derived active public key", change: func(c *LDAPConfig) { c.VerificationKeys = nil }},
+		{name: "accepts rotation key", change: func(c *LDAPConfig) { c.VerificationKeys["key-2"] = publicPEM }},
+		{name: "accepts default port", change: func(c *LDAPConfig) { c.URL = "ldaps://ad.example.com" }},
+		{name: "accepts custom port", change: func(c *LDAPConfig) { c.URL = "ldaps://ad.example.com:1636" }},
+		{name: "accepts IPv6 endpoint", change: func(c *LDAPConfig) { c.URL = "ldaps://[::1]:636" }},
+		{name: "accepts custom CA", change: func(c *LDAPConfig) { c.CACert = caCert }},
+		{name: "rejects empty URL", change: func(c *LDAPConfig) { c.URL = "" }, wantError: "auth.ldap.url"},
+		{name: "rejects StartTLS URL", change: func(c *LDAPConfig) { c.URL = "ldap://ad.example.com:389" }, wantError: "auth.ldap.url must be an ldaps://"},
+		{name: "rejects HTTPS endpoint", change: func(c *LDAPConfig) { c.URL = "https://ad.example.com" }, wantError: "auth.ldap.url"},
+		{name: "rejects missing host", change: func(c *LDAPConfig) { c.URL = "ldaps:///" }, wantError: "auth.ldap.url"},
+		{name: "rejects URL credentials", change: func(c *LDAPConfig) { c.URL = "ldaps://user:secret@ad.example.com" }, wantError: "auth.ldap.url"},
+		{name: "rejects URL path", change: func(c *LDAPConfig) { c.URL += "/dc=example" }, wantError: "auth.ldap.url"},
+		{name: "rejects URL query", change: func(c *LDAPConfig) { c.URL += "?query" }, wantError: "auth.ldap.url"},
+		{name: "rejects empty query", change: func(c *LDAPConfig) { c.URL += "?" }, wantError: "auth.ldap.url"},
+		{name: "rejects URL fragment", change: func(c *LDAPConfig) { c.URL += "#fragment" }, wantError: "auth.ldap.url"},
+		{name: "rejects empty fragment", change: func(c *LDAPConfig) { c.URL += "#" }, wantError: "auth.ldap.url"},
+		{name: "rejects zero port", change: func(c *LDAPConfig) { c.URL = "ldaps://ad.example.com:0" }, wantError: "auth.ldap.url"},
+		{name: "rejects oversized port", change: func(c *LDAPConfig) { c.URL = "ldaps://ad.example.com:65536" }, wantError: "auth.ldap.url"},
+		{name: "rejects malformed port", change: func(c *LDAPConfig) { c.URL = "ldaps://ad.example.com:abc" }, wantError: "auth.ldap.url"},
+		{name: "rejects invalid CA encoding", change: func(c *LDAPConfig) { c.CACert = "not base64" }, wantError: "auth.ldap.caCert"},
+		{name: "rejects invalid CA PEM", change: func(c *LDAPConfig) { c.CACert = base64.StdEncoding.EncodeToString([]byte("not PEM")) }, wantError: "auth.ldap.caCert"},
+		{name: "rejects missing bind DN", change: func(c *LDAPConfig) { c.BindDN = "" }, wantError: "auth.ldap.bindDN"},
+		{name: "rejects malformed bind DN", change: func(c *LDAPConfig) { c.BindDN = "invalid" }, wantError: "auth.ldap.bindDN"},
+		{name: "rejects missing search password", change: func(c *LDAPConfig) { c.BindPassword = "" }, wantError: "auth.ldap.bindPassword"},
+		{name: "rejects missing user base", change: func(c *LDAPConfig) { c.UserBaseDN = "" }, wantError: "auth.ldap.userBaseDN"},
+		{name: "rejects malformed user base", change: func(c *LDAPConfig) { c.UserBaseDN = "invalid" }, wantError: "auth.ldap.userBaseDN"},
+		{name: "rejects missing group base", change: func(c *LDAPConfig) { c.GroupBaseDN = "" }, wantError: "auth.ldap.groupBaseDN"},
+		{name: "rejects malformed group base", change: func(c *LDAPConfig) { c.GroupBaseDN = "invalid" }, wantError: "auth.ldap.groupBaseDN"},
+		{name: "rejects missing username placeholder", change: func(c *LDAPConfig) { c.UserFilter = "(cn=alice)" }, wantError: "auth.ldap.userFilter"},
+		{name: "rejects repeated username placeholder", change: func(c *LDAPConfig) { c.UserFilter = "(cn={username}{username})" }, wantError: "auth.ldap.userFilter"},
+		{name: "rejects malformed user filter", change: func(c *LDAPConfig) { c.UserFilter = "(cn={username}" }, wantError: "auth.ldap.userFilter"},
+		{name: "rejects missing group placeholder", change: func(c *LDAPConfig) { c.GroupFilter = "(cn=team)" }, wantError: "auth.ldap.groupFilter"},
+		{name: "rejects repeated group placeholder", change: func(c *LDAPConfig) { c.GroupFilter = "(member={userDN}{userDN})" }, wantError: "auth.ldap.groupFilter"},
+		{name: "rejects malformed group filter", change: func(c *LDAPConfig) { c.GroupFilter = "(member={userDN}" }, wantError: "auth.ldap.groupFilter"},
+		{name: "rejects empty username attribute", change: func(c *LDAPConfig) { c.UsernameAttribute = "" }, wantError: "auth.ldap.usernameAttribute"},
+		{name: "rejects malformed username attribute", change: func(c *LDAPConfig) { c.UsernameAttribute = "cn)(uid=*" }, wantError: "auth.ldap.usernameAttribute"},
+		{name: "rejects malformed group attribute", change: func(c *LDAPConfig) { c.GroupNameAttribute = "cn;" }, wantError: "auth.ldap.groupNameAttribute"},
+		{name: "accepts numeric attribute OID", change: func(c *LDAPConfig) { c.UsernameAttribute = "0.9.2342.19200300.100.1.1" }},
+		{name: "accepts attribute option", change: func(c *LDAPConfig) { c.GroupNameAttribute = "cn;lang-en" }},
+		{name: "rejects zero login timeout", change: func(c *LDAPConfig) { c.TimeoutSeconds = 0 }, wantError: "auth.ldap.timeoutSeconds"},
+		{name: "rejects negative token TTL", change: func(c *LDAPConfig) { c.TokenTTLSeconds = -1 }, wantError: "auth.ldap.tokenTTLSeconds"},
+		{name: "rejects blank issuer", change: func(c *LDAPConfig) { c.Issuer = " " }, wantError: "auth.ldap.issuer"},
+		{name: "rejects missing audience", change: func(c *LDAPConfig) { c.Audience = "" }, wantError: "auth.ldap.audience"},
+		{name: "rejects missing signing key ID", change: func(c *LDAPConfig) { c.SigningKeyID = "" }, wantError: "auth.ldap.signingKeyID"},
+		{name: "rejects uppercase signing key ID", change: func(c *LDAPConfig) { c.SigningKeyID = "KEY-1" }, wantError: "auth.ldap.signingKeyID"},
+		{name: "rejects missing private key", change: func(c *LDAPConfig) { c.SigningPrivateKey = "" }, wantError: "auth.ldap.signingPrivateKey"},
+		{name: "rejects public key used for signing", change: func(c *LDAPConfig) { c.SigningPrivateKey = publicPEM }, wantError: "auth.ldap.signingPrivateKey"},
+		{name: "rejects malformed private key", change: func(c *LDAPConfig) { c.SigningPrivateKey = "invalid" }, wantError: "auth.ldap.signingPrivateKey"},
+		{name: "rejects non-Ed25519 signing key", change: func(c *LDAPConfig) { c.SigningPrivateKey = otherPrivatePEM }, wantError: "auth.ldap.signingPrivateKey"},
+		{name: "rejects mismatched active key", change: func(c *LDAPConfig) { c.VerificationKeys[c.SigningKeyID] = publicPEM }, wantError: "conflicts with the active signing key ID"},
+		{name: "rejects uppercase verification key ID", change: func(c *LDAPConfig) { c.VerificationKeys["KEY-2"] = publicPEM }, wantError: "verificationKeys IDs"},
+		{name: "rejects malformed verification key", change: func(c *LDAPConfig) { c.VerificationKeys["key-2"] = "invalid" }, wantError: "verificationKeys must contain"},
+		{name: "rejects private verification key", change: func(c *LDAPConfig) { c.VerificationKeys["key-2"] = privatePEM }, wantError: "verificationKeys must contain"},
+		{name: "rejects non-Ed25519 verification key", change: func(c *LDAPConfig) { c.VerificationKeys["key-2"] = otherPublicPEM }, wantError: "verificationKeys must contain"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Clusters[0].Credential.Inline.Token = "sa-token"
+			cfg.Auth.Mode = AuthModeLDAP
+			cfg.Auth.LDAP = validLDAPConfig(t)
+			tc.change(&cfg.Auth.LDAP)
+			err := Validate(cfg)
+			if tc.wantError == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantError)
+		})
+	}
+}
+
+func TestValidateLDAPModeIsolation(t *testing.T) {
+	for _, mode := range []string{AuthModePassthrough, AuthModeOpenShift} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Clusters[0].Credential.Inline.Token = "sa-token"
+			cfg.Auth.Mode = mode
+			cfg.Auth.OpenShift = validOpenShiftConfig()
+			cfg.Auth.LDAP = LDAPConfig{URL: "invalid", SigningPrivateKey: "invalid"}
+			require.NoError(t, Validate(cfg))
+		})
+	}
+}
+
+func TestValidateLDAPClusterCredentials(t *testing.T) {
+	for _, credential := range []CredentialConfig{
+		{KubeconfigPath: "/etc/kubeconfig"},
+		validInlineCredential(),
+	} {
+		cfg := passthroughConfig()
+		cfg.Auth.Mode = AuthModeLDAP
+		cfg.Auth.LDAP = validLDAPConfig(t)
+		cfg.Clusters[0].Credential = credential
+		err := Validate(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "credential.inline.token is required when auth.mode is 'ldap'")
+	}
+}
+
+func TestValidateLDAPRedactsSecrets(t *testing.T) {
+	cfg := passthroughConfig()
+	cfg.Clusters[0].Credential.Inline.Token = "sa-token"
+	cfg.Auth.Mode = AuthModeLDAP
+	cfg.Auth.LDAP = validLDAPConfig(t)
+	cfg.Auth.LDAP.URL = "ldaps://search:secret-url-password@ad.example.com"
+	cfg.Auth.LDAP.SigningPrivateKey = "secret-invalid-private-key"
+	cfg.Auth.LDAP.VerificationKeys["key-2"] = "secret-invalid-verification-key"
+	err := Validate(cfg)
+	require.Error(t, err)
+	for _, secret := range []string{
+		"secret-url-password", cfg.Auth.LDAP.SigningPrivateKey, cfg.Auth.LDAP.BindPassword,
+		"secret-invalid-verification-key",
+	} {
+		assert.NotContains(t, err.Error(), secret)
+	}
+}
+
+func validLDAPConfig(t *testing.T) LDAPConfig {
+	t.Helper()
+	privatePEM, publicPEM := ldapSigningKeys(t)
+	return LDAPConfig{
+		URL: "ldaps://ad.example.com:636", BindDN: "CN=search,DC=example,DC=com", BindPassword: "search-password",
+		UserBaseDN: "OU=users,DC=example,DC=com", UserFilter: "(sAMAccountName={username})", UsernameAttribute: "sAMAccountName",
+		GroupBaseDN: "OU=groups,DC=example,DC=com", GroupFilter: "(&(objectClass=group)(member={userDN}))", GroupNameAttribute: "sAMAccountName",
+		TimeoutSeconds: 10, TokenTTLSeconds: 900, Issuer: "capp-backend", Audience: "capp-api",
+		SigningKeyID: "key-1", SigningPrivateKey: privatePEM, VerificationKeys: map[string]string{"key-1": publicPEM},
+	}
+}
+
+func ldapSigningKeys(t *testing.T) (privatePEM, publicPEM string) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	require.NoError(t, err)
+	publicDER, err := x509.MarshalPKIXPublicKey(publicKey)
+	require.NoError(t, err)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}))
 }

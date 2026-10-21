@@ -33,6 +33,25 @@ data:
           {{- toYaml .Values.config.auth.openshift.scopes | nindent 10 }}
         tokenCacheTTLSeconds: {{ .Values.config.auth.openshift.tokenCacheTTLSeconds }}
       {{- end }}
+      {{- if eq .Values.config.auth.mode "ldap" }}
+      ldap:
+        url: {{ .Values.config.auth.ldap.url | quote }}
+        caCert: {{ .Values.config.auth.ldap.caCert | quote }}
+        bindDN: {{ .Values.config.auth.ldap.bindDN | quote }}
+        userBaseDN: {{ .Values.config.auth.ldap.userBaseDN | quote }}
+        userFilter: {{ .Values.config.auth.ldap.userFilter | quote }}
+        usernameAttribute: {{ .Values.config.auth.ldap.usernameAttribute | quote }}
+        groupBaseDN: {{ .Values.config.auth.ldap.groupBaseDN | quote }}
+        groupFilter: {{ .Values.config.auth.ldap.groupFilter | quote }}
+        groupNameAttribute: {{ .Values.config.auth.ldap.groupNameAttribute | quote }}
+        timeoutSeconds: {{ .Values.config.auth.ldap.timeoutSeconds }}
+        tokenTTLSeconds: {{ .Values.config.auth.ldap.tokenTTLSeconds }}
+        issuer: {{ .Values.config.auth.ldap.issuer | quote }}
+        audience: {{ .Values.config.auth.ldap.audience | quote }}
+        signingKeyID: {{ .Values.config.auth.ldap.signingKeyID | quote }}
+        verificationKeys:
+          {{- toYaml .Values.config.auth.ldap.verificationKeys | nindent 10 }}
+      {{- end }}
       rateLimit:
         enabled: {{ .Values.config.auth.rateLimit.enabled }}
         requestsPerSecond: {{ .Values.config.auth.rateLimit.requestsPerSecond }}

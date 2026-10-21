@@ -23,7 +23,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if eq .Values.config.auth.mode "openshift" }}
+      {{- if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- end }}
       securityContext:
@@ -52,6 +52,18 @@ spec:
                 secretKeyRef:
                   name: {{ include "capp-backend.secretName" . }}
                   key: openshiftClientSecret
+            {{- end }}
+            {{- if eq .Values.config.auth.mode "ldap" }}
+            - name: CAPP_AUTH_LDAP_BINDPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" . }}
+                  key: ldapBindPassword
+            - name: CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" . }}
+                  key: ldapSigningPrivateKey
             {{- end }}
             {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "token") }}
             - name: CAPP_GITOPS_TOKEN

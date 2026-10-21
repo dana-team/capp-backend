@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
@@ -27,11 +28,18 @@ func Auth(mgr auth.AuthManager) gin.HandlerFunc {
 
 		cred, err := mgr.Authenticate(c.Request.Context(), clusterName, c.Request)
 		if err != nil {
-			if errors.Is(err, auth.ErrUnauthenticated) || errors.Is(err, auth.ErrTokenExpired) {
-				apierrors.Respond(c, apierrors.NewUnauthorized(err.Error()))
-				return
+			switch {
+			case errors.Is(err, auth.ErrUnauthenticated):
+				apierrors.Respond(c, apierrors.NewUnauthorized(auth.ErrUnauthenticated.Error()))
+			case errors.Is(err, auth.ErrTokenExpired):
+				apierrors.Respond(c, apierrors.NewUnauthorized(auth.ErrTokenExpired.Error()))
+			case errors.Is(err, auth.ErrDirectoryUnavailable):
+				apierrors.Respond(c, &apierrors.APIError{
+					Code: apierrors.CodeInternal, Message: auth.ErrDirectoryUnavailable.Error(), Status: http.StatusServiceUnavailable,
+				})
+			default:
+				apierrors.Respond(c, apierrors.NewInternal(err))
 			}
-			apierrors.Respond(c, apierrors.NewInternal(err))
 			return
 		}
 

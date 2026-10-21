@@ -17,7 +17,7 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list"]
-  {{- if eq .Values.config.auth.mode "openshift" }}
+  {{- if .Values.rbac.openShiftProjects }}
   - apiGroups: ["", "project.openshift.io"]
     resources: ["projects"]
     verbs: ["get", "list", "watch"]
