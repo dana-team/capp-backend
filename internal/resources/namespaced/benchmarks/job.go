@@ -35,6 +35,8 @@ const (
 	jobTTLSeconds     = int32(600)
 	jobNamePrefix     = "bench-"
 	maxJobNameLen     = 63
+	// labelValueTrue is the value set on LabelBenchmark.
+	labelValueTrue = "true"
 )
 
 // JobOptions are the inputs for one benchmark Job.
@@ -91,7 +93,7 @@ func BuildJob(opts JobOptions) (*batchv1.Job, error) {
 			Name:      jobName(opts.CappName),
 			Namespace: opts.Namespace,
 			Labels: map[string]string{
-				LabelBenchmark: "true",
+				LabelBenchmark: labelValueTrue,
 			},
 			Annotations: annotations,
 			OwnerReferences: []metav1.OwnerReference{{
@@ -109,7 +111,7 @@ func BuildJob(opts JobOptions) (*batchv1.Job, error) {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						LabelBenchmark: "true",
+						LabelBenchmark: labelValueTrue,
 					},
 				},
 				Spec: corev1.PodSpec{

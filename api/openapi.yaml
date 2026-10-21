@@ -40,6 +40,8 @@ tags:
     description: Namespace listing within a cluster
   - name: capps
     description: Capp resource management
+  - name: benchmarks
+    description: On-demand per-Capp benchmark Jobs
   - name: configmaps
     description: ConfigMap resource management
   - name: secrets
@@ -1094,6 +1096,47 @@ components:
         total:
           type: integer
           example: 3
+
+    BenchmarkTriggerRequest:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: Which baked-in check the runner image executes.
+          enum: [latency, throughput, scale]
+          example: latency
+
+    BenchmarkTriggerResponse:
+      type: object
+      required: [cappName, jobName, type]
+      properties:
+        cappName:
+          type: string
+          example: my-capp
+        jobName:
+          type: string
+          example: bench-my-capp
+        type:
+          type: string
+          enum: [latency, throughput, scale]
+          example: latency
+
+    BenchmarkStatusResponse:
+      type: object
+      required: [jobName, status]
+      properties:
+        jobName:
+          type: string
+          description: Name of the benchmark Job. Empty when none exists.
+          example: bench-my-capp
+        status:
+          type: string
+          description: |
+            running, completed, or failed. Empty when no benchmark Job exists.
+            A finished Job remains until its TTL elapses or a new benchmark replaces it.
+          enum: ["", running, completed, failed]
+          example: running
 
     SyncResponse:
       type: object
@@ -2299,6 +2342,81 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/benchmark:
+    post:
+      tags: [benchmarks]
+      summary: Run a benchmark for a Capp
+      description: |
+        Creates one benchmark Job for the Capp. The Job runs the selected
+        check from the configured runner image and writes samples to every
+        configured VictoriaMetrics URL.
+
+        Returns 409 when a benchmark for this Capp is still running. A finished
+        Job is deleted and replaced. Registered only when
+        `resources.benchmarks.enabled` is true.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BenchmarkTriggerRequest'
+      responses:
+        "201":
+          description: Benchmark Job created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkTriggerResponse'
+        "400":
+          description: Missing or unknown benchmark type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: A benchmark for this Capp is still running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+    get:
+      tags: [benchmarks]
+      summary: Get the benchmark status for a Capp
+      description: |
+        Returns the benchmark Job name and status (`running`, `completed`, or
+        `failed`). Both fields are empty when no Job exists. Registered only
+        when `resources.benchmarks.enabled` is true.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Benchmark status. Both fields are empty when no Job exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkStatusResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "500":
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/sync:
     post:
