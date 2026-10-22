@@ -48,13 +48,36 @@ must grant the canonical LDAP usernames/groups the required permissions through
 RoleBindings or ClusterRoleBindings. Authentication alone grants no application
 permissions; user bindings and implicit Kubernetes groups still affect access.
 The Helm chart now creates impersonation RBAC for both OpenShift and LDAP, with
-TokenReview permissions restricted to OpenShift. Broader authorization changes
-remain a separate design question.
+TokenReview permissions restricted to OpenShift. This describes the current
+implementation, not the target authorization architecture.
+
+**Decided direction:** in the new authorization mode, capp-backend owns application
+authorization and is the sole Kubernetes client for platform operations. Backend service identities hold
+Kubernetes permissions; end users receive no Kubernetes credentials or grants.
+Application policy replaces end-user impersonation and SSAR as the authorization
+mechanism. Preserve editable namespace membership without creating user
+RoleBindings. Store cluster-scoped policy and namespace memberships in protected
+ConfigMaps in a backend-only namespace on each managed cluster; all backend
+instances use that target cluster's policy, independently of their hosting cluster.
+This avoids an additional database or policy service. Policy availability depends
+on the target cluster.
+
+**Compatibility and migration:** release the new authorization mode alongside
+existing authentication and Kubernetes authorization, preserving existing behavior
+by default. Production can continue using OpenShift authentication and current
+authorization while separate stage/dev deployments explicitly enable and validate
+the new mode. Authentication and authorization selection are separate concerns;
+the backend-only access requirement applies to the new mode, not retroactively to
+legacy deployments. Migration is explicit and must preserve effective application
+access. Keep serving replicas on a consistent authorization mode and policy
+configuration; do not fall back to legacy authorization after a policy denial or
+failure. Retire user Kubernetes grants only as part of the migration, with rollback
+and the resulting access boundary accounted for in the authorization HLD.
 
 | ID | Gap | Severity | Evidence |
 |----|-----|----------|----------|
 | B1 | **SSAR depends on per-cluster K8s RBAC** — `canCreateCapps()` and `canAccessNamespaces()` submit SSAR through the impersonated client. Managed clusters must grant the canonical usernames/groups the required permissions; operations without matching grants are denied despite valid authentication. There is no application-level RBAC alternative. | Significant | `namespaces/handler.go:126-140`, `namespaces/handler.go:518-530` |
-| B2 | **Namespace operations use admin client with SSAR as gate** — the admin client performs the actual create/update/delete, while SSAR on the user client only checks permission. If SSAR fails due to missing RoleBindings for AD identities, the admin client's capabilities are unreachable. Moving to application-level RBAC could decouple authorization from per-cluster K8s RoleBinding setup. | Significant | `middleware/cluster.go:85-88`, `namespaces/handler.go:83,260,297,391,462` |
+| B2 | **Namespace operations use admin client with SSAR as gate** — the admin client performs the actual create/update/delete, while SSAR on the user client only checks permission. If SSAR fails due to missing RoleBindings for AD identities, the admin client's capabilities are unreachable. The selected application authorization model must replace these gates and membership RoleBindings. | Significant | `middleware/cluster.go:85-88`, `namespaces/handler.go:83,260,297,391,462` |
 
 **Affected files:**
 `internal/resources/cluster/namespaces/handler.go`, `internal/middleware/cluster.go`
@@ -73,8 +96,9 @@ The vanilla Kubernetes listing path performs one SSAR per CAPP-managed namespace
 not on every backend request.
 Any replacement requires agreement on authorization semantics and validation of
 listing correctness, latency, and API-call volume at expected namespace counts
-and concurrency, with agreed latency and API-call budgets; a new RBAC model is
-not assumed.
+and concurrency, with agreed latency and API-call budgets. The selected backend
+authorization model must also govern namespace visibility; current Projects/SSAR
+filtering relies on the user Kubernetes grants that the target model removes.
 
 | ID | Gap | Severity | Evidence |
 |----|-----|----------|----------|
@@ -148,16 +172,12 @@ against that API; phase 1 is independently usable.
 
 ## Open Questions
 
-1. **Authorization model** — should authorization stay as K8s RBAC (requiring
-   RoleBindings for AD identities on every cluster), or move to application-level
-   RBAC in capp-backend? Projects replacement also depends on the evaluation
-   described in [Group 3](#group-3-openshift-platform-coupling).
-2. **Future long-lived tokens and revocation** — phases 1–2 use dedicated AD
+1. **Future long-lived tokens and revocation** — phases 1–2 use dedicated AD
    automation accounts to obtain short-lived access tokens. Long-lived tokens
    remain future work: define expiration, individual revocation, rotation, and
    permission limits enforced consistently across instances, accounting for
    stored-secret exposure and permission freshness.
-3. **ADFS integration** — which protocol and token-validation or exchange flow
+2. **ADFS integration** — which protocol and token-validation or exchange flow
    should support ADFS alongside backend-issued tokens, and how should both map
    to authorization identities? Define issuer, audience, signature, and token-purpose
    validation for each source, including whether ADFS access tokens are accepted
