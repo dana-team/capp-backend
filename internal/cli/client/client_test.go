@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -110,4 +111,39 @@ func TestWithToken(t *testing.T) {
 	var result any
 	require.NoError(t, c2.Get(context.Background(), "/", &result))
 	assert.Equal(t, "Bearer newtoken", gotAuth)
+}
+
+func TestWithoutRedirects(t *testing.T) {
+	var redirected bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
+			return
+		}
+		redirected = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(srv.URL, "", false)
+	credentials := map[string]string{"password": "secret"}
+
+	require.ErrorContains(t, c.WithoutRedirects().Post(t.Context(), "/login", credentials, nil), "redirects are not allowed")
+	assert.False(t, redirected)
+	require.NoError(t, c.Post(t.Context(), "/login", credentials, nil))
+	assert.True(t, redirected, "the original client must retain its redirect policy")
+}
+
+func TestWithoutRedirectsUnexpectedStatus(t *testing.T) {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusMultipleChoices, http.StatusNotModified, http.StatusTemporaryRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			}))
+			t.Cleanup(srv.Close)
+			c := client.New(srv.URL, "", false).WithoutRedirects()
+
+			err := c.Post(t.Context(), "/login", nil, nil)
+			require.ErrorContains(t, err, fmt.Sprintf("unexpected HTTP status %d", status))
+		})
+	}
 }
