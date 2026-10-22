@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,8 +53,9 @@ func passthroughConfig(clusters ...ClusterConfig) *Config {
 		clusters = []ClusterConfig{validClusterConfig("prod")}
 	}
 	return &Config{
-		Auth:     AuthConfig{Mode: "passthrough"},
-		Clusters: clusters,
+		Auth:          AuthConfig{Mode: "passthrough"},
+		Authorization: AuthorizationConfig{Mode: AuthorizationModeKubernetes},
+		Clusters:      clusters,
 	}
 }
 
@@ -85,6 +88,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 30, cfg.Server.WriteTimeoutSeconds)
 	assert.Equal(t, 60, cfg.Server.IdleTimeoutSeconds)
 	assert.Equal(t, "passthrough", cfg.Auth.Mode)
+	assert.Equal(t, AuthorizationModeKubernetes, cfg.Authorization.Mode)
 	assert.True(t, cfg.Auth.RateLimit.Enabled)
 	assert.InDelta(t, 20.0, cfg.Auth.RateLimit.RequestsPerSecond, 0.0001)
 	assert.Equal(t, 40, cfg.Auth.RateLimit.Burst)
@@ -554,6 +558,67 @@ resources:
 }
 
 func TestLoad(t *testing.T) {
+	t.Run("authorization mode configuration", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, yaml, env, want string
+		}{
+			{name: "file", yaml: "authorization:\n  mode: application\n", want: AuthorizationModeApplication},
+			{name: "environment only", env: AuthorizationModeApplication, want: AuthorizationModeApplication},
+			{name: "environment overrides file", yaml: "authorization:\n  mode: application\n", env: AuthorizationModeKubernetes, want: AuthorizationModeKubernetes},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("CAPP_AUTHORIZATION_MODE", tc.env)
+				path := ""
+				if tc.yaml != "" {
+					path = writeTempConfig(t, tc.yaml)
+				}
+				cfg, err := Load(path)
+				if err != nil {
+					t.Fatalf("Load(%q): %v", path, err)
+				}
+				if cfg.Authorization.Mode != tc.want {
+					t.Errorf("Load(%q).Authorization.Mode = %q, want %q", path, cfg.Authorization.Mode, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("per-cluster policy protection", func(t *testing.T) {
+		for _, mode := range []string{AuthorizationModeApplication, AuthorizationModeKubernetes} {
+			t.Run(mode, func(t *testing.T) {
+				t.Setenv("CAPP_AUTHORIZATION_MODE", mode)
+				cfg := loadTempConfig(t, `
+clusters:
+  - name: first
+    authorization:
+      policyNamespace: policy-one
+  - name: second
+    allowedNamespaces: [credentials, policy-two]
+    authorization:
+      policyNamespace: policy-two
+      protectedNamespaces: [credentials]
+  - name: third
+    authorization:
+      policyNamespace: policy-three
+      protectedNamespaces: [policy-three, backend]
+`)
+				want := [][]string{nil, {"credentials"}, {"policy-three", "backend"}}
+				if mode == AuthorizationModeApplication {
+					want[0] = []string{"policy-one"}
+					want[1] = []string{"credentials", "policy-two"}
+				}
+				if len(cfg.Clusters) != len(want) {
+					t.Fatalf("Load clusters = %d, want %d", len(cfg.Clusters), len(want))
+				}
+				for i, cluster := range cfg.Clusters {
+					if !slices.Equal(cluster.Authorization.ProtectedNamespaces, want[i]) {
+						t.Errorf("Load(%s).Clusters[%d].Authorization.ProtectedNamespaces = %v, want %v", mode, i, cluster.Authorization.ProtectedNamespaces, want[i])
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("LDAP defaults", func(t *testing.T) {
 		cfg, err := Load("")
 		require.NoError(t, err)
@@ -676,6 +741,70 @@ auth:
 				require.Equal(t, wantMode, cfg.Auth.Mode)
 				if cfg.Auth.Mode == AuthModeLDAP {
 					assert.Equal(t, map[string]string{"key-2": publicPEM}, cfg.Auth.LDAP.VerificationKeys)
+				}
+			})
+		}
+	})
+}
+
+func TestValidateAuthorization(t *testing.T) {
+	cases := []struct {
+		name      string
+		change    func(*Config)
+		wantError string
+	}{
+		{name: "LDAP application", change: func(_ *Config) {}},
+		{name: "unknown mode", change: func(c *Config) { c.Authorization.Mode = "unknown" }, wantError: "authorization.mode"},
+		{name: "empty mode", change: func(c *Config) { c.Authorization.Mode = "" }, wantError: "authorization.mode"},
+		{name: "application with passthrough", change: func(c *Config) { c.Auth.Mode = AuthModePassthrough }, wantError: "requires auth.mode 'ldap'"},
+		{name: "application with OpenShift", change: func(c *Config) { c.Auth.Mode = AuthModeOpenShift }, wantError: "requires auth.mode 'ldap'"},
+		{name: "missing policy namespace", change: func(c *Config) { c.Clusters[0].Authorization.PolicyNamespace = "" }, wantError: "clusters[0].authorization.policyNamespace"},
+		{name: "invalid policy namespace", change: func(c *Config) { c.Clusters[0].Authorization.PolicyNamespace = "policy.example" }, wantError: "clusters[0].authorization.policyNamespace"},
+		{name: "empty protected namespace", change: func(c *Config) { c.Clusters[0].Authorization.ProtectedNamespaces = []string{""} }, wantError: "clusters[0].authorization.protectedNamespaces[0]"},
+		{name: "invalid protected namespace", change: func(c *Config) { c.Clusters[0].Authorization.ProtectedNamespaces = []string{"credentials", "Invalid"} }, wantError: "clusters[0].authorization.protectedNamespaces[1]"},
+		{name: "second cluster missing policy namespace", change: func(c *Config) {
+			c.Clusters = append(c.Clusters, validClusterConfig("second"))
+			c.Clusters[1].Credential.Inline.Token = "sa-token"
+		}, wantError: "clusters[1].authorization.policyNamespace"},
+		{name: "missing service-account token", change: func(c *Config) { c.Clusters[0].Credential.Inline.Token = "" }, wantError: "credential.inline.token is required"},
+		{name: "protected namespace also allowed", change: func(c *Config) { c.Clusters[0].AllowedNamespaces = []string{"policy", "credentials"} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Auth.Mode = AuthModeLDAP
+			cfg.Auth.LDAP = validLDAPConfig(t)
+			cfg.Auth.OpenShift = validOpenShiftConfig()
+			cfg.Authorization.Mode = AuthorizationModeApplication
+			cfg.Clusters[0].Credential.Inline.Token = "sa-token"
+			cfg.Clusters[0].Authorization = ClusterAuthorizationConfig{
+				PolicyNamespace: "policy", ProtectedNamespaces: []string{"credentials"},
+			}
+			tc.change(cfg)
+			err := Validate(cfg)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Errorf("Validate(%s) = %v, want nil", tc.name, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Errorf("Validate(%s) = %v, want error containing %q", tc.name, err, tc.wantError)
+			}
+		})
+	}
+
+	t.Run("legacy defaults preserve authentication modes", func(t *testing.T) {
+		for _, mode := range []string{AuthModePassthrough, AuthModeOpenShift, AuthModeLDAP} {
+			t.Run(mode, func(t *testing.T) {
+				cfg := loadTempConfig(t, fmt.Sprintf("auth:\n  mode: %s\nclusters:\n  - name: legacy\n    credential:\n      inline:\n        apiServer: https://api.example.com\n        token: sa-token\n", mode))
+				cfg.Auth.LDAP = validLDAPConfig(t)
+				cfg.Auth.OpenShift = validOpenShiftConfig()
+				cfg.Clusters[0].Authorization = ClusterAuthorizationConfig{
+					PolicyNamespace: "Invalid", ProtectedNamespaces: []string{""},
+				}
+				if err := Validate(cfg); err != nil {
+					t.Errorf("Validate(%s with legacy defaults) = %v, want nil", mode, err)
 				}
 			})
 		}

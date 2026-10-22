@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"k8s.io/apimachinery/pkg/api/validation"
 )
 
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
@@ -37,6 +38,7 @@ func Validate(cfg *Config) error {
 
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
+	errs = append(errs, validateAuthorization(cfg)...)
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 	errs = append(errs, validateBenchmarks(&cfg.Resources.Benchmarks)...)
 
@@ -44,14 +46,13 @@ func Validate(cfg *Config) error {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
 	}
 
-	// In impersonation modes every cluster must have an inline token (SA token)
-	// because the backend uses impersonation instead of forwarding user tokens.
+	// OpenShift and LDAP use per-cluster service-account credentials.
 	if cfg.Auth.Mode == AuthModeOpenShift || cfg.Auth.Mode == AuthModeLDAP {
 		for i, c := range cfg.Clusters {
 			if c.Credential.Inline == nil || c.Credential.Inline.Token == "" {
 				errs = append(errs, fmt.Errorf(
 					"config: clusters[%d] (%q): credential.inline.token is required when auth.mode is '%s' "+
-						"(used as the service-account token for K8s impersonation)",
+						"(used as the backend service-account token)",
 					i, c.Name, cfg.Auth.Mode,
 				))
 			}
@@ -166,6 +167,37 @@ func validateAuth(auth *AuthConfig) []error {
 		errs = append(errs, validateLDAP(&auth.LDAP)...)
 	}
 
+	return errs
+}
+
+// validateAuthorization checks the selected mode and its per-cluster policy settings.
+func validateAuthorization(cfg *Config) []error {
+	switch cfg.Authorization.Mode {
+	case AuthorizationModeKubernetes:
+		return nil
+	case AuthorizationModeApplication:
+	default:
+		return []error{fmt.Errorf(
+			"config: authorization.mode %q is not valid; must be one of: kubernetes, application",
+			cfg.Authorization.Mode,
+		)}
+	}
+
+	var errs []error
+	if cfg.Auth.Mode != AuthModeLDAP {
+		errs = append(errs, errors.New("config: authorization.mode 'application' requires auth.mode 'ldap'"))
+	}
+	for i, cluster := range cfg.Clusters {
+		prefix := fmt.Sprintf("config: clusters[%d].authorization", i)
+		for _, msg := range validation.ValidateNamespaceName(cluster.Authorization.PolicyNamespace, false) {
+			errs = append(errs, fmt.Errorf("%s.policyNamespace: %s", prefix, msg))
+		}
+		for j, name := range cluster.Authorization.ProtectedNamespaces {
+			for _, msg := range validation.ValidateNamespaceName(name, false) {
+				errs = append(errs, fmt.Errorf("%s.protectedNamespaces[%d]: %s", prefix, j, msg))
+			}
+		}
+	}
 	return errs
 }
 

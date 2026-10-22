@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -163,6 +164,28 @@ type AuthConfig struct {
 	RateLimit RateLimitConfig `mapstructure:"rateLimit"`
 }
 
+// Accepted values for AuthorizationConfig.Mode.
+const (
+	AuthorizationModeKubernetes  = "kubernetes"
+	AuthorizationModeApplication = "application"
+)
+
+// AuthorizationConfig selects how resource requests are authorized.
+type AuthorizationConfig struct {
+	// Mode is kubernetes (default) or application. Application mode requires LDAP authentication.
+	Mode string `mapstructure:"mode"`
+}
+
+// ClusterAuthorizationConfig holds policy storage and namespace exclusions for application mode.
+type ClusterAuthorizationConfig struct {
+	// PolicyNamespace stores operator-provisioned policy ConfigMaps and is required in application mode.
+	PolicyNamespace string `mapstructure:"policyNamespace"`
+	// ProtectedNamespaces excludes namespaces from resource operations regardless of grants
+	// or AllowedNamespaces. Load includes PolicyNamespace automatically in application mode.
+	// Operators must also list backend and credential-bearing namespaces.
+	ProtectedNamespaces []string `mapstructure:"protectedNamespaces"`
+}
+
 // LoggingConfig controls structured log output.
 type LoggingConfig struct {
 	// Level sets the minimum log severity. One of: debug, info, warn, error.
@@ -251,6 +274,9 @@ type ClusterConfig struct {
 	// AllowedNamespaces restricts which namespaces are accessible via this
 	// cluster entry. An empty list permits all namespaces.
 	AllowedNamespaces []string `mapstructure:"allowedNamespaces"`
+
+	// Authorization applies only when authorization.mode is application.
+	Authorization ClusterAuthorizationConfig `mapstructure:"authorization"`
 
 	// GitOpsPath is the directory name used in the GitOps repository path:
 	// <pathPrefix>/<gitOpsPath>/<namespace>/<cappName>.yaml
@@ -359,15 +385,16 @@ type ResourceConfig struct {
 // Config is the root configuration object for the capp-backend server.
 // It is populated once at startup by Load and then treated as read-only.
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Auth      AuthConfig      `mapstructure:"auth"`
-	Logging   LoggingConfig   `mapstructure:"logging"`
-	Metrics   MetricsConfig   `mapstructure:"metrics"`
-	Tracing   TracingConfig   `mapstructure:"tracing"`
-	Clusters  []ClusterConfig `mapstructure:"clusters"`
-	Resources ResourcesConfig `mapstructure:"resources"`
-	GitOps    GitOpsConfig    `mapstructure:"gitops"`
-	Sizes     CappSizes       `mapstructure:"cappSizes"`
+	Server        ServerConfig        `mapstructure:"server"`
+	Auth          AuthConfig          `mapstructure:"auth"`
+	Authorization AuthorizationConfig `mapstructure:"authorization"`
+	Logging       LoggingConfig       `mapstructure:"logging"`
+	Metrics       MetricsConfig       `mapstructure:"metrics"`
+	Tracing       TracingConfig       `mapstructure:"tracing"`
+	Clusters      []ClusterConfig     `mapstructure:"clusters"`
+	Resources     ResourcesConfig     `mapstructure:"resources"`
+	GitOps        GitOpsConfig        `mapstructure:"gitops"`
+	Sizes         CappSizes           `mapstructure:"cappSizes"`
 }
 
 // Load reads configuration from the file at path (if non-empty) and from
@@ -400,6 +427,12 @@ func Load(path string) (*Config, error) {
 		}
 		if cfg.Clusters[i].GitOpsPath == "" {
 			cfg.Clusters[i].GitOpsPath = cfg.Clusters[i].Name
+		}
+
+		authorization := &cfg.Clusters[i].Authorization
+		if cfg.Authorization.Mode == AuthorizationModeApplication && authorization.PolicyNamespace != "" &&
+			!slices.Contains(authorization.ProtectedNamespaces, authorization.PolicyNamespace) {
+			authorization.ProtectedNamespaces = append(authorization.ProtectedNamespaces, authorization.PolicyNamespace)
 		}
 
 		// Viper's AutomaticEnv does not apply env var overrides to elements
@@ -495,6 +528,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.rateLimit.requestsPerSecond", 20.0)
 	v.SetDefault("auth.rateLimit.burst", 40)
 	v.SetDefault("auth.rateLimit.maxIPTracked", 10_000)
+
+	// Authorization
+	v.SetDefault("authorization.mode", AuthorizationModeKubernetes)
 
 	// Logging
 	v.SetDefault("logging.level", "info")
