@@ -11,7 +11,7 @@
 - **Interactive API docs** — Embedded [Scalar](https://scalar.com/) UI served at `/docs` alongside a raw OpenAPI 3.1 spec at `/openapi.yaml`. Both work in air-gapped environments (assets are compiled into the binary).
 - **Observability** — Structured JSON logging (zap), Prometheus metrics (`/metrics`), and optional OTLP tracing.
 - **Rate limiting** — Token-bucket rate limiter on all endpoints (configurable; on by default).
-- **cappctl CLI** — Command-line client for the API. Supports passthrough and OpenShift authentication, named contexts, token refresh, and `table`/`wide`/`json`/`yaml` output. See [docs/cappctl.md](docs/cappctl.md).
+- **cappctl CLI** — Command-line client for the API. Supports passthrough, OpenShift, and LDAP authentication, named contexts, OpenShift token refresh, LDAP expiry checks, and `table`/`wide`/`json`/`yaml` output. See [docs/cappctl.md](docs/cappctl.md).
 - **capp-mcp server** — Exposes the REST API as [MCP](https://modelcontextprotocol.io/) tools over Streamable HTTP, so LLM agents can inspect and manage clusters, namespaces, Capps, ConfigMaps, and (read-only) Secret metadata. Every tool call runs with the caller's own bearer token against capp-backend, so results are scoped by the same RBAC the API already enforces.
 
 ## Prerequisites
@@ -366,8 +366,21 @@ cappctl context use staging
 |---|---|
 | `passthrough` | `--token <raw-token>` |
 | `openshift` | `--username <u>` (password prompted) **or** browser flow (URL opened automatically on Linux/Windows) **or** `--token <raw-token>` |
+| `ldap` | `--username <u> --password-stdin` **or** `--token <access-jwt>` with a future numeric `exp`; verified HTTPS required |
 
 > Auth mode is auto-detected from the server if `--auth-mode` is omitted.
+
+LDAP automation can use a dedicated AD account and a secret-store mount without a prompt or browser:
+
+```bash
+cappctl login --server https://capp.example.com --context ldap-ci \
+  --auth-mode ldap --username capp-automation --password-stdin \
+  --cluster my-cluster --namespace my-ns < /run/secrets/capp-ldap-password
+```
+
+LDAP stdin must be valid UTF-8 and at most 16 KiB before removing one final LF/CRLF. LDAP login rejects password arguments, `--insecure`, and credential-request redirects. For private backend CAs, [install the CA in the CLI runtime's trust store](docs/cappctl.md#backend-ca-trust); `auth.ldap.caCert` configures the separate backend-to-directory connection.
+
+The 0600 context file stores the LDAP access token and expiry, with no password or refresh credentials. Token import parses expiry as untrusted metadata; the backend authenticates the token on use. At known expiry, resource commands and `mcp-headers` fail with `LDAP access token expired; run cappctl login again`, and the header helper emits no headers. Repeat login explicitly from the secret store; stop on rejected credentials and rotate stale secrets rather than retrying them. Flag/environment token overrides retain precedence over context tokens. See the [LDAP CLI guide](docs/cappctl.md#ldap) for conflicts, import rules, and automation details.
 
 > **OpenShift browser flow:** `cappctl` binds a local callback server on port **18085**. The ServiceAccount used as the OAuth client must have the annotation `serviceaccounts.openshift.io/oauth-redirecturi.cli: "http://localhost:18085/callback"` (set automatically by the Helm chart). Ensure port 18085 is free when running `cappctl login` in OpenShift mode.
 
