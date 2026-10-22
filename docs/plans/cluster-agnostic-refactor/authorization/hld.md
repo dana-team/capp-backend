@@ -32,7 +32,7 @@ For backend maintainers and deployment operators: add opt-in backend authorizati
 - **Membership changes:** authorize the caller's delegation rights, then persist the scoped policy change. Publish grants only after required namespace/quota setup succeeds.
 - **Cross-cluster operations:** authorize source and destination actions before side effects; deny if either check fails. Writes remain non-transactional across clusters.
 
-## Rollout / phasing
+## Rollout stages
 
 1. **Coexisting authorization modes** — ship legacy behavior by default; explicitly enable the new mode in stage/dev with protected policy storage and backend credentials. Keep replicas behind each endpoint on consistent mode/configuration.
 2. **Controlled migration** — map effective permissions, including existing membership-delegation rights and custom grants. Briefly freeze membership changes for final reconciliation before switching traffic; no automatic dual-write synchronization is assumed. Require acceptable listing latency and policy-read volume, with budgets defined in the LLD. Retire user Kubernetes grants to complete the backend-only boundary. Rollback must reconcile policy changes and may require restoring reviewed legacy grants, temporarily restoring legacy access.
