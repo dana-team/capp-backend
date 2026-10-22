@@ -13,10 +13,10 @@
 
 Phase numbers are local to the authentication domain. Both phases use the same LDAP and token contracts.
 
-| Phase | Delivery |
-| --- | --- |
-| 1 — LDAP backend and deployment | Authentication, tokens, API contracts, Helm configuration, impersonation permissions, and API/operator documentation |
-| 2 — LDAP CLI and automation | Secure unattended login, token import/storage, expiry handling, and CLI documentation |
+| Phase | Status | Delivery |
+| --- | --- | --- |
+| 1 — LDAP backend and deployment | Merged into `main` | Authentication, tokens, API contracts, Helm configuration, impersonation permissions, and API/operator documentation |
+| 2 — LDAP CLI and automation | Next delivery | Secure unattended login, token import/storage, expiry handling, and CLI documentation |
 
 Phase 1 is independently usable through the HTTPS API. LDAP support in `cappctl`, including token import, arrives in phase 2. Frontend implementation is outside this repository; phase 1 supplies the web integration API, not a completed web login UI. Phase 2 consumes phase 1's API without changing its authentication contract. Future ADFS integration remains separate roadmap work.
 
@@ -28,7 +28,7 @@ capp-backend can be deployed on any supported OCP cluster, with consistent reque
 
 - **Goals:** one login path for people and dedicated AD automation accounts, interchangeable backend instances, and existing Kubernetes impersonation/RBAC.
 - **Non-goals:** OpenShift replacement, AD REST/ADFS broker integration in the new mode, LDAP-mode refresh tokens, session storage, immediate per-account revocation, authorization redesign, platform cleanup, and GitOps concurrency. Existing OpenShift login/refresh remain unchanged.
-- **Open questions:** broader authorization, automation-credential alternatives, and ADFS integration remain in [research](../research.md#open-questions); they do not change this design's scope.
+- **Open questions:** broader authorization, future long-lived tokens/revocation, and ADFS integration remain in [research](../research.md#open-questions); they do not change this design's scope. Phases 1–2 use dedicated AD automation accounts with short-lived access tokens.
 
 ## Future work
 
@@ -42,11 +42,11 @@ Future work outside authentication phases 1–2:
 
 ## Architecture
 
-- **Mode selection:** add `ldap` alongside existing modes, selected at startup without automatic provider fallback. The following describes LDAP mode.
+- **Mode selection:** `ldap`, `openshift`, and `passthrough` are supported, selected at startup without automatic provider fallback. The following describes LDAP mode.
 - **LDAP adapter:** reuses `AuthManager.PasswordLogin`. A configured search account finds the target user's entry; a separate TLS-protected connection binds as that user using the submitted password. Only after success does the backend resolve groups and derive the canonical RBAC identity. Each login owns isolated connections and their cleanup; a successful search never proves the user's identity. Verification depends on a private operations interface owned by the auth package, while the LDAP library implements the protocol and a connector owns transport setup.
 - **Token issuer/verifier:** backend-signed tokens carry the canonical username/groups. Replicas share issuer/audience, signing/trust configuration, and token policy, allowing local verification without LDAP calls or sticky sessions. Private keys remain deployment secrets; rotation retains retiring public keys until their tokens expire.
-- **Clients/authorization:** phase 1 exposes HTTPS login for API and web consumers; phase 2 adds the CLI integration. Automation submits its own AD credentials non-interactively from a secret store; the CLI persists only token/expiry and context metadata. Verified tokens populate existing `ClusterCredential` impersonation fields; per-cluster credentials, impersonation permissions, and matching RoleBindings remain necessary. Empty external groups do not remove user-based or implicit Kubernetes authenticated-group permissions.
-- **Assumptions:** direct LDAP access and search-and-bind are confirmed. Operators supply CA trust, search bases/filters, canonical attributes, required group coverage, automation account credentials, and synchronized replica configuration/clocks.
+- **Clients/authorization:** phase 1 exposes HTTPS login for API and web consumers; phase 2 adds the CLI integration. Automation submits its own AD credentials non-interactively from a secret store; phase 2 requires the CLI to persist only token/expiry and context metadata. Verified tokens populate existing `ClusterCredential` impersonation fields; per-cluster credentials, impersonation permissions, and matching RoleBindings remain necessary. Empty external groups do not remove user-based or implicit Kubernetes authenticated-group permissions.
+- **Operator prerequisites:** direct LDAPS access, CA trust, search bases/filters, canonical attributes, required group coverage, automation account credentials, and synchronized replica configuration/clocks.
 
 ## Workflow / Sequence
 
@@ -67,8 +67,3 @@ Future work outside authentication phases 1–2:
 - **Account lockout:** stale automation secrets or repeated attempts across clients/replicas can lock AD accounts despite per-IP limits. Automation owners stop failing jobs and rotate stale secrets; directory/platform operators handle lockout recovery and review directory/gateway policy.
 - **Stale identity/revocation:** logout discards the client token; password/account/group changes may not affect issued tokens until expiry. No per-token revocation store exists; withdrawing a signing key invalidates its tokens after fleet configuration updates.
 - **Fleet inconsistency:** mismatched trust/configuration/clocks can reject valid tokens; report sanitized directory, token, and configuration failures.
-
-## Resolved Questions
-
-1. **StartTLS requirement** — StartTLS is not required; the required environments
-   support LDAPS. This integration uses LDAPS.

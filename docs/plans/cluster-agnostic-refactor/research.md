@@ -13,7 +13,7 @@ manage the same set of clusters with identical config.
 - **Keep `openshift` auth mode** — existing login, refresh, and token validation
   flows remain supported. Cluster-independent authentication must coexist with
   these flows; cluster independence does not require removing OpenShift auth.
-- **Keep `passthrough` auth mode** — lightweight (~60 LOC, zero deps), useful
+- **Keep `passthrough` auth mode** — useful
   for local dev and CI where the caller already has a K8s token. Not intended
   for production multi-instance deployment.
 
@@ -21,51 +21,54 @@ manage the same set of clusters with identical config.
 
 ## Gap Groups
 
+Authentication phase 1 is merged into `main`. This inventory describes the
+remaining work; original IDs are retained for open gaps. Resolved gaps A2, B3,
+C2, C3, and E2 are no longer included in the gap counts.
+
 ### Group 1: Authentication — OpenShift OAuth is cluster-bound
 
-The `openshift` auth mode cannot work in multi-instance cross-cluster deployment.
-The root cause is that token validation uses `rest.InClusterConfig()`, which
-binds authentication to whichever cluster the pod runs on. This deployment
-model requires authentication that is independent of the hosting cluster.
+Phase 1 delivered `ldap` alongside `openshift` and `passthrough`. Direct LDAPS
+search-and-bind authenticates AD credentials; backend-issued access tokens are
+verified locally on any instance with consistent issuer/audience, signing/trust
+configuration, token policy, and clocks. This supplies the cluster-independent
+authentication path. See the [authentication HLD](authentication/hld.md).
 
-| ID | Gap | Severity | Evidence |
-|----|-----|----------|----------|
-| A1 | **OpenShift auth is cluster-bound** — `Authenticate()` validates bearer tokens via `authv1.TokenReview` against the pod's local API server (`rest.InClusterConfig()`). A token issued by cluster-A's OAuth is rejected by cluster-B's TokenReview. All OAuth flows (login, refresh, authorize, callback, PasswordLogin challenge-response) depend on this single cluster's OAuth server. | Blocker | `openshift.go:103` (InClusterConfig), `openshift.go:224` (TokenReview), `openshift.go:260-364` (OAuth flows) |
-| A2 | **No external IdP auth mode** — `auth.mode` only accepts `passthrough \| openshift`. No OIDC/JWT mode exists to validate tokens from an external IdP. | Blocker | `config.go:96-99` (enum), `validation.go:10-12` (validation map) |
-
-**Affected files:**
-`internal/auth/openshift.go`, `internal/auth/manager.go`, `internal/config/config.go`,
-`internal/config/validation.go`, `internal/server/auth_routes.go`
+The original A1 limitation remains specific to `openshift` mode: TokenReview uses
+`rest.InClusterConfig()` against the hosting cluster. Keeping that mode does not
+block LDAP deployment, and changing OpenShift's validation path is not required
+by the LDAP design. Instances behind one interchangeable endpoint must use the
+same auth mode and compatible configuration.
 
 ---
 
 ### Group 2: Authorization — K8s RBAC assumes cluster-local identities
 
-Authorization is currently coupled to K8s RBAC via SSAR and impersonation.
-With OpenShift, users exist *in* the cluster so RBAC bindings work naturally.
-When users come from an external IdP (AD/LDAP), K8s clusters may not have
-RoleBindings for those identities — SSAR would deny everything despite valid
-authentication. This group is independent of Group 1: authentication can be
-replaced without changing authorization, and vice versa.
+Phase 1 preserves K8s RBAC via SSAR and impersonation. Every managed cluster
+must grant the canonical LDAP usernames/groups the required permissions through
+RoleBindings or ClusterRoleBindings. Authentication alone grants no application
+permissions; user bindings and implicit Kubernetes groups still affect access.
+The Helm chart now creates impersonation RBAC for both OpenShift and LDAP, with
+TokenReview permissions restricted to OpenShift. Broader authorization changes
+remain a separate design question.
 
 | ID | Gap | Severity | Evidence |
 |----|-----|----------|----------|
-| B1 | **SSAR depends on K8s RoleBindings for external identities** — `canCreateCapps()` and `canAccessNamespaces()` submit SSAR to check permissions via the impersonated client. When the impersonated identity comes from AD/LDAP, every managed cluster must have RoleBindings for those AD usernames/groups. Without them, SSAR denies all operations even with valid authentication. Currently there is no application-level RBAC alternative. | Significant | `namespaces/handler.go:126-140`, `namespaces/handler.go:518-530` |
+| B1 | **SSAR depends on per-cluster K8s RBAC** — `canCreateCapps()` and `canAccessNamespaces()` submit SSAR through the impersonated client. Managed clusters must grant the canonical usernames/groups the required permissions; operations without matching grants are denied despite valid authentication. There is no application-level RBAC alternative. | Significant | `namespaces/handler.go:126-140`, `namespaces/handler.go:518-530` |
 | B2 | **Namespace operations use admin client with SSAR as gate** — the admin client performs the actual create/update/delete, while SSAR on the user client only checks permission. If SSAR fails due to missing RoleBindings for AD identities, the admin client's capabilities are unreachable. Moving to application-level RBAC could decouple authorization from per-cluster K8s RoleBinding setup. | Significant | `middleware/cluster.go:85-88`, `namespaces/handler.go:83,260,297,391,462` |
-| B3 | **Impersonation ClusterRole/Binding gated on `auth.mode=openshift`** — the Helm chart only creates the impersonator ClusterRole (impersonate users/groups) when `auth.mode=openshift`. Any other auth mode using impersonation needs these RBAC resources too; TokenReview permissions are only needed by modes that use TokenReview. | Significant | `helm/capp-backend/templates/clusterrole.yaml:1`, `helm/capp-backend/templates/clusterrolebinding.yaml:1` |
 
 **Affected files:**
-`internal/resources/cluster/namespaces/handler.go`, `internal/middleware/cluster.go`,
-`helm/capp-backend/templates/clusterrole.yaml`, `helm/capp-backend/templates/clusterrolebinding.yaml`
+`internal/resources/cluster/namespaces/handler.go`, `internal/middleware/cluster.go`
 
 ---
 
 ### Group 3: OpenShift platform coupling
 
-Runtime and Helm-level branches based on OpenShift detection. These are not
-blockers for multi-instance. C2/C3 tie platform permissions and service-account
-selection to OpenShift authentication. Projects provides access-filtered listing;
-optional platform-specific optimizations are compatible with cluster independence.
+Phase 1 decoupled Projects permissions from authentication: the chart uses
+`rbac.openShiftProjects` (default `false`) to include Projects access in `capp-user`.
+Service-account wiring supports both OpenShift and LDAP. These Helm gaps are
+resolved; runtime namespace listing still branches on the target platform.
+Projects provides access-filtered listing; optional platform-specific
+optimizations are compatible with cluster independence.
 The vanilla Kubernetes listing path performs one SSAR per CAPP-managed namespace,
 not on every backend request.
 Any replacement requires agreement on authorization semantics and validation of
@@ -76,12 +79,10 @@ not assumed.
 | ID | Gap | Severity | Evidence |
 |----|-----|----------|----------|
 | C1 | **Namespace listing branches on `IsOpenShift`** — `list()` uses the OpenShift Projects API (`project.openshift.io/v1`) on OpenShift clusters and falls back to admin-list + per-NS SSAR on vanilla K8s. Two code paths for the same operation. `IsOpenShift` is probed at startup per cluster via `/apis/route.openshift.io`. | Significant | `namespaces/handler.go:104-108`, `namespaces/handler.go:142-165` (Projects), `namespaces/handler.go:168-189` (K8s), `pkg/k8s/helpers.go:53-77`, `cluster/manager.go:109-120` |
-| C2 | **capp-user ClusterRole conditionally includes Projects** — the Helm template adds `project.openshift.io` verbs only when `auth.mode=openshift`. On a mixed-platform fleet, the RBAC must be per-cluster, not per-auth-mode. | Minor | `helm/capp-backend/templates/capp-user-cr.yaml:20-24` |
-| C3 | **Deployment template gates SA on `auth.mode=openshift`** — in the Deployment template, `serviceAccountName` is only set when auth mode is openshift. Any auth mode using impersonation needs a service account. (The Capp template gates SA on `.Values.serviceAccount.name` which is always set — no issue there.) | Minor | `helm/capp-backend/templates/deployment.yaml:27-28` |
 
 **Affected files:**
 `internal/resources/cluster/namespaces/handler.go`, `pkg/k8s/helpers.go`,
-`internal/cluster/manager.go`, `helm/capp-backend/templates/`
+`internal/cluster/manager.go`
 
 ---
 
@@ -102,17 +103,17 @@ the same branch concurrently.
 
 ### Group 5: CLI and API surface
 
-The CLI and OpenAPI spec hardcode the two existing auth modes. Adding a new
-mode requires updates across these surfaces while preserving existing modes.
+The merged API and OpenAPI specification support LDAP login, access tokens, and
+the existing modes. Phase 2 remains responsible for CLI integration and automation
+against that API; phase 1 is independently usable.
 
 | ID | Gap | Severity | Evidence |
 |----|-----|----------|----------|
-| E1 | **CLI login branches on `openshift \| passthrough`** — `login()` switches on auth mode strings. An unsupported mode falls through to the default error case; the CLI has no external IdP login path. | Minor | `cli/auth/login.go:98-117` |
-| E2 | **OpenAPI spec documents only openshift/passthrough** — auth endpoints reference OpenShift-specific paths. External IdP authentication is not represented in the API contract. | Minor | `api/openapi.yaml` |
+| E1 | **LDAP CLI and automation delivery remains** — phase 2 must complete secure unattended login, token import/storage, expiry enforcement for resource and MCP-header commands, and CLI documentation. | Minor | `internal/cli/auth/login.go`, `internal/cli/root/root.go` |
 
 **Affected files:**
 `internal/cli/auth/login.go`, `internal/cli/auth/helpers.go`,
-`internal/server/auth_routes.go`, `api/openapi.yaml`
+`internal/cli/client/client.go`, `internal/cli/root/root.go`
 
 ---
 
@@ -121,7 +122,8 @@ mode requires updates across these surfaces while preserving existing modes.
 | Area | Why |
 |------|-----|
 | Passthrough auth | Stateless; token validated by the target cluster, not the backend's cluster |
-| Stateless HMAC-signed token pattern | CSRF state tokens are signed with a shared config secret; any instance can validate any other's tokens. Reusable for OIDC state in the new auth mode. |
+| LDAP auth | LDAPS login issues short-lived EdDSA access tokens; consistently configured instances verify them locally without LDAP calls or sticky sessions |
+| OpenShift CSRF state | HMAC-signed with a shared config secret; replicas using the same OpenShift configuration can validate each other's state |
 | Cluster middleware | Uses config-provided credentials per cluster, not InClusterConfig |
 | All resource handlers | Stateless; use per-request scoped client from context |
 | Capp migration | Uses `ClusterManager.ClientFor()` with caller credential; works from any instance |
@@ -136,11 +138,11 @@ mode requires updates across these surfaces while preserving existing modes.
 
 | Group | Blockers | Significant | Minor | Technical dependency |
 |-------|----------|-------------|-------|-----------------|
-| 1 — Authentication | 2 | 0 | 0 | Independent of authorization |
-| 2 — Authorization | 0 | 3 | 0 | Independent of Group 1 |
-| 3 — OpenShift coupling | 0 | 1 | 2 | C2/C3 depend on Group 1 (auth-mode gated); replacing C1 requires authorization agreement and performance validation |
+| 1 — Authentication | 0 | 0 | 0 | LDAP backend merged; OpenShift's hosting-cluster limitation is retained |
+| 2 — Authorization | 0 | 2 | 0 | Existing K8s RBAC remains; redesign is independent of LDAP authentication |
+| 3 — OpenShift coupling | 0 | 1 | 0 | Replacing C1 requires authorization agreement and performance validation |
 | 4 — GitOps concurrency | 0 | 1 | 0 | Independent |
-| 5 — CLI and API surface | 0 | 0 | 2 | Reflects the supported authentication modes in Group 1 |
+| 5 — CLI and API surface | 0 | 0 | 1 | Phase 2 consumes the merged LDAP API |
 
 ---
 
@@ -150,20 +152,13 @@ mode requires updates across these surfaces while preserving existing modes.
    RoleBindings for AD identities on every cluster), or move to application-level
    RBAC in capp-backend? Projects replacement also depends on the evaluation
    described in [Group 3](#group-3-openshift-platform-coupling).
-2. **Automation credentials** — should automation use dedicated machine
-   credentials that obtain short-lived access tokens or long-lived API tokens?
-   Evaluate stored-secret exposure,
-   directory availability, account lockout, and permission freshness. Long-lived
-   tokens need expiration, individual revocation, rotation, and permission limits
-   enforced consistently across instances.
+2. **Future long-lived tokens and revocation** — phases 1–2 use dedicated AD
+   automation accounts to obtain short-lived access tokens. Long-lived tokens
+   remain future work: define expiration, individual revocation, rotation, and
+   permission limits enforced consistently across instances, accounting for
+   stored-secret exposure and permission freshness.
 3. **ADFS integration** — which protocol and token-validation or exchange flow
    should support ADFS alongside backend-issued tokens, and how should both map
    to authorization identities? Define issuer, audience, signature, and token-purpose
    validation for each source, including whether ADFS access tokens are accepted
    directly or exchanged for backend tokens. This remains separate from LDAP integration.
-
-## Confirmed capabilities
-
-- **LDAP feasibility** — direct directory access, search-account lookup, and a
-  separate bind using the target user's credentials are supported. ADFS integration
-  does not block this approach.
