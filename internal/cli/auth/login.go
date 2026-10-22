@@ -3,10 +3,16 @@ package auth
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os/exec"
 	"runtime"
+	"slices"
+	"strings"
+	"time"
+	"unicode/utf8"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/cobra"
 
 	"github.com/dana-team/capp-backend/internal/cli/client"
@@ -17,14 +23,24 @@ import (
 // NewLoginCommand returns the `cappctl login` command.
 func NewLoginCommand(state *root.State) *cobra.Command {
 	var (
-		authMode string
-		username string
-		password string
+		authMode      string
+		username      string
+		password      string
+		passwordStdin bool
 	)
 
 	cmd := &cobra.Command{
-		Use:         "login",
-		Short:       "Authenticate and save credentials to a named context",
+		Use:   "login",
+		Short: "Authenticate and save credentials to a named context",
+		Long: `Authenticate using openshift, passthrough, or ldap mode.
+
+LDAP requires certificate-verified HTTPS and does not allow --insecure.
+Use --username with --password-stdin for unattended LDAP login, or --token
+to import an access token with a future numeric JWT exp claim. Imported expiry
+is local metadata only; the backend verifies the token when it is used.
+LDAP contexts save the access token and expiry in a 0600 config file, with no
+password or refresh credentials. Repeat login to obtain a new token.
+LDAP credential requests never follow redirects.`,
 		Annotations: root.SkipAuthAnnotation(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Read connection flags from inherited root persistent flags.
@@ -48,6 +64,9 @@ func NewLoginCommand(state *root.State) *cobra.Command {
 				authMode = detected
 				fmt.Fprintf(cmd.OutOrStdout(), "Detected auth mode: %s\n", authMode) //nolint:errcheck
 			}
+			if cmd.Flags().Changed("password-stdin") && authMode != "ldap" {
+				return fmt.Errorf("--password-stdin is only supported in ldap mode")
+			}
 
 			ctx, err := login(cmd, server, authMode, cluster, token, username, password, insecure)
 			if err != nil {
@@ -57,21 +76,25 @@ func NewLoginCommand(state *root.State) *cobra.Command {
 			ns, _ := cmd.Flags().GetString("namespace")
 			ctx.Namespace = ns
 
-			state.Cfg.UpsertContext(ctx)
-			state.Cfg.CurrentContext = ctxName
-			if err := config.Save(state.CfgPath, state.Cfg); err != nil {
+			cfg := *state.Cfg
+			cfg.Contexts = slices.Clone(state.Cfg.Contexts)
+			cfg.UpsertContext(ctx)
+			cfg.CurrentContext = ctxName
+			if err := config.Save(state.CfgPath, &cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
+			*state.Cfg = cfg
 			fmt.Fprintf(cmd.OutOrStdout(), "Logged in. Context %q saved and set as current.\n", ctxName) //nolint:errcheck
 			return nil
 		},
 	}
 
 	// Only flags not already defined as root persistent flags.
-	cmd.Flags().StringVar(&authMode, "auth-mode", "", "auth mode: openshift|passthrough (auto-detected if omitted)")
-	cmd.Flags().StringVar(&username, "username", "", "username (openshift mode)")
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "auth mode: openshift|passthrough|ldap (auto-detected if omitted)")
+	cmd.Flags().StringVar(&username, "username", "", "username (openshift mode; required with --password-stdin in ldap mode)")
 	cmd.Flags().StringVar(&password, "password", "", "password (openshift mode)")
 	cmd.Flags().MarkHidden("password") //nolint:errcheck
+	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read LDAP password from stdin (UTF-8, at most 16 KiB; removes one trailing LF/CRLF)")
 
 	return cmd
 }
@@ -112,9 +135,112 @@ func login(cmd *cobra.Command, server, authMode, cluster, token, username, passw
 		}
 		return loginOpenShift(cmd, server, insecure, ctx, username, password)
 
+	case "ldap":
+		return loginLDAP(cmd, ctx, token, username, insecure)
+
 	default:
 		return ctx, fmt.Errorf("unsupported auth mode %q", authMode)
 	}
+}
+
+func loginLDAP(cmd *cobra.Command, ctx config.Context, token, username string, insecure bool) (config.Context, error) {
+	u, err := url.Parse(ctx.Server)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return ctx, fmt.Errorf("LDAP login requires a certificate-verified HTTPS server")
+	}
+	if insecure {
+		return ctx, fmt.Errorf("--insecure is not allowed in ldap mode")
+	}
+	if cmd.Flags().Changed("token") {
+		if cmd.Flags().Changed("username") || cmd.Flags().Changed("password") || cmd.Flags().Changed("password-stdin") {
+			return ctx, fmt.Errorf("--token cannot be combined with --username, --password, or --password-stdin in ldap mode")
+		}
+		expiresAt, err := importedLDAPTokenExpiry(token)
+		if err != nil {
+			return ctx, err
+		}
+		ctx.Token = token
+		ctx.TokenExpiresAt = expiresAt
+		return ctx, nil
+	}
+	if cmd.Flags().Changed("password") {
+		return ctx, fmt.Errorf("--password is not allowed in ldap mode; use --password-stdin")
+	}
+	if username == "" {
+		return ctx, fmt.Errorf("--username is required for LDAP password login")
+	}
+	passwordStdin, _ := cmd.Flags().GetBool("password-stdin")
+	if !passwordStdin {
+		return ctx, fmt.Errorf("--password-stdin is required for LDAP password login")
+	}
+	password, err := readPasswordStdin(cmd.InOrStdin())
+	if err != nil {
+		return ctx, err
+	}
+	c := client.New(ctx.Server, "", false).WithoutRedirects()
+	pair, err := loginWithPassword(cmd.Context(), c, username, password)
+	if err != nil {
+		return ctx, err
+	}
+	if strings.TrimSpace(pair.AccessToken) == "" || pair.ExpiresAt.IsZero() {
+		return ctx, fmt.Errorf("LDAP login response requires an access token and expiry")
+	}
+	if err := validateLDAPTokenExpiry(pair.ExpiresAt); err != nil {
+		return ctx, err
+	}
+	ctx.Token = pair.AccessToken
+	ctx.TokenExpiresAt = pair.ExpiresAt
+	return ctx, nil
+}
+
+func readPasswordStdin(r io.Reader) (string, error) {
+	const maxPasswordInput = 16 << 10
+	raw, err := io.ReadAll(io.LimitReader(r, maxPasswordInput+1))
+	if err != nil {
+		return "", fmt.Errorf("reading password from stdin: %w", err)
+	}
+	if len(raw) > maxPasswordInput {
+		return "", fmt.Errorf("password stdin exceeds the 16 KiB limit")
+	}
+	if !utf8.Valid(raw) {
+		return "", fmt.Errorf("password stdin must be valid UTF-8")
+	}
+	password, newline := strings.CutSuffix(string(raw), "\n")
+	if newline {
+		password = strings.TrimSuffix(password, "\r")
+	}
+	if password == "" {
+		return "", fmt.Errorf("password stdin must not be empty")
+	}
+	return password, nil
+}
+
+// importedLDAPTokenExpiry reads untrusted expiry metadata; the backend alone
+// authenticates the token when it is used for a request.
+func importedLDAPTokenExpiry(raw string) (time.Time, error) {
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(raw, claims); err != nil {
+		return time.Time{}, fmt.Errorf("invalid LDAP access token: %w", err)
+	}
+	expiresAt, err := claims.GetExpirationTime()
+	if err != nil || expiresAt == nil || expiresAt.Unix() <= 0 {
+		return time.Time{}, fmt.Errorf("LDAP access token requires a usable positive numeric exp claim")
+	}
+	if err := validateLDAPTokenExpiry(expiresAt.Time); err != nil {
+		return time.Time{}, err
+	}
+	return expiresAt.Time, nil
+}
+
+func validateLDAPTokenExpiry(expiresAt time.Time) error {
+	// Context timestamps must round-trip through the existing YAML persistence.
+	if _, err := expiresAt.MarshalText(); err != nil {
+		return fmt.Errorf("LDAP access token expiry cannot be stored: %w", err)
+	}
+	if !time.Now().Before(expiresAt) {
+		return fmt.Errorf("LDAP access token expired; run cappctl login again")
+	}
+	return nil
 }
 
 func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config.Context, username, password string) (config.Context, error) {

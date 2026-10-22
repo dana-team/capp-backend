@@ -36,9 +36,10 @@ type TokenPair struct {
 
 // Client sends authenticated JSON requests to the capp-backend API.
 type Client struct {
-	baseURL    string
-	token      string
-	httpClient *http.Client
+	baseURL              string
+	token                string
+	httpClient           *http.Client
+	requireSuccessStatus bool
 }
 
 // New creates a Client targeting baseURL with the given bearer token.
@@ -68,6 +69,20 @@ func New(baseURL, token string, insecure bool) *Client {
 func (c *Client) WithToken(token string) *Client {
 	cp := *c
 	cp.token = token
+	return &cp
+}
+
+// WithoutRedirects returns a copy that requires a 2xx response and rejects
+// redirects without changing the original client. Use it for credential
+// requests that must not be replayed.
+func (c *Client) WithoutRedirects() *Client {
+	cp := *c
+	cp.requireSuccessStatus = true
+	httpClient := *c.httpClient
+	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("redirects are not allowed for this request")
+	}
+	cp.httpClient = &httpClient
 	return &cp
 }
 
@@ -122,6 +137,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
+
+	// CheckRedirect is not called for redirects without a Location header.
+	// Preserve the structured API error handling below for 4xx/5xx responses.
+	if c.requireSuccessStatus && (resp.StatusCode < http.StatusOK ||
+		(resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest)) {
+		return fmt.Errorf("server returned unexpected HTTP status %d", resp.StatusCode)
+	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
