@@ -3,6 +3,7 @@ module github.com/dana-team/capp-backend
 go 1.27.1
 
 require (
+	github.com/casbin/casbin/v3 v3.11.0
 	github.com/dana-team/container-app-operator v0.11.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-asn1-ber/asn1-ber v1.5.8
@@ -44,9 +45,11 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/blendle/zapdriver v1.3.1 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
+	github.com/casbin/govaluate v1.3.0 // indirect
 	github.com/cert-manager/cert-manager v1.21.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cisco-open/operator-tools v0.37.0 // indirect
