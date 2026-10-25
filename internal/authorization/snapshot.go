@@ -57,7 +57,7 @@ func Load(ctx context.Context, target client.Client, cfg config.ClusterAuthoriza
 	}
 
 	var list corev1.ConfigMapList
-	if err := target.List(ctx, &list, client.InNamespace(cfg.PolicyNamespace), client.MatchingLabels{policyLabelKey: "true"}); err != nil {
+	if err := target.List(ctx, &list, client.InNamespace(cfg.PolicyNamespace), client.MatchingLabels{policyLabelKey: policyLabelValue}); err != nil {
 		return nil, fmt.Errorf("read authorization policy: %w", err)
 	}
 	if list.Continue != "" {

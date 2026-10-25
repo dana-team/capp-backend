@@ -1,0 +1,281 @@
+package authorization
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+)
+
+func TestSnapshotReplaceUsers(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		users     []string
+		want      []string
+		wantError error
+		writes    int
+	}{
+		{name: "omitted or null users leave membership unchanged", want: []string{"alice"}},
+		{name: "empty users clear membership", users: []string{}, want: []string{}, writes: 1},
+		{name: "replacement preserves exact identities and sorts users", users: []string{"bob", "Alice", " alice "}, want: []string{" alice ", "Alice", "bob"}, writes: 1},
+		{name: "duplicate users rejected", users: []string{"bob", "bob"}, wantError: ErrInvalidMembership},
+		{name: "blank user rejected", users: []string{" "}, wantError: ErrInvalidMembership},
+		{name: "invalid UTF-8 cannot change an identity", users: []string{"\xff"}, wantError: ErrInvalidMembership},
+		{name: "oversized payload rejected", users: []string{strings.Repeat("a", maxPolicyRecordBytes)}, wantError: ErrInvalidMembership},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := snapshotObjects(t)
+			objects[1].Annotations = map[string]string{"operator": "keep"}
+			objects[1].Labels["extra"] = "keep"
+			objects[1].Data["extra"] = "keep"
+			writes := 0
+			ctx := t.Context()
+			target := snapshotClient(t, interceptor.Funcs{Patch: func(gotCtx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				writes++
+				if gotCtx != ctx {
+					t.Fatal("ReplaceUsers did not propagate the request context")
+				}
+				data, err := patch.Data(obj)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got map[string]any
+				if err := json.Unmarshal(data, &got); err != nil {
+					t.Fatal(err)
+				}
+				record, ok := obj.(*corev1.ConfigMap)
+				if !ok {
+					t.Fatalf("patched object type = %T, want *corev1.ConfigMap", obj)
+				}
+				want := map[string]any{
+					"metadata": map[string]any{"resourceVersion": "20"},
+					"data":     map[string]any{policyDataKey: record.Data[policyDataKey]},
+				}
+				if diff := cmp.Diff(want, got); diff != "" {
+					t.Fatalf("membership patch mismatch (-want +got):\n%s", diff)
+				}
+				return c.Patch(gotCtx, obj, patch, opts...)
+			}}, objects...)
+			snapshot := membershipSnapshot(t, target)
+			input := slices.Clone(tc.users)
+			err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), input)
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("ReplaceUsers() error = %v, want %v", err, tc.wantError)
+			}
+			if writes != tc.writes {
+				t.Fatalf("ReplaceUsers() writes = %d, want %d", writes, tc.writes)
+			}
+			if tc.wantError != nil {
+				return
+			}
+			if diff := cmp.Diff(tc.users, input); diff != "" {
+				t.Errorf("input changed (-want +got):\n%s", diff)
+			}
+			stored := readMembership(t, target)
+			membership, err := parseMembershipPolicy(stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.want, membership.Users); diff != "" {
+				t.Errorf("stored users mismatch (-want +got):\n%s", diff)
+			}
+			original := snapshot.records.memberships[currentNamespace().UID]
+			if diff := cmp.Diff(original.Bindings, membership.Bindings); diff != "" {
+				t.Errorf("operator bindings changed (-want +got):\n%s", diff)
+			}
+			if !slices.Equal(original.Users, []string{"alice"}) || snapshot.resourceVersions[stored.Name] != "20" {
+				t.Error("ReplaceUsers mutated the request snapshot")
+			}
+			if stored.Annotations["operator"] != "keep" || stored.Labels["extra"] != "keep" || stored.Data["extra"] != "keep" {
+				t.Error("ReplaceUsers removed unrelated ConfigMap fields")
+			}
+		})
+	}
+
+	t.Run("new membership has namespace ownership and no managed-resource label", func(t *testing.T) {
+		target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)[:1]...)
+		snapshot := membershipSnapshot(t, target)
+		if err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"}); err != nil {
+			t.Fatal(err)
+		}
+		stored := readMembership(t, target)
+		if err := validateRecord(stored, "policies"); err != nil {
+			t.Fatal(err)
+		}
+		membership, err := parseMembershipPolicy(stored)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := membershipPolicy{Version: 1, Namespace: namespaceIdentity{Name: "team", UID: "uid-1"}, Users: []string{"bob"}, Bindings: []binding{}}
+		if diff := cmp.Diff(want, membership); diff != "" {
+			t.Errorf("created membership mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
+func TestSnapshotAddUsers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		users []string
+		want  []string
+	}{
+		{name: "empty adds no users", users: []string{}, want: []string{"alice"}},
+		{name: "existing and repeated additions are idempotent", users: []string{"bob", "alice", "bob"}, want: []string{"alice", "bob"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...)
+			snapshot := membershipSnapshot(t, target)
+			if err := snapshot.AddUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), tc.users); err != nil {
+				t.Fatal(err)
+			}
+			membership, err := parseMembershipPolicy(readMembership(t, target))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.want, membership.Users); diff != "" {
+				t.Errorf("AddUsers() users mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestSnapshotWriteUsers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		missing bool
+		remove  bool
+		add     bool
+	}{
+		{name: "replacement conflicts with a concurrent operator edit"},
+		{name: "idempotent addition still detects a stale snapshot", add: true},
+		{name: "initial creation conflicts with a competing creator", missing: true},
+		{name: "deleted membership is not silently recreated", remove: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := snapshotObjects(t)
+			records := objects
+			if tc.missing {
+				records = objects[:1]
+			}
+			writes := 0
+			target := snapshotClient(t, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					writes++
+					return c.Create(ctx, obj, opts...)
+				},
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					writes++
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			}, records...)
+			snapshot := membershipSnapshot(t, target)
+			concurrent := objects[1].DeepCopy()
+			concurrent.Data[policyDataKey] = strings.ReplaceAll(concurrent.Data[policyDataKey], "alice", "carol")
+			concurrent.Data[policyDataKey] = strings.ReplaceAll(concurrent.Data[policyDataKey], "team-editors", "new-editors")
+			switch {
+			case tc.missing:
+				concurrent.ResourceVersion = ""
+				if err := target.Create(t.Context(), concurrent); err != nil {
+					t.Fatal(err)
+				}
+			case tc.remove:
+				if err := target.Delete(t.Context(), concurrent); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := target.Update(t.Context(), concurrent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writes = 0
+			write := snapshot.ReplaceUsers
+			if tc.add {
+				write = snapshot.AddUsers
+			}
+			err := write(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"alice"})
+			if !errors.Is(err, ErrMembershipConflict) || writes != 1 {
+				t.Fatalf("write users = %v, %d writes, want conflict and one attempt", err, writes)
+			}
+			if !tc.remove {
+				stored := readMembership(t, target)
+				if diff := cmp.Diff(concurrent.Data, stored.Data); diff != "" {
+					t.Errorf("concurrent policy overwritten (-want +got):\n%s", diff)
+				}
+			}
+		})
+	}
+
+	t.Run("write failure is sanitized and not reported as invalid membership", func(t *testing.T) {
+		target := snapshotClient(t, interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+			return k8serrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "private-record", errors.New("private policy"))
+		}}, snapshotObjects(t)...)
+		err := membershipSnapshot(t, target).ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"})
+		if err == nil || errors.Is(err, ErrInvalidMembership) || errors.Is(err, ErrMembershipConflict) || strings.Contains(err.Error(), "private") {
+			t.Fatalf("ReplaceUsers() error = %v, want sanitized persistence failure", err)
+		}
+	})
+
+	for _, name := range []string{"cancelled request", "missing snapshot", "missing namespace metadata", "mismatched namespace identity", "missing snapshot version", "undefined member role"} {
+		t.Run(name, func(t *testing.T) {
+			target := snapshotClient(t, interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+				t.Fatal("invalid write reached the API server")
+				return nil
+			}}, snapshotObjects(t)...)
+			snapshot := membershipSnapshot(t, target)
+			namespace := currentNamespace()
+			ctx := t.Context()
+			switch name {
+			case "cancelled request":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			case "missing snapshot":
+				snapshot = nil
+			case "missing namespace metadata":
+				namespace = nil
+			case "mismatched namespace identity":
+				namespace.Name = "other"
+			case "missing snapshot version":
+				clear(snapshot.resourceVersions)
+			case "undefined member role":
+				delete(snapshot.records.cluster.Roles, memberRole)
+			}
+			err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, namespace, []string{"bob"})
+			if err == nil || errors.Is(err, ErrInvalidMembership) || errors.Is(err, ErrMembershipConflict) {
+				t.Fatalf("ReplaceUsers() error = %v, want snapshot/context failure", err)
+			}
+			if ctx.Err() != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("ReplaceUsers() error = %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
+func membershipSnapshot(t *testing.T, target client.Client) *Snapshot {
+	t.Helper()
+	snapshot, err := Load(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func readMembership(t *testing.T, target client.Client) *corev1.ConfigMap {
+	t.Helper()
+	var record corev1.ConfigMap
+	if err := target.Get(t.Context(), client.ObjectKey{Namespace: "policies", Name: membershipNamePrefix + "uid-1"}, &record); err != nil {
+		t.Fatal(err)
+	}
+	return &record
+}

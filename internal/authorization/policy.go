@@ -15,6 +15,8 @@ import (
 
 const (
 	policyLabelKey       = consts.CappAPIGroup + "/authorization"
+	policyLabelValue     = "true"
+	namespaceKind        = "Namespace"
 	policyDataKey        = "policy.json"
 	clusterPolicyName    = "capp-policy"
 	membershipNamePrefix = "capp-members-"
@@ -113,7 +115,7 @@ func validateRecord(record *corev1.ConfigMap, policyNamespace string) error {
 	if policyNamespace == "" || record.Namespace != policyNamespace {
 		return errors.New("policy record is outside policy namespace")
 	}
-	if record.Labels[policyLabelKey] != "true" {
+	if record.Labels[policyLabelKey] != policyLabelValue {
 		return errors.New("missing authorization label")
 	}
 	if _, ok := record.Labels[consts.ManagedLabelKey]; ok {
@@ -141,7 +143,7 @@ func parseClusterPolicy(record *corev1.ConfigMap) (clusterPolicy, error) {
 		return policy, errors.New("cluster policy requires version 1, roles and bindings")
 	}
 	for _, owner := range record.OwnerReferences {
-		if owner.Kind == "Namespace" {
+		if owner.Kind == namespaceKind {
 			return policy, errors.New("cluster policy must not have a namespace owner")
 		}
 	}
@@ -192,7 +194,7 @@ func parseMembershipPolicy(record *corev1.ConfigMap) (membershipPolicy, error) {
 func validateNamespaceOwner(record *corev1.ConfigMap, namespace namespaceIdentity) error {
 	found := false
 	for _, owner := range record.OwnerReferences {
-		if owner.Kind != "Namespace" {
+		if owner.Kind != namespaceKind {
 			continue
 		}
 		if found || owner.APIVersion != corev1.SchemeGroupVersion.String() || owner.Name != namespace.Name || owner.UID != namespace.UID {
