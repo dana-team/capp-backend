@@ -1,6 +1,7 @@
 // Package benchmarks implements the benchmark resource handler.
 // Trigger creates one Job for a Capp. A Job that is still running blocks
 // another trigger. A finished Job is replaced. Status reports that Job.
+// Query and query_range proxy PromQL to the first configured Prometheus URL.
 // Routes are registered only when benchmarks are enabled.
 package benchmarks
 
@@ -25,23 +26,32 @@ import (
 
 // Handler implements resources.ResourceHandler for on-demand Capp benchmarks.
 type Handler struct {
-	cfg    config.BenchmarkConfig
-	logger *zap.Logger
+	cfg      config.BenchmarkConfig
+	logger   *zap.Logger
+	vmClient *http.Client
 }
 
 // New returns a benchmark Handler. The registry skips it when benchmarks are disabled.
 func New(cfg config.BenchmarkConfig, logger *zap.Logger) *Handler {
-	return &Handler{cfg: cfg, logger: logger}
+	return &Handler{
+		cfg:      cfg,
+		logger:   logger,
+		vmClient: newVMClient(),
+	}
 }
 
 // Name returns the handler identifier used in config feature flags.
 func (h *Handler) Name() string { return "benchmarks" }
 
-// RegisterRoutes attaches benchmark routes to the cluster router group.
+// RegisterRoutes attaches benchmark and PromQL routes to the cluster router group.
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
-	ns := rg.Group("/namespaces/:namespace/capps/:name/benchmark")
-	ns.POST("", h.trigger)
-	ns.GET("", h.status)
+	bench := rg.Group("/namespaces/:namespace/capps/:name/benchmark")
+	bench.POST("", h.trigger)
+	bench.GET("", h.status)
+
+	metrics := rg.Group("/namespaces/:namespace/capps/:name/metrics")
+	metrics.GET("/query", h.query)
+	metrics.GET("/query_range", h.queryRange)
 }
 
 // trigger handles POST .../benchmark.

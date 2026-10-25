@@ -289,12 +289,17 @@ type BenchmarkConfig struct {
 	// Example: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0".
 	Image string `mapstructure:"image"`
 
-	// VMURLs are VictoriaMetrics base URLs. The monitoring stack has two
-	// instances, and each sample is written to all of them. The Job appends
-	// /api/v1/import/prometheus and /api/v1/write to each entry.
-	// Required when enabled. Inject via CAPP_RESOURCES_BENCHMARKS_VMURLS
-	// as a comma-separated list.
+	// VMURLs are Prometheus-compatible base URLs. The monitoring stack has two
+	// instances, and each sample is written to all of them. Query routes read
+	// the first entry. The Job appends /api/v1/import/prometheus and
+	// /api/v1/write to each entry. Required when enabled. Inject via
+	// CAPP_RESOURCES_BENCHMARKS_VMURLS as a comma-separated list.
 	VMURLs []string `mapstructure:"vmURLs"`
+
+	// APIKey is the bearer token sent on PromQL queries. Required when enabled.
+	// Inject via CAPP_RESOURCES_BENCHMARKS_APIKEY. The Helm chart stores it in
+	// the backend Secret, not in the ConfigMap.
+	APIKey string `mapstructure:"apiKey"`
 }
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
@@ -419,6 +424,10 @@ func Load(path string) (*Config, error) {
 	cfg.Resources.Benchmarks.VMURLs = compactVMURLs(cfg.Resources.Benchmarks.VMURLs)
 	if raw := os.Getenv("CAPP_RESOURCES_BENCHMARKS_VMURLS"); raw != "" {
 		cfg.Resources.Benchmarks.VMURLs = compactVMURLs(strings.Split(raw, ","))
+	}
+	cfg.Resources.Benchmarks.APIKey = strings.TrimSpace(cfg.Resources.Benchmarks.APIKey)
+	if key := strings.TrimSpace(os.Getenv("CAPP_RESOURCES_BENCHMARKS_APIKEY")); key != "" {
+		cfg.Resources.Benchmarks.APIKey = key
 	}
 
 	return &cfg, nil

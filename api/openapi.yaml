@@ -42,6 +42,8 @@ tags:
     description: Capp resource management
   - name: benchmarks
     description: On-demand per-Capp benchmark Jobs
+  - name: metrics
+    description: PromQL queries for a Capp against the configured Prometheus-compatible server
   - name: configmaps
     description: ConfigMap resource management
   - name: secrets
@@ -1137,6 +1139,29 @@ components:
             A finished Job remains until its TTL elapses or a new benchmark replaces it.
           enum: ["", running, completed, failed]
           example: running
+
+    PrometheusResponse:
+      type: object
+      description: |
+        Prometheus HTTP API response, passed through unchanged.
+      properties:
+        status:
+          type: string
+          enum: [success, error]
+          example: success
+        data:
+          type: object
+          additionalProperties: true
+          description: Present when status is success. Shape depends on the query.
+        errorType:
+          type: string
+          description: Present when status is error.
+          example: bad_data
+        error:
+          type: string
+          description: Present when status is error.
+          example: bad query
+      additionalProperties: true
 
     SyncResponse:
       type: object
@@ -2415,6 +2440,136 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/query:
+    get:
+      tags: [metrics]
+      summary: Run an instant PromQL query for a Capp
+      description: |
+        Forwards the query to the first configured Prometheus-compatible URL
+        (`resources.benchmarks.vmURLs`) and returns that response unchanged.
+        Sends `resources.benchmarks.apiKey` as `Authorization: Bearer`.
+        The Capp must exist. Registered only when
+        `resources.benchmarks.enabled` is true.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: PromQL expression.
+          example: up
+        - name: time
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Evaluation timestamp. Unix seconds or RFC3339. Defaults to now on the Prometheus server.
+          example: "1700000000"
+      responses:
+        "200":
+          description: Prometheus-compatible instant query response, passed through.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrometheusResponse'
+        "400":
+          description: Missing query, or the Prometheus server rejected the expression.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PrometheusResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "502":
+          description: The Prometheus server could not be reached, or it returned a server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/query_range:
+    get:
+      tags: [metrics]
+      summary: Run a range PromQL query for a Capp
+      description: |
+        Forwards the query to the first configured Prometheus-compatible URL
+        (`resources.benchmarks.vmURLs`) and returns that response unchanged.
+        Sends `resources.benchmarks.apiKey` as `Authorization: Bearer`.
+        The Capp must exist. Registered only when
+        `resources.benchmarks.enabled` is true.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: PromQL expression.
+          example: up
+        - name: start
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Range start. Unix seconds or RFC3339.
+          example: "1700000000"
+        - name: end
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Range end. Unix seconds or RFC3339.
+          example: "1700000300"
+        - name: step
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Query resolution step.
+          example: 15s
+      responses:
+        "200":
+          description: Prometheus-compatible range query response, passed through.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrometheusResponse'
+        "400":
+          description: Missing parameters, or the Prometheus server rejected the expression.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/PrometheusResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "502":
+          description: The Prometheus server could not be reached, or it returned a server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         "500":
           $ref: '#/components/responses/InternalError'
 

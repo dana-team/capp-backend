@@ -78,6 +78,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "capp-backend.secretName" . }}
                   key: benchmarkVmURLs
+            - name: CAPP_RESOURCES_BENCHMARKS_APIKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" . }}
+                  key: benchmarkAPIKey
             {{- end }}
           volumeMounts:
             - name: config

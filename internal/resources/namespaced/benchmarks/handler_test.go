@@ -27,6 +27,7 @@ func testConfig() config.BenchmarkConfig {
 		Enabled: true,
 		Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
 		VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
+		APIKey:  "vm-secret",
 	}
 }
 
@@ -63,6 +64,10 @@ func engineWithUser(t *testing.T, user string, k8sClient client.Client) *testuti
 
 func benchmarkPath(name string) string {
 	return "/namespaces/ns1/capps/" + name + "/benchmark"
+}
+
+func metricsPath(name string) string {
+	return "/namespaces/ns1/capps/" + name + "/metrics"
 }
 
 func TestTrigger_CreatesJob(t *testing.T) {
