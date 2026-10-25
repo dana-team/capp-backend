@@ -26,6 +26,7 @@ require (
 	knative.dev/pkg v0.0.0-20260727151759-521cb33b33dd
 	knative.dev/serving v0.50.0
 	sigs.k8s.io/controller-runtime v0.25.2
+	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -205,7 +206,6 @@ require (
 	knative.dev/networking v0.0.0-20260727162500-c7a7b772cac9 // indirect
 	sigs.k8s.io/controller-tools v0.22.0 // indirect
 	sigs.k8s.io/gateway-api v1.6.0 // indirect
-	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
