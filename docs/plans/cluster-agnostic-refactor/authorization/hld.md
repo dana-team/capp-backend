@@ -23,7 +23,7 @@ For backend maintainers and deployment operators: add opt-in backend authorizati
 - Combine matching user/group allow grants within their explicit scopes; deny without a matching grant. Cluster grants cover namespaces only when explicitly scoped to do so. Delegation grants specify which permissions the caller may assign; resource access alone grants no implicit delegation.
 - Membership operations use application policy in the new mode and RoleBindings in legacy mode. General resource endpoints cannot expose or modify protected policy.
 - Namespace memberships belong to a namespace instance; deletion invalidates them, and recreating the same name must not inherit stale grants. The LLD defines identity binding and cleanup.
-- The LLD specifies the Casbin model and ConfigMap mapping, including delegation limits and namespace identity; the backend retains ownership of policy validation, persistence, and enforcement.
+- The fixed Casbin model ships embedded in the backend binary and changes with a rebuild; roles and bindings remain runtime policy in ConfigMaps. The LLD specifies the model and ConfigMap mapping, including delegation limits and namespace identity; the backend retains ownership of policy validation, persistence, and enforcement.
 
 ## Workflow / Sequence
 

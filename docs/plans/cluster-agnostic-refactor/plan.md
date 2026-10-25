@@ -4,12 +4,9 @@ Make capp-backend cluster-agnostic so it can be deployed on N clusters behind a 
 
 ## Requirements
 
-- **Cluster independence:** operate consistently regardless of the hosting cluster.
-- **Compatibility:** preserve existing functionality and access controls through a smooth migration.
-- **Authorization boundary:** capp-backend must be the sole Kubernetes client for platform operations and enforce user authorization. Users must interact only with capp-backend, with no direct Kubernetes access or interaction and no Kubernetes credentials or cluster-level permissions.
-- **Scope:** remain focused on platform management; introduce no new product capabilities as part of this refactor.
-- **Dependencies:** minimize reliance on additional external services.
-- **Scalability:** support growth across instances and clusters; disaster recovery is outside this refactor's scope.
+- [Shared requirements](requirements.md) — R01–R02, topic scope, and compatibility constraints.
+- [Authentication requirements](authentication/requirements.md) — R01–R03, inheriting the shared requirements.
+- [Authorization requirements](authorization/requirements.md) — R01–R05, inheriting the shared requirements.
 
 ## Plan
 
