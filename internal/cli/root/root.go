@@ -185,11 +185,17 @@ func lookupContext(cfg *config.Config, ctxName string) (*config.Context, error) 
 	return cfg.ActiveContext()
 }
 
-// maybeRefresh returns the context token, auto-refreshing it if it expires
-// within 30 seconds. On successful refresh, updates cfg and saves to disk.
+// maybeRefresh rejects expired LDAP tokens without refreshing them. Other modes
+// retain automatic refresh within 30 seconds of expiry, saving successful refreshes.
 func maybeRefresh(cmd *cobra.Command, cfg *config.Config, cfgPath string, ctx *config.Context, insecure bool) (string, error) {
 	if ctx.Token == "" {
 		return "", nil
+	}
+	if ctx.AuthMode == "ldap" {
+		if !ctx.TokenExpiresAt.IsZero() && !time.Now().Before(ctx.TokenExpiresAt) {
+			return "", fmt.Errorf("LDAP access token expired; run cappctl login again")
+		}
+		return ctx.Token, nil
 	}
 	if ctx.RefreshToken != "" && ctx.TokenExpiresAt.IsZero() {
 		fmt.Fprintln(os.Stderr, "warning: refresh token set but token expiry unknown; skipping refresh") //nolint:errcheck

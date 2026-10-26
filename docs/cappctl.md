@@ -59,12 +59,14 @@ Fields per context:
 |-------------------|------------------------------------------------------|
 | `name`            | Unique context identifier                            |
 | `server`          | Backend base URL                                     |
-| `auth-mode`       | One of `passthrough`, `openshift` |
+| `auth-mode`       | One of `passthrough`, `openshift`, `ldap` |
 | `token`           | Bearer access token                                  |
 | `refresh-token`   | Refresh token (openshift mode)                       |
 | `token-expires-at`| RFC3339 expiry time of the access token              |
 | `cluster`         | Target cluster name                                  |
 | `namespace`       | Default namespace                                    |
+
+LDAP contexts store the access token, expiry, and context metadata only. They never store the password or a refresh token. A successful LDAP login replaces previous token/refresh metadata in the named context; a failed login leaves the existing context unchanged.
 
 ---
 
@@ -83,7 +85,9 @@ These flags apply to every command.
 | `--output`, `-o`| —                | `table`                              | Output format: `table`, `wide`, `json`, `yaml` |
 | `--insecure`    | —                | `false`                              | Skip TLS certificate verification        |
 
-**Resolution order for server/token/cluster/namespace:** flag > environment variable > active context.
+**Resolution order for server/token/cluster/namespace on authenticated commands:** flag > environment variable > selected context (`--context`, or the active context).
+
+A `--token` or `CAPP_TOKEN` override does not inherit the selected LDAP context's expiry, including when its server URL comes from that context. The backend still verifies the supplied token. `login` requires explicit `--server` and `--context`; use its `--token` flag for token import.
 
 ---
 
@@ -145,6 +149,44 @@ cappctl login --server https://capp.example.com --context ocp --auth-mode opensh
   --token "$(oc whoami -t)"
 ```
 
+### ldap
+
+LDAP login requires certificate-verified HTTPS and rejects `--insecure`. Install the backend's issuing CA in the CLI runtime's trust store when using a private CA; see [Backend CA trust](#backend-ca-trust).
+
+**Password from stdin:** Supply `--username` and `--password-stdin`. This flow works without a TTY and never prompts or opens a browser. For a dedicated AD automation account, read the password from a secret-store mount:
+
+```bash
+cappctl login --server https://capp.example.com --context ldap-ci \
+  --auth-mode ldap --username capp-automation --password-stdin \
+  --cluster production --namespace my-team < /run/secrets/capp-ldap-password &&
+  cappctl get capps --context ldap-ci
+```
+
+The secret store supplies the mounted file; `cappctl` does not create or persist a password file. The resource command runs only after login succeeds. Stop automation on rejected credentials and rotate stale secrets rather than retrying bad passwords. Never log passwords or tokens.
+
+Before running automation, ensure the account's canonical username or resolved groups match Kubernetes User/Group RoleBindings granting the required permissions; directory search privileges alone grant no Capp permissions. Directory operators own account-lockout policy and recovery. Platform operators must configure distributed login-abuse controls at the gateway: the backend's optional per-IP, per-instance limiter cannot prevent account lockout from attempts across clients or replicas. LDAP provides no ADFS SSO or MFA.
+
+Stdin rules:
+
+- Read through EOF, up to **16 KiB of raw input**, including any final newline; reject overflow and invalid UTF-8 before sending credentials.
+- Remove at most one trailing LF or CRLF. Preserve all remaining bytes, including spaces, tabs, and embedded newlines; reject an empty result.
+- Reject `--password`, including an explicitly empty value. `--password-stdin` is LDAP-only and is rejected in explicit or auto-detected OpenShift/passthrough mode before reading stdin or entering an interactive flow.
+- Reject every credential-request redirect, including same-origin redirects and HTTPS-to-HTTP redirects. Point `--server` at the final HTTPS backend URL; redirect failures do not save a context.
+
+**Import an access token:** If an external login process already obtained an LDAP access JWT, import it without a password exchange:
+
+```bash
+cappctl login --server https://capp.example.com --context ldap-ci \
+  --auth-mode ldap --token "$LDAP_ACCESS_TOKEN" \
+  --cluster production --namespace my-team
+```
+
+Do not combine `--token` with `--username`, `--password`, or `--password-stdin`, even if those flags have empty or false values. Import requires a well-formed JWT with a usable positive numeric `exp` in the future. Malformed tokens and missing, nonnumeric, nonpositive, expired, or unpersistable expiry values are rejected without saving.
+
+The CLI parses imported expiry **without verifying the signature**, solely as untrusted local metadata. Import does not authenticate the token or establish its identity or permissions; the backend verifies signature, issuer, audience, purpose, and identity when the token is used. Password login instead records the backend response's `expiresAt`.
+
+LDAP access-token lifetime is configured on the backend with `auth.ldap.tokenTTLSeconds` (default **900 seconds / 15 minutes**). The CLI has no token-lifetime flag. See [LDAP expiry and re-login](#ldap-expiry-and-re-login) for resource and MCP behavior.
+
 ---
 
 ## Login
@@ -166,17 +208,18 @@ Authenticates and saves credentials to a named context. The context is set as cu
 
 | Flag          | Description                                              |
 |---------------|----------------------------------------------------------|
-| `--auth-mode` | Authentication mode (auto-detected if omitted)           |
-| `--token`     | Bearer token (passthrough) or raw OpenShift token        |
+| `--auth-mode` | `passthrough`, `openshift`, or `ldap` (auto-detected if omitted) |
+| `--token`     | Passthrough/OpenShift bearer token or LDAP access JWT import |
 | `--cluster`   | Target cluster (when required by auth mode)              |
 | `--namespace` | Default namespace to store in the context                |
-| `--username`  | Username (openshift password mode)                       |
-| `--insecure`  | Skip TLS certificate verification                        |
+| `--username`  | Username for OpenShift password login; required for LDAP password login |
+| `--password-stdin` | Read LDAP password from stdin; required with LDAP `--username` |
+| `--insecure`  | Skip TLS certificate verification; rejected for LDAP login |
 
 **Examples:**
 
 ```bash
-# Auto-detect auth mode
+# Auto-detect an OpenShift backend and use browser login
 cappctl login --server https://capp.example.com --context prod
 
 # Passthrough with a bearer token
@@ -244,10 +287,10 @@ Prints the name of the active context, or `(none)` if unset.
 
 ## Token Refresh
 
-For auth modes that return refresh tokens (`openshift`), `cappctl` automatically refreshes the access token before every request when the token expires within 30 seconds.
+For OpenShift contexts with refresh credentials, `cappctl` automatically refreshes the access token before authenticated commands when the token expires within 30 seconds.
 
 Refresh flow:
-1. `PersistentPreRunE` reads the active context's `token-expires-at`.
+1. `PersistentPreRunE` reads the selected context's `token-expires-at` when using its token.
 2. If `time.Until(expiry) <= 30s`, it calls `POST /api/v1/auth/refresh` with the refresh token.
 3. The new token pair is saved back to the config file.
 4. The refreshed token is used for the current request.
@@ -258,11 +301,23 @@ If the refresh token is set but `token-expires-at` is zero (unknown expiry), a w
 warning: refresh token set but token expiry unknown; skipping refresh
 ```
 
+### LDAP expiry and re-login
+
+LDAP contexts never refresh or silently reauthenticate. Before resource commands and `mcp-headers`, the CLI checks the selected context token's known expiry. At or after that instant it exits with:
+
+```text
+LDAP access token expired; run cappctl login again
+```
+
+The command handler does not run, no resource/refresh request is sent, and `mcp-headers` emits no headers. A token remains usable until its expiry, including within the last 30 seconds. This applies to both password-login and imported tokens. Contexts with unknown expiry defer token validation to the backend.
+
+Repeat the [LDAP login](#ldap) from the secret store, or import a newly obtained token, then rerun the command. Automation must obtain a fresh token explicitly; rerunning `mcp-headers` alone cannot renew an LDAP token. Flag/environment token overrides follow the precedence described under [Global Flags](#global-flags).
+
 ---
 
 ## MCP / Claude Code
 
-`cappctl mcp-headers` prints a JSON object of HTTP headers carrying a valid, auto-refreshed bearer token for the active (or `--context`-named) context. It runs through the same `PersistentPreRunE` flow as every other command, so it refreshes the token first if it expires within 30 seconds (see [Token Refresh](#token-refresh)) before printing.
+`cappctl mcp-headers` prints a JSON object containing the selected bearer token for the active (or `--context`-named) context, or a flag/environment override. It uses the same authentication checks as resource commands: OpenShift refresh credentials enable [automatic refresh](#token-refresh), while [expired LDAP context tokens](#ldap-expiry-and-re-login) cause a nonzero exit with no headers. A successful invocation does not itself authenticate the token with the backend.
 
 ```
 cappctl mcp-headers [--context <name>]
@@ -278,7 +333,7 @@ cappctl mcp-headers --context prod
 {"Authorization":"Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."}
 ```
 
-This is meant to be wired up as a Claude Code MCP `headersHelper`, not run standalone. Claude Code re-runs the helper on every connection, on reconnect, and automatically on a `401`/`403` response — so a short-lived token (e.g. `openshift` or `jwt` mode) gets refreshed transparently, without restarting the session. There is no `--headers-helper` flag on `claude mcp add`, so configure it via `claude mcp add-json`:
+Wire this command into the Claude Code MCP `headersHelper` configuration below. Each invocation reads the current saved credentials. With LDAP, complete an explicit login before reconnecting after expiry; the helper never reads a password or renews an LDAP token. OpenShift contexts with refresh credentials retain automatic refresh.
 
 ```bash
 claude mcp add-json capp-mcp '{
@@ -507,7 +562,7 @@ cappctl migrate capps my-app --cluster east --namespace team-a \
 
 ## Insecure TLS
 
-To connect to a server with a self-signed or untrusted certificate, pass `--insecure`:
+For OpenShift/passthrough development, `--insecure` permits a self-signed or untrusted server certificate:
 
 ```bash
 cappctl login --server https://local.dev:8443 --context dev --insecure --auth-mode passthrough --token test
@@ -515,6 +570,19 @@ cappctl get capps --cluster local --insecure
 ```
 
 The flag must be passed to every command (it is not saved to the context). For persistent insecure access, set it in a shell alias or wrapper script.
+
+### Backend CA trust
+
+LDAP login rejects `--insecure`. Install the private CA that issued the backend HTTPS certificate in the OS trust store used by `cappctl`, on the workstation or inside the automation container where it runs. For example, on Fedora/RHEL, an administrator can install a PEM CA certificate with:
+
+```bash
+sudo install -m 0644 capp-backend-ca.crt /etc/pki/ca-trust/source/anchors/capp-backend-ca.crt
+sudo update-ca-trust extract
+```
+
+Use your operating system's equivalent CA-installation procedure elsewhere, then run `cappctl login` over HTTPS without `--insecure`. The certificate must also match the hostname in `--server`. The CLI has no CA flag; it uses the runtime's trust store.
+
+The backend setting `auth.ldap.caCert` establishes trust for the backend's **LDAPS directory connections**. It does not install the backend HTTPS CA for the CLI. Configure these two trust relationships separately.
 
 ---
 ## Shell Completion
