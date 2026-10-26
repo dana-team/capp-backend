@@ -26,6 +26,15 @@ For backend maintainers and deployment operators: add opt-in backend authorizati
 - **Alternatives:** per-request authoritative reads retain stronger visibility but repeat policy transfer and namespace lookups; caching policy alone retains a namespace GET per namespaced request and stronger recreation protection. The user accepts caching both collections to remove that overhead. Compilation reuse alone saves CPU but not reads; polling alone is simpler but delays all updates until the next poll. Watch notifications alone do not establish a maximum age. A separate policy service adds operational dependencies without removing the freshness decision.
 - **References:** [requirements](requirements.md#constraints-and-compatibility), [refresh contract](phase-3/lld.md#2-policy-records-and-casbin-integration), [Kubernetes LIST/WATCH](https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes), [client-go informer consistency](https://pkg.go.dev/k8s.io/client-go/tools/cache#SharedInformer).
 
+## ADR — Concurrent evaluation of scoped policy
+
+- **Status:** accepted on 2026-10-26; implementation, equivalence tests and stage validation remain pending.
+- **Context:** local measurements show exclusive evaluator locking queues callers, while repeated scans of unrelated namespace policy dominate aggregate authorization work even with concurrent readers.
+- **Decision:** during policy refresh, validate the entire collection and compile immutable namespace-UID-indexed evaluators containing the namespace's grants and applicable `allNamespaces` grants. Keep cluster-level evaluation separate and provide a shared `allNamespaces` evaluator for explicit all-namespace checks and namespaces without membership records. Use Casbin's synchronized evaluator to allow concurrent readers, with request-local identities and availability/freshness validation before returning decisions. Publish all evaluators together as one policy generation; requests never compile policy. Keep the independent five-second freshness limits and defer decision caching.
+- **Consequences:** ordinary checks avoid unrelated namespace rules without weakening permission semantics. More evaluator instances and duplicated all-namespace grants increase generation-build work and memory; compilation must still fit the freshness budget. Full-collection validation, user/group error propagation, UID isolation and grant equivalence remain mandatory. Namespace metadata refreshes alone do not rebuild evaluators. Lightweight request authorization timing/check counts and separate refresh metrics verify costs; detailed profiling belongs in development/load tests.
+- **Alternatives:** an exclusive evaluator lock limits throughput; concurrent readers over the full policy still repeat unrelated scans. Decision caching adds identity-key, eviction and invalidation complexity and is deferred. Short-circuiting subject checks, changing capability responses or extending freshness are not adopted.
+- **References:** [local measurements](phase-3/performance/README.md), [evaluator contract](phase-3/lld.md#2-policy-records-and-casbin-integration).
+
 ## Data model
 
 - Bind canonical users/groups to actions within cluster/namespace scope; preserve distinctions between resource access, namespace administration, and membership delegation.
@@ -54,7 +63,7 @@ For backend maintainers and deployment operators: add opt-in backend authorizati
 
 ## Observability
 
-- Audit caller, action, target, evaluated namespace UID, policy/namespace collection versions, mode and outcome; correlate service-identity operations without logging credentials. Monitor each collection's age, refresh failures/duration/bytes, compilation, denials, latency and configuration drift.
+- Audit caller, action, target, evaluated namespace UID, policy/namespace collection versions, mode and outcome; correlate service-identity operations without logging credentials. Measure authorization duration and permission-check counts per request separately from Kubernetes operations and end-to-end latency. Monitor each collection's age, refresh failures/duration/bytes, compilation, denials and configuration drift. Use bounded metric labels and request-level aggregates, without per-check logs or identity/namespace/version labels; use detailed CPU, allocation and lock profiles during implementation/load tests.
 
 ## Assumptions
 
