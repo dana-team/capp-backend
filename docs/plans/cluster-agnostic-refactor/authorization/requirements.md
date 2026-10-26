@@ -33,9 +33,9 @@ Add backend-owned authorization that preserves platform access and editable memb
 
 ### R04
 
-- Requirement: Meet the agreed namespace-list correctness, latency, and read-volume budgets before migration.
-- Success criterion: With two replicas, 1,000 managed namespaces per cluster, and 20 concurrent list requests for five minutes after warm-up, p95 end-to-end latency is at most one second, with no authorization failures or leaks under healthy dependencies. Policy loading uses one unpaginated LIST per target/request; namespace listing uses at most three data reads total (policy, namespaces, quotas), independent of namespace count. Failure blocks migration.
-- Source: [Research — listing correctness and performance budgets](../research.md#group-3-openshift-platform-coupling); these targets were confirmed as agreed requirements during review on 2026-10-25.
+- Requirement: Meet the agreed namespace-list correctness and latency budgets, eliminate per-request policy loading, and bound permission-update delay before migration.
+- Success criterion: With two replicas, 1,000 managed namespaces per cluster, and 20 concurrent list requests for five minutes after warm-up, p95 end-to-end latency is at most one second, with no authorization failures or leaks under healthy dependencies. Warm requests perform no policy API reads or policy compilation; namespace listing uses at most two data reads (namespaces and quotas), independent of namespace count. Measure background policy traffic separately and demonstrate it follows refreshes/changes rather than request count. A separate ordinary resource-request profile verifies the same policy reuse. Across both replicas, grants and revocations affect new authorization decisions within the configured maximum policy age, or those decisions fail closed. Failure blocks migration.
+- Source: [Research — listing correctness and performance budgets](../research.md#group-3-openshift-platform-coupling); workload/latency targets were confirmed on 2026-10-25. Policy reuse and the five-second update-delay trade-off were accepted on 2026-10-26; see the [HLD decision](hld.md#adr--shared-policy-with-bounded-freshness).
 
 ### R05
 
@@ -47,9 +47,9 @@ Add backend-owned authorization that preserves platform access and editable memb
 
 - Initially enable backend authorization only with LDAP; reject incompatible configuration and preserve legacy authorization as the default under [shared R02](../requirements.md#r02). Keep HTTP shapes, quotas, resource operations, and both workload variants supported.
 - Policy and backend credentials must be inaccessible through generic resource endpoints and user-controlled workloads. Configured namespace restrictions remain additional boundaries regardless of grants; backend Kubernetes permissions are limited to required operations.
-- Use target-cluster policy without another database/policy service. Subsequent requests observe policy changes; already-authorized operations may finish, and token-carried groups retain authentication freshness limits. Multi-resource/cross-cluster writes remain non-transactional.
+- Use target-cluster policy without another database/policy service. A maximum permission-update delay of five seconds is accepted: replicas may temporarily disagree, and removed grants may authorize new decisions within that window. A replica must stop authorizing when it cannot establish policy freshness within five seconds; observed missing/invalid required policy invalidates authorization immediately. Already-authorized operations may finish, and token-carried groups retain authentication freshness limits. Multi-resource/cross-cluster writes remain non-transactional. The HLD records this decision; the LLD defines the refresh contract.
 
 ## Assumptions
 
 - Operators control protected namespaces, credentials, admission/service-account isolation, and initial grants on every target cluster; stage/dev and production are separate deployments.
-- Policy storage and direct reads fit the initial deployment. The agreed R04 workload is an acceptance target, not measured capacity; representative membership sizes, resources, dependency latency, bytes, and CPU must accompany results.
+- Policy storage, per-replica memory, and background refreshes fit the initial deployment. The R04 workload is an acceptance target, not measured capacity; representative membership sizes, resources, dependency latency, bytes, CPU, and measured permission-update delay must accompany results.
