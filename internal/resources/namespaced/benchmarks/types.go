@@ -27,3 +27,23 @@ type StatusResponse struct {
 	JobName string `json:"jobName"`
 	Status  string `json:"status"`
 }
+
+// DashboardQuery is one PromQL series on a dashboard.
+type DashboardQuery struct {
+	Legend string `json:"legend"`
+	Query  string `json:"query"`
+}
+
+// Dashboard is a preset chart for one Capp.
+type Dashboard struct {
+	ID          string           `json:"id"`
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	Unit        string           `json:"unit"`
+	Queries     []DashboardQuery `json:"queries"`
+}
+
+// DashboardsResponse is returned by GET .../metrics/dashboards.
+type DashboardsResponse struct {
+	Dashboards []Dashboard `json:"dashboards"`
+}

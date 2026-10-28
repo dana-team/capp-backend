@@ -43,7 +43,7 @@ tags:
   - name: benchmarks
     description: On-demand per-Capp benchmark Jobs
   - name: metrics
-    description: PromQL queries for a Capp against the configured Prometheus-compatible server
+    description: Preset Capp dashboards and PromQL queries against the configured Prometheus-compatible server
   - name: configmaps
     description: ConfigMap resource management
   - name: secrets
@@ -1162,6 +1162,51 @@ components:
           description: Present when status is error.
           example: bad query
       additionalProperties: true
+
+    DashboardQuery:
+      type: object
+      required: [legend, query]
+      properties:
+        legend:
+          type: string
+          description: Series name for the chart.
+          example: p95
+        query:
+          type: string
+          description: PromQL expression scoped to this Capp. Pass it to the query_range endpoint.
+          example: 'histogram_quantile(0.95, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{k8s_namespace_name="default",kn_service_name="my-capp"}[5m])))'
+
+    Dashboard:
+      type: object
+      required: [id, title, description, unit, queries]
+      properties:
+        id:
+          type: string
+          enum: [latency, throughput, autoscaling]
+          example: latency
+        title:
+          type: string
+          example: Latency
+        description:
+          type: string
+          example: Request duration measured by the queue-proxy, excluding activator wait.
+        unit:
+          type: string
+          description: Unit for every series on this dashboard.
+          example: seconds
+        queries:
+          type: array
+          items:
+            $ref: '#/components/schemas/DashboardQuery'
+
+    DashboardsResponse:
+      type: object
+      required: [dashboards]
+      properties:
+        dashboards:
+          type: array
+          items:
+            $ref: '#/components/schemas/Dashboard'
 
     SyncResponse:
       type: object
@@ -2440,6 +2485,35 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/dashboards:
+    get:
+      tags: [metrics]
+      summary: List preset PromQL dashboards for a Capp
+      description: |
+        Returns the latency, throughput, and autoscaling charts for this Capp.
+        Each expression is scoped to the Capp's Knative service
+        and is meant for `query_range`. The Capp must exist. Registered only
+        when `resources.benchmarks.enabled` is true.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Preset dashboards for the Capp.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardsResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
         "500":
           $ref: '#/components/responses/InternalError'
 
