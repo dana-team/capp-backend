@@ -15,6 +15,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -30,6 +31,8 @@ var policyModel string
 type Snapshot struct {
 	store            *Store
 	generation       *policyGeneration
+	namespaces       *namespaceGeneration
+	namespaceVersion string
 	evaluators       *policyEvaluators
 	subjects         []string
 	records          *policyRecords
@@ -93,6 +96,46 @@ func (s *Snapshot) ResourceVersion() string {
 	return s.listVersion
 }
 
+// Namespace returns a defensive copy of captured metadata, or Kubernetes NotFound
+// for a missing name in a usable collection. It never falls back to a live read.
+func (s *Snapshot) Namespace(name string) (*corev1.Namespace, error) {
+	if err := s.validateNamespaces(); err != nil {
+		return nil, err
+	}
+	namespace := s.namespaces.byName[name].DeepCopy()
+	if err := s.validateNamespaces(); err != nil {
+		return nil, err
+	}
+	if namespace == nil {
+		return nil, k8serrors.NewNotFound(corev1.Resource("namespaces"), name)
+	}
+	return namespace, nil
+}
+
+// Namespaces returns defensive copies of the complete captured collection sorted
+// by name. Callers must apply their configured access and discovery filters.
+func (s *Snapshot) Namespaces() ([]corev1.Namespace, error) {
+	if err := s.validateNamespaces(); err != nil {
+		return nil, err
+	}
+	namespaces := make([]corev1.Namespace, 0, len(s.namespaces.names))
+	for _, name := range s.namespaces.names {
+		namespaces = append(namespaces, *s.namespaces.byName[name].DeepCopy())
+	}
+	if err := s.validateNamespaces(); err != nil {
+		return nil, err
+	}
+	return namespaces, nil
+}
+
+// NamespaceResourceVersion returns the captured namespace LIST version for audit.
+func (s *Snapshot) NamespaceResourceVersion() (string, error) {
+	if err := s.validateNamespaces(); err != nil {
+		return "", err
+	}
+	return s.namespaceVersion, nil
+}
+
 // CheckCluster checks a permission that applies to cluster-level operations.
 func (s *Snapshot) CheckCluster(resource, action string) (bool, error) {
 	return s.check(clusterScope, resource, action)
@@ -104,9 +147,9 @@ func (s *Snapshot) CheckAllNamespaces(resource, action string) (bool, error) {
 	return s.check(allNamespacesScope, resource, action)
 }
 
-// CheckNamespace checks access to a current namespace instance. The caller must
-// pass metadata read from this target during the request, never request-body identity.
-// Aggregate operations can reuse one namespace LIST across all checks.
+// CheckNamespace checks access to a namespace instance. Shared snapshots verify
+// the supplied identity against their captured namespace collection. Direct-load
+// callers must supply metadata read from the target, never request-body identity.
 func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action string) (bool, error) {
 	if namespace == nil || namespace.Name == "" || namespace.UID == "" {
 		return false, errors.New("authorization requires current namespace metadata")
@@ -115,8 +158,14 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 		return false, errors.New("authorization snapshot is unavailable")
 	}
 	if s.store != nil {
-		// Shared policy alone cannot establish the current namespace identity.
-		return false, ErrPolicyUnavailable
+		cached, err := s.Namespace(namespace.Name)
+		if err != nil {
+			return false, err
+		}
+		if cached.UID != namespace.UID {
+			return false, ErrPolicyUnavailable
+		}
+		namespace = cached
 	}
 	if membership, ok := s.records.memberships[namespace.UID]; ok && membership.Namespace.Name != namespace.Name {
 		return false, errors.New("membership identity does not match current namespace")
@@ -124,18 +173,25 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 	return s.check("ns/"+string(namespace.UID), resource, action)
 }
 
+func (s *Snapshot) validateNamespaces() error {
+	if s == nil || s.store == nil {
+		return ErrPolicyUnavailable
+	}
+	return s.store.validateNamespaces(s.namespaces)
+}
+
 func (s *Snapshot) check(domain, resource, action string) (bool, error) {
 	if s == nil || s.evaluators == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
 	if s.store != nil {
-		if err := s.store.validate(s.generation); err != nil {
+		if err := s.store.validate(s.generation, s.namespaces, domain != clusterScope && domain != allNamespacesScope); err != nil {
 			return false, err
 		}
 	}
 	allowed, err := s.evaluate(domain, resource, action)
 	if s.store != nil {
-		if err := s.store.validate(s.generation); err != nil {
+		if err := s.store.validate(s.generation, s.namespaces, domain != clusterScope && domain != allNamespacesScope); err != nil {
 			return false, err
 		}
 	}
