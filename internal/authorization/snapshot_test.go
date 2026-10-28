@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/casbin/casbin/v3"
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -82,6 +85,13 @@ func TestLoad(t *testing.T) {
 			record.Data[policyDataKey] = strings.ReplaceAll(record.Data[policyDataKey], `"get"`, `"unknown"`)
 			return objects
 		}, want: "unsupported resource or action"},
+		{name: "invalid binding in unrelated namespace", modify: func(objects []*corev1.ConfigMap) []*corev1.ConfigMap {
+			other := objects[1].DeepCopy()
+			other.Name = membershipNamePrefix + "uid-2"
+			other.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Namespace", Name: "other", UID: "uid-2"}}
+			other.Data[policyDataKey] = `{"version":1,"namespace":{"name":"other","uid":"uid-2"},"users":[],"bindings":[{"kind":"User","name":"bob","role":"undefined"}]}`
+			return append(objects, other)
+		}, want: "undefined role"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			target := snapshotClient(t, interceptor.Funcs{}, tc.modify(snapshotObjects(t))...)
@@ -288,8 +298,9 @@ func TestSnapshotCheck(t *testing.T) {
 		snapshot := loadSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"team-editors"}})
 		var evaluated []any
 		// Inject an evaluator failure without introducing a production test interface.
-		snapshot.enforcer.GetModel()["m"]["m"].Value = "subjectCheck(r_sub)"
-		snapshot.enforcer.AddFunction("subjectCheck", func(args ...any) (any, error) {
+		enforcer := snapshot.evaluators.namespaces[currentNamespace().UID]
+		enforcer.GetModel()["m"]["m"].Value = "subjectCheck(r_sub)"
+		enforcer.AddFunction("subjectCheck", func(args ...any) (any, error) {
 			evaluated = append(evaluated, args[0])
 			if args[0] == policyIdentifier("User", "alice") {
 				return true, nil
@@ -352,6 +363,111 @@ func TestSnapshot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got, err := tc.snapshot.CheckNamespace(currentNamespace(), "secrets", "get"); got != tc.want || err != nil {
 				t.Errorf("CheckNamespace() = %v, %v, want %v, nil", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompilePolicyEvaluators(t *testing.T) {
+	objects := snapshotObjects(t)
+	items := make([]corev1.ConfigMap, len(objects))
+	for i, object := range objects {
+		items[i] = *object
+	}
+	records, err := parsePolicyRecords(items, "policies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records.memberships["uid-2"] = membershipPolicy{
+		Version: 1, Namespace: namespaceIdentity{Name: "other", UID: "uid-2"},
+		Users: []string{"bob"}, Bindings: []binding{{Kind: "User", Name: "alice", Role: "reader"}},
+	}
+	evaluators, err := compilePolicyEvaluators(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The unpartitioned evaluator is the reference for the existing permission semantics.
+	full, err := compilePolicy(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evaluators.namespaces) != len(records.memberships) {
+		t.Fatalf("namespace evaluators = %d, want %d", len(evaluators.namespaces), len(records.memberships))
+	}
+	namespaceCallers := []auth.ClusterCredential{
+		{ImpersonateUser: "alice", ImpersonateGroups: []string{"team-editors"}},
+		{ImpersonateUser: "bob"},
+	}
+	allCallers := slices.Concat(namespaceCallers, []auth.ClusterCredential{
+		{ImpersonateUser: "global-reader"},
+		{ImpersonateUser: "outsider", ImpersonateGroups: []string{"global-readers"}},
+		{ImpersonateUser: "admin"},
+	})
+	for _, scope := range []struct {
+		domain   string
+		enforcer *casbin.SyncedEnforcer
+		domains  []string
+		callers  []auth.ClusterCredential
+	}{
+		{domain: clusterScope, enforcer: evaluators.cluster, domains: []string{clusterScope}, callers: allCallers},
+		{domain: allNamespacesScope, enforcer: evaluators.allNamespaces, domains: []string{allNamespacesScope}, callers: allCallers},
+		{domain: "ns/uid-1", enforcer: evaluators.namespaces["uid-1"], domains: []string{"ns/uid-1", allNamespacesScope}, callers: allCallers},
+		{domain: "ns/uid-2", enforcer: evaluators.namespaces["uid-2"], domains: []string{"ns/uid-2", allNamespacesScope}, callers: namespaceCallers},
+		{domain: "ns/replacement", enforcer: evaluators.allNamespaces, domains: []string{allNamespacesScope}, callers: allCallers},
+	} {
+		t.Run(scope.domain, func(t *testing.T) {
+			t.Parallel()
+			if scope.enforcer == nil {
+				t.Fatal("missing scoped evaluator")
+			}
+			for _, policy := range []struct {
+				name        string
+				domainIndex int
+			}{
+				{name: "p", domainIndex: 1},
+				{name: "g", domainIndex: 2},
+			} {
+				var want [][]string
+				for _, row := range full.GetModel()[policy.name][policy.name].Policy {
+					if slices.Contains(scope.domains, row[policy.domainIndex]) {
+						want = append(want, row)
+					}
+				}
+				got := scope.enforcer.GetModel()[policy.name][policy.name].Policy
+				if diff := cmp.Diff(want, got, cmpopts.SortSlices(func(a, b []string) bool { return slices.Compare(a, b) < 0 })); diff != "" {
+					t.Errorf("%s policy rows mismatch (-want +got):\n%s", policy.name, diff)
+				}
+			}
+			for _, caller := range scope.callers {
+				t.Run(caller.ImpersonateUser, func(t *testing.T) {
+					// All callers and scopes share the same immutable evaluator set.
+					t.Parallel()
+					subjects, err := verifiedSubjects(caller)
+					if err != nil {
+						t.Fatal(err)
+					}
+					snapshot := &Snapshot{evaluators: evaluators, subjects: subjects, records: records}
+					for _, permission := range [][2]string{
+						{"capps", "get"}, {"capps", "update"}, {"secrets", "get"},
+						{"namespaces", "create"}, {"roles/capp-user", "replace"},
+						{"pods", "get"}, {"capps", "*"},
+					} {
+						want := false
+						for _, subject := range subjects {
+							allowed, err := full.Enforce(subject, scope.domain, permission[0], permission[1])
+							if err != nil {
+								t.Fatal(err)
+							}
+							want = want || allowed
+						}
+						for range 20 {
+							got, err := snapshot.check(scope.domain, permission[0], permission[1])
+							if err != nil || got != want {
+								t.Fatalf("check(%s, %s) = %v, %v, want %v, nil", permission[0], permission[1], got, err, want)
+							}
+						}
+					}
+				})
 			}
 		})
 	}

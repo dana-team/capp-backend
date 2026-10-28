@@ -15,6 +15,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -24,14 +25,22 @@ import (
 var policyModel string
 
 // Snapshot holds one target's policy and one verified caller's identity for a request.
-// Checks must be used sequentially within that request; Casbin maintains internal
-// evaluation state. Construct a separate snapshot for each caller and target.
+// Checks are safe to use concurrently. Caller subjects stay request-local while
+// immutable policy evaluators can be shared by snapshots for the same target.
 type Snapshot struct {
-	enforcer         *casbin.Enforcer
+	evaluators       *policyEvaluators
 	subjects         []string
 	records          *policyRecords
 	resourceVersions map[string]string
 	listVersion      string
+}
+
+// policyEvaluators is compiled in full before use and never mutated afterward.
+// Namespace evaluators include global grants but exclude other namespaces' rows.
+type policyEvaluators struct {
+	cluster       *casbin.SyncedEnforcer
+	allNamespaces *casbin.SyncedEnforcer
+	namespaces    map[types.UID]*casbin.SyncedEnforcer
 }
 
 // Load reads and validates all labeled policy records in one unpaginated LIST.
@@ -41,19 +50,12 @@ func Load(ctx context.Context, target client.Client, cfg config.ClusterAuthoriza
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(credential.ImpersonateUser) == "" {
-		return nil, errors.New("authorization requires a verified username")
+	subjects, err := verifiedSubjects(credential)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.PolicyNamespace == "" {
 		return nil, errors.New("authorization requires a policy namespace")
-	}
-	subjects := make([]string, 0, 1+len(credential.ImpersonateGroups))
-	subjects = append(subjects, policyIdentifier(rbacv1.UserKind, credential.ImpersonateUser))
-	for _, group := range credential.ImpersonateGroups {
-		if strings.TrimSpace(group) == "" {
-			return nil, errors.New("authorization requires nonblank verified groups")
-		}
-		subjects = append(subjects, policyIdentifier(rbacv1.GroupKind, group))
 	}
 
 	var list corev1.ConfigMapList
@@ -67,7 +69,7 @@ func Load(ctx context.Context, target client.Client, cfg config.ClusterAuthoriza
 	if err != nil {
 		return nil, err
 	}
-	enforcer, err := compilePolicy(records)
+	evaluators, err := compilePolicyEvaluators(records)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +81,7 @@ func Load(ctx context.Context, target client.Client, cfg config.ClusterAuthoriza
 		versions[list.Items[i].Name] = list.Items[i].ResourceVersion
 	}
 	return &Snapshot{
-		enforcer: enforcer, subjects: subjects, records: records,
+		evaluators: evaluators, subjects: subjects, records: records,
 		resourceVersions: versions, listVersion: list.ResourceVersion,
 	}, nil
 }
@@ -117,15 +119,26 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 }
 
 func (s *Snapshot) check(domain, resource, action string) (bool, error) {
-	if s == nil || s.enforcer == nil {
+	if s == nil || s.evaluators == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
 	if !knownPermission(resource, action) {
 		return false, nil
 	}
+	enforcer := s.evaluators.allNamespaces
+	switch domain {
+	case clusterScope:
+		enforcer = s.evaluators.cluster
+	case allNamespacesScope:
+		// Only explicit global grants can satisfy this scope.
+	default:
+		if scoped, ok := s.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, "ns/"))]; ok {
+			enforcer = scoped
+		}
+	}
 	allowed := false
 	for _, subject := range s.subjects {
-		granted, err := s.enforcer.Enforce(subject, domain, resource, action)
+		granted, err := enforcer.Enforce(subject, domain, resource, action)
 		if err != nil {
 			// Casbin diagnostics may contain policy or identity values.
 			return false, errors.New("authorization policy evaluation failed")
@@ -136,12 +149,65 @@ func (s *Snapshot) check(domain, resource, action string) (bool, error) {
 	return allowed, nil
 }
 
-func compilePolicy(records *policyRecords) (*casbin.Enforcer, error) {
+func verifiedSubjects(credential auth.ClusterCredential) ([]string, error) {
+	if strings.TrimSpace(credential.ImpersonateUser) == "" {
+		return nil, errors.New("authorization requires a verified username")
+	}
+	subjects := make([]string, 0, 1+len(credential.ImpersonateGroups))
+	subjects = append(subjects, policyIdentifier(rbacv1.UserKind, credential.ImpersonateUser))
+	for _, group := range credential.ImpersonateGroups {
+		if strings.TrimSpace(group) == "" {
+			return nil, errors.New("authorization requires nonblank verified groups")
+		}
+		subjects = append(subjects, policyIdentifier(rbacv1.GroupKind, group))
+	}
+	return subjects, nil
+}
+
+// compilePolicyEvaluators requires globally validated records: filtering first
+// would let invalid records outside the requested namespace escape validation.
+func compilePolicyEvaluators(records *policyRecords) (*policyEvaluators, error) {
+	cluster := policyRecords{cluster: clusterPolicy{Roles: records.cluster.Roles}}
+	global := policyRecords{cluster: clusterPolicy{Roles: records.cluster.Roles}}
+	for _, grant := range records.cluster.Bindings {
+		if grant.Scope == clusterScope {
+			cluster.cluster.Bindings = append(cluster.cluster.Bindings, grant)
+		} else {
+			global.cluster.Bindings = append(global.cluster.Bindings, grant)
+		}
+	}
+	clusterEnforcer, err := compilePolicy(&cluster)
+	if err != nil {
+		return nil, err
+	}
+	globalEnforcer, err := compilePolicy(&global)
+	if err != nil {
+		return nil, err
+	}
+	evaluators := &policyEvaluators{
+		cluster: clusterEnforcer, allNamespaces: globalEnforcer,
+		namespaces: make(map[types.UID]*casbin.SyncedEnforcer, len(records.memberships)),
+	}
+	for uid, membership := range records.memberships {
+		scoped := policyRecords{
+			cluster:     global.cluster,
+			memberships: map[types.UID]membershipPolicy{uid: membership},
+		}
+		enforcer, err := compilePolicy(&scoped)
+		if err != nil {
+			return nil, err
+		}
+		evaluators.namespaces[uid] = enforcer
+	}
+	return evaluators, nil
+}
+
+func compilePolicy(records *policyRecords) (*casbin.SyncedEnforcer, error) {
 	policy, err := model.NewModelFromString(policyModel)
 	if err != nil {
 		return nil, errors.New("invalid authorization model")
 	}
-	enforcer, err := casbin.NewEnforcer(policy)
+	enforcer, err := casbin.NewSyncedEnforcer(policy)
 	if err != nil {
 		return nil, errors.New("cannot initialize authorization evaluator")
 	}
