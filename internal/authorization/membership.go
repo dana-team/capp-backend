@@ -23,29 +23,31 @@ var (
 
 // ReplaceUsers replaces direct capp-user members, preserving operator bindings.
 // Nil leaves membership unchanged; an empty slice clears it.
-// Call after authorization and setup, using current namespace metadata and Load's target/config.
+// Call after authorization and setup, using current namespace metadata and the snapshot's target/config.
 // Returns ErrInvalidMembership or ErrMembershipConflict as applicable.
-// Does not retry or modify the snapshot.
-func (s *Snapshot) ReplaceUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string) error {
+// Returns the sorted persisted direct users, or nil when users is nil (no write).
+// Successful writes and conflicts invalidate the local store without waiting for
+// reload. Writes are not retried, and captured records are never modified.
+func (s *Snapshot) ReplaceUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string) ([]string, error) {
 	return s.writeUsers(ctx, target, cfg, namespace, users, false)
 }
 
 // AddUsers adds direct capp-user members without duplicates; nil leaves membership
 // unchanged. It has the same caller prerequisites and error contract as ReplaceUsers.
-func (s *Snapshot) AddUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string) error {
+func (s *Snapshot) AddUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string) ([]string, error) {
 	return s.writeUsers(ctx, target, cfg, namespace, users, true)
 }
 
-func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string, add bool) error {
+func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string, add bool) ([]string, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if users == nil {
-		return nil
+		return nil, nil
 	}
-	record, err := s.prepareMembership(cfg.PolicyNamespace, namespace, users, add)
+	record, persistedUsers, err := s.prepareMembership(cfg.PolicyNamespace, namespace, users, add)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	exists := record.ResourceVersion != ""
 	if exists {
@@ -57,36 +59,42 @@ func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg con
 		err = target.Create(ctx, record)
 	}
 	if k8serrors.IsConflict(err) || k8serrors.IsAlreadyExists(err) || (exists && k8serrors.IsNotFound(err)) {
-		return ErrMembershipConflict
+		if s.store != nil {
+			s.store.Invalidate()
+		}
+		return nil, ErrMembershipConflict
 	}
 	if err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 		// Kubernetes diagnostics can include submitted policy values.
-		return errors.New("cannot persist namespace membership")
+		return nil, errors.New("cannot persist namespace membership")
 	}
-	return nil
+	if s.store != nil {
+		s.store.Invalidate()
+	}
+	return persistedUsers, nil
 }
 
 // prepareMembership builds a validated record without mutating the snapshot.
 // Existing records retain their snapshot version; new records have no version.
-func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.Namespace, users []string, add bool) (*corev1.ConfigMap, error) {
+func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.Namespace, users []string, add bool) (*corev1.ConfigMap, []string, error) {
 	if s == nil || s.records == nil {
-		return nil, errors.New("authorization snapshot is unavailable")
+		return nil, nil, errors.New("authorization snapshot is unavailable")
 	}
 	if namespace == nil || namespace.Name == "" || namespace.UID == "" || policyNamespace == "" {
-		return nil, errors.New("membership requires current namespace metadata and a policy namespace")
+		return nil, nil, errors.New("membership requires current namespace metadata and a policy namespace")
 	}
 	for _, user := range users {
 		// JSON encoding replaces invalid UTF-8, which would change the identity granted access.
 		if !utf8.ValidString(user) {
-			return nil, ErrInvalidMembership
+			return nil, nil, ErrInvalidMembership
 		}
 	}
 	membership, exists := s.records.memberships[namespace.UID]
 	if exists && membership.Namespace.Name != namespace.Name {
-		return nil, errors.New("membership identity does not match current namespace")
+		return nil, nil, errors.New("membership identity does not match current namespace")
 	}
 	if !exists {
 		membership = membershipPolicy{
@@ -107,12 +115,12 @@ func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.N
 	}
 	if len(membership.Users) > 0 {
 		if _, ok := s.records.cluster.Roles[memberRole]; !ok {
-			return nil, errors.New("users reference undefined capp-user role")
+			return nil, nil, errors.New("users reference undefined capp-user role")
 		}
 	}
 	payload, err := json.Marshal(membership)
 	if err != nil {
-		return nil, ErrInvalidMembership
+		return nil, nil, ErrInvalidMembership
 	}
 	record := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: membershipNamePrefix + string(namespace.UID), Namespace: policyNamespace,
@@ -124,15 +132,15 @@ func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.N
 	if exists {
 		record.ResourceVersion = s.resourceVersions[record.Name]
 		if record.ResourceVersion == "" {
-			return nil, errors.New("membership snapshot is missing its resource version")
+			return nil, nil, errors.New("membership snapshot is missing its resource version")
 		}
 	}
 	record.Data = map[string]string{policyDataKey: string(payload)}
 	if err := validateRecord(record, policyNamespace); err != nil {
-		return nil, ErrInvalidMembership
+		return nil, nil, ErrInvalidMembership
 	}
 	if _, err := parseMembershipPolicy(record); err != nil {
-		return nil, ErrInvalidMembership
+		return nil, nil, ErrInvalidMembership
 	}
-	return record, nil
+	return record, membership.Users, nil
 }

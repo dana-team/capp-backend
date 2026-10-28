@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/config"
@@ -69,7 +71,7 @@ func TestSnapshotReplaceUsers(t *testing.T) {
 			}}, objects...)
 			snapshot := membershipSnapshot(t, target)
 			input := slices.Clone(tc.users)
-			err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), input)
+			result, err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), input)
 			if !errors.Is(err, tc.wantError) {
 				t.Fatalf("ReplaceUsers() error = %v, want %v", err, tc.wantError)
 			}
@@ -81,6 +83,13 @@ func TestSnapshotReplaceUsers(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.users, input); diff != "" {
 				t.Errorf("input changed (-want +got):\n%s", diff)
+			}
+			wantResult := tc.want
+			if tc.users == nil {
+				wantResult = nil
+			}
+			if diff := cmp.Diff(wantResult, result); diff != "" {
+				t.Errorf("persisted users (-want +got):\n%s", diff)
 			}
 			stored := readMembership(t, target)
 			membership, err := parseMembershipPolicy(stored)
@@ -106,7 +115,7 @@ func TestSnapshotReplaceUsers(t *testing.T) {
 	t.Run("new membership has namespace ownership and no managed-resource label", func(t *testing.T) {
 		target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)[:1]...)
 		snapshot := membershipSnapshot(t, target)
-		if err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"}); err != nil {
+		if _, err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"}); err != nil {
 			t.Fatal(err)
 		}
 		stored := readMembership(t, target)
@@ -136,8 +145,12 @@ func TestSnapshotAddUsers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...)
 			snapshot := membershipSnapshot(t, target)
-			if err := snapshot.AddUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), tc.users); err != nil {
+			result, err := snapshot.AddUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), tc.users)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if diff := cmp.Diff(tc.want, result); diff != "" {
+				t.Errorf("persisted additions (-want +got):\n%s", diff)
 			}
 			membership, err := parseMembershipPolicy(readMembership(t, target))
 			if err != nil {
@@ -151,6 +164,9 @@ func TestSnapshotAddUsers(t *testing.T) {
 }
 
 func TestSnapshotWriteUsers(t *testing.T) {
+	t.Run("local cache follows write outcome", testMembershipInvalidation)
+	t.Run("persisted write survives failed reload and retires in-flight data", testMembershipWriteReload)
+
 	for _, tc := range []struct {
 		name    string
 		missing bool
@@ -203,7 +219,7 @@ func TestSnapshotWriteUsers(t *testing.T) {
 			if tc.add {
 				write = snapshot.AddUsers
 			}
-			err := write(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"alice"})
+			_, err := write(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"alice"})
 			if !errors.Is(err, ErrMembershipConflict) || writes != 1 {
 				t.Fatalf("write users = %v, %d writes, want conflict and one attempt", err, writes)
 			}
@@ -220,7 +236,7 @@ func TestSnapshotWriteUsers(t *testing.T) {
 		target := snapshotClient(t, interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
 			return k8serrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "private-record", errors.New("private policy"))
 		}}, snapshotObjects(t)...)
-		err := membershipSnapshot(t, target).ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"})
+		_, err := membershipSnapshot(t, target).ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"})
 		if err == nil || errors.Is(err, ErrInvalidMembership) || errors.Is(err, ErrMembershipConflict) || strings.Contains(err.Error(), "private") {
 			t.Fatalf("ReplaceUsers() error = %v, want sanitized persistence failure", err)
 		}
@@ -251,7 +267,7 @@ func TestSnapshotWriteUsers(t *testing.T) {
 			case "undefined member role":
 				delete(snapshot.records.cluster.Roles, memberRole)
 			}
-			err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, namespace, []string{"bob"})
+			_, err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, namespace, []string{"bob"})
 			if err == nil || errors.Is(err, ErrInvalidMembership) || errors.Is(err, ErrMembershipConflict) {
 				t.Fatalf("ReplaceUsers() error = %v, want snapshot/context failure", err)
 			}
@@ -260,6 +276,118 @@ func TestSnapshotWriteUsers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testMembershipInvalidation(t *testing.T) {
+	t.Helper()
+	resource := schema.GroupResource{Resource: "configmaps"}
+	for _, tc := range []struct {
+		name      string
+		writeErr  error
+		unchanged bool
+	}{
+		{name: "version conflict", writeErr: k8serrors.NewConflict(resource, "membership", errors.New("changed"))},
+		{name: "create conflict", writeErr: k8serrors.NewAlreadyExists(resource, "membership")},
+		{name: "deleted record", writeErr: k8serrors.NewNotFound(resource, "membership")},
+		{name: "rejected write retains policy", writeErr: k8serrors.NewForbidden(resource, "membership", errors.New("denied")), unchanged: true},
+		{name: "omitted users retain policy", unchanged: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				store, source := newPolicyStore(t)
+				if k8serrors.IsAlreadyExists(tc.writeErr) {
+					source.list.Items = source.list.Items[:1]
+				}
+				startPolicyStore(t, store)
+				credential := auth.ClusterCredential{ImpersonateUser: "admin"}
+				snapshot := awaitStoreSnapshot(t, store, credential)
+				source.mu.Lock()
+				source.listErr = errors.New("offline")
+				source.mu.Unlock()
+				writes := 0
+				target := snapshotClient(t, interceptor.Funcs{
+					Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+						writes++
+						return tc.writeErr
+					},
+					Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+						writes++
+						return tc.writeErr
+					},
+				})
+				var users []string
+				if tc.writeErr != nil {
+					users = []string{"bob"}
+				}
+				result, err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), users)
+				if result != nil || (err != nil) != (tc.writeErr != nil) {
+					t.Fatalf("write = %v, %v, want no result and error presence %v", result, err, tc.writeErr != nil)
+				}
+				if !tc.unchanged && !errors.Is(err, ErrMembershipConflict) {
+					t.Fatalf("write error = %v, want conflict", err)
+				}
+				wantWrites := 1
+				if users == nil {
+					wantWrites = 0
+				}
+				if writes != wantWrites {
+					t.Fatalf("write attempts = %d, want %d", writes, wantWrites)
+				}
+				_, err = store.Snapshot(credential)
+				if tc.unchanged && err != nil || !tc.unchanged && !errors.Is(err, ErrPolicyUnavailable) {
+					t.Fatalf("snapshot after write = %v, want available %v", err, tc.unchanged)
+				}
+			})
+		})
+	}
+}
+
+func testMembershipWriteReload(t *testing.T) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		store, source := newPolicyStore(t)
+		otherStore, _ := newPolicyStore(t)
+		startPolicyStore(t, store)
+		startPolicyStore(t, otherStore)
+		credential := auth.ClusterCredential{ImpersonateUser: "alice"}
+		snapshot := awaitStoreSnapshot(t, store, credential)
+		other := awaitStoreSnapshot(t, otherStore, credential)
+		release := make(chan struct{})
+		source.mu.Lock()
+		source.holdNext = release
+		source.mu.Unlock()
+		source.notify()
+		synctest.Wait()
+		source.mu.Lock()
+		source.listErr = errors.New("offline")
+		source.mu.Unlock()
+		reads, _ := source.counts()
+		target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...)
+		users, err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"})
+		if err != nil || !slices.Equal(users, []string{"bob"}) {
+			t.Fatalf("persisted write = %v, %v, want [bob], nil", users, err)
+		}
+		stored, err := parseMembershipPolicy(readMembership(t, target))
+		if err != nil || !slices.Equal(stored.Users, users) {
+			t.Fatalf("stored membership = %+v, %v, want users %v", stored, err, users)
+		}
+		close(release)
+		synctest.Wait()
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if got, _ := source.counts(); got <= reads+1 {
+			t.Fatalf("reload reads = %d, want retries after baseline %d", got, reads)
+		}
+		if _, err := store.Snapshot(credential); !errors.Is(err, ErrPolicyUnavailable) {
+			t.Fatalf("snapshot after failed retries = %v, want unavailable", err)
+		}
+		if allowed, err := snapshot.CheckAllNamespaces("secrets", "get"); allowed || !errors.Is(err, ErrPolicyUnavailable) {
+			t.Fatalf("captured check after write = %v, %v, want unavailable", allowed, err)
+		}
+		if _, err := other.CheckAllNamespaces("secrets", "get"); err != nil {
+			t.Fatalf("independent replica lost its usable policy: %v", err)
+		}
+	})
 }
 
 func membershipSnapshot(t *testing.T, target client.Client) *Snapshot {
