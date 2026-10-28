@@ -187,3 +187,4 @@ resources:
   #   enabled: false
   #   image: ""                       # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
   #   vmURLs: []                      # or CAPP_RESOURCES_BENCHMARKS_VMURLS=url1,url2
+  #   apiKey: ""                      # or CAPP_RESOURCES_BENCHMARKS_APIKEY; prefer the env var

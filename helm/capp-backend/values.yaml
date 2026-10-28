@@ -151,7 +151,7 @@ config:
           memory: "2Gi"
 
   # On-demand per-capp benchmarking. The backend creates a Job from image.
-  # vmURLs are injected from secret.benchmarkVmURLs, not set here.
+  # vmURLs and the PromQL API key are injected from the Secret, not set here.
   benchmarks:
     enabled: false
     image: ""                        # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
@@ -194,11 +194,16 @@ secret:
   # Override: --set secret.gitopsToken="<personal-access-token>"
   gitopsToken: ""
 
-  # VictoriaMetrics base URLs. The monitoring stack writes to two instances.
+  # Prometheus-compatible base URLs. The monitoring stack writes to two instances.
   # Required when config.resources.benchmarks.enabled is true.
   # Injected as CAPP_RESOURCES_BENCHMARKS_VMURLS (comma-separated).
   # Override: --set secret.benchmarkVmURLs[0]="http://vm-a.monitoring.svc:8428" --set secret.benchmarkVmURLs[1]="http://vm-b.monitoring.svc:8428"
   benchmarkVmURLs: []
+
+  # Bearer token for PromQL queries. Required when config.resources.benchmarks.enabled is true.
+  # Injected as CAPP_RESOURCES_BENCHMARKS_APIKEY.
+  # Override: --set secret.benchmarkAPIKey="<api-key>"
+  benchmarkAPIKey: ""
 
   # SSH private key for GitOps. Required when config.gitops.authMethod is "ssh".
   # Override: --set-file secret.sshKey=/path/to/private/key

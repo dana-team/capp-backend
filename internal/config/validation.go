@@ -421,6 +421,12 @@ func validateBenchmarks(b *BenchmarkConfig) []error {
 				"set via CAPP_RESOURCES_BENCHMARKS_VMURLS environment variable",
 		))
 	}
+	if strings.TrimSpace(b.APIKey) == "" {
+		errs = append(errs, errors.New(
+			"config: resources.benchmarks.apiKey is required when resources.benchmarks.enabled is true; "+
+				"set via CAPP_RESOURCES_BENCHMARKS_APIKEY environment variable",
+		))
+	}
 
 	return errs
 }

@@ -31,17 +31,18 @@ import (
 // of the JSON error envelope and are stable across releases. Frontend code
 // should switch on these strings rather than HTTP status codes.
 const (
-	CodeNotFound         = "NOT_FOUND"
-	CodeConflict         = "CONFLICT"
-	CodeForbidden        = "FORBIDDEN"
-	CodeUnauthorized     = "UNAUTHORIZED"
-	CodeBadRequest       = "BAD_REQUEST"
-	CodeInternal         = "INTERNAL_ERROR"
-	CodeClusterNotFound  = "CLUSTER_NOT_FOUND"
-	CodeClusterUnhealthy = "CLUSTER_UNHEALTHY"
-	CodeNotSupported     = "NOT_SUPPORTED"
-	CodeNamespaceDenied  = "NAMESPACE_DENIED"
-	CodeGitopsFailed     = "GITOPS_FAILED"
+	CodeNotFound              = "NOT_FOUND"
+	CodeConflict              = "CONFLICT"
+	CodeForbidden             = "FORBIDDEN"
+	CodeUnauthorized          = "UNAUTHORIZED"
+	CodeBadRequest            = "BAD_REQUEST"
+	CodeInternal              = "INTERNAL_ERROR"
+	CodeClusterNotFound       = "CLUSTER_NOT_FOUND"
+	CodeClusterUnhealthy      = "CLUSTER_UNHEALTHY"
+	CodeNotSupported          = "NOT_SUPPORTED"
+	CodeNamespaceDenied       = "NAMESPACE_DENIED"
+	CodeGitopsFailed          = "GITOPS_FAILED"
+	CodePrometheusQueryFailed = "PROMETHEUS_QUERY_FAILED"
 )
 
 // APIError is the canonical error type for all HTTP responses. It implements
@@ -166,6 +167,18 @@ func NewGitopsFailed(err error) *APIError {
 	return &APIError{
 		Code:    CodeGitopsFailed,
 		Message: "writing to the GitOps repository failed; retry the sync/unsync operation",
+		Status:  http.StatusBadGateway,
+		cause:   err,
+	}
+}
+
+// NewPrometheusQueryFailed returns a 502 error when a PromQL query cannot be
+// served by the configured Prometheus-compatible server. The cause is kept
+// for server logs and is not included in the client message.
+func NewPrometheusQueryFailed(err error) *APIError {
+	return &APIError{
+		Code:    CodePrometheusQueryFailed,
+		Message: "Prometheus query failed",
 		Status:  http.StatusBadGateway,
 		cause:   err,
 	}

@@ -467,7 +467,7 @@ func TestValidate_Benchmarks(t *testing.T) {
 			benchmarks: BenchmarkConfig{Enabled: false},
 		},
 		{
-			name: "enabled with image and vmURLs — valid",
+			name: "enabled with image, vmURLs, and apiKey — valid",
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
@@ -475,6 +475,7 @@ func TestValidate_Benchmarks(t *testing.T) {
 					"http://vm-a.monitoring.svc:8428",
 					"http://vm-b.monitoring.svc:8428",
 				},
+				APIKey: "vm-secret",
 			},
 		},
 		{
@@ -482,6 +483,7 @@ func TestValidate_Benchmarks(t *testing.T) {
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
+				APIKey:  "vm-secret",
 			},
 			wantErr:    true,
 			errContain: "resources.benchmarks.image is required",
@@ -491,9 +493,20 @@ func TestValidate_Benchmarks(t *testing.T) {
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+				APIKey:  "vm-secret",
 			},
 			wantErr:    true,
 			errContain: "resources.benchmarks.vmURLs is required",
+		},
+		{
+			name: "enabled without apiKey — error",
+			benchmarks: BenchmarkConfig{
+				Enabled: true,
+				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
+			},
+			wantErr:    true,
+			errContain: "resources.benchmarks.apiKey is required",
 		},
 	}
 	for _, tt := range tests {
@@ -551,6 +564,23 @@ resources:
 		"http://vm-a.monitoring.svc:8428",
 		"http://vm-b.monitoring.svc:8428",
 	}, cfg.Resources.Benchmarks.VMURLs)
+}
+
+func TestLoad_BenchmarkAPIKeyFromEnv(t *testing.T) {
+	t.Setenv("CAPP_RESOURCES_BENCHMARKS_APIKEY", " vm-secret ")
+	cfg := loadTempConfig(t, `
+clusters:
+  - name: dev
+    credential:
+      inline:
+        apiServer: "https://dev.example.com:6443"
+resources:
+  benchmarks:
+    enabled: true
+    image: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
+    apiKey: "from-file"
+`)
+	assert.Equal(t, "vm-secret", cfg.Resources.Benchmarks.APIKey)
 }
 
 func TestLoad(t *testing.T) {
