@@ -67,7 +67,6 @@ type policyGeneration struct {
 	evaluators *policyEvaluators
 	records    *policyRecords
 	identities map[string]recordIdentity
-	versions   map[string]string
 }
 
 type recordIdentity struct {
@@ -164,12 +163,11 @@ func (s *Store) Snapshot(credential auth.ClusterCredential) (*Snapshot, error) {
 	if !s.usable(s.generation) {
 		return nil, ErrPolicyUnavailable
 	}
-	generation := s.generation
 	return &Snapshot{
-		store: s, generation: generation, evaluators: generation.evaluators,
+		store: s, generation: s.generation,
 		namespaces: s.namespaces, namespaceVersion: s.namespaceVersion,
-		records: generation.records, subjects: subjects,
-		resourceVersions: generation.versions, listVersion: s.listVersion,
+		subjects:    subjects,
+		listVersion: s.listVersion,
 	}, nil
 }
 
@@ -307,11 +305,7 @@ func (s *Store) reload(ctx context.Context) error {
 			s.reject(epoch)
 			return err
 		}
-		versions := make(map[string]string, len(identities))
-		for name, identity := range identities {
-			versions[name] = identity.version
-		}
-		generation = &policyGeneration{records: records, evaluators: evaluators, identities: identities, versions: versions}
+		generation = &policyGeneration{records: records, evaluators: evaluators, identities: identities}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -159,7 +159,7 @@ func TestSnapshotCheck(t *testing.T) {
 		snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"team-editors"}})
 		var evaluated []any
 		// Inject an evaluator failure without introducing a production test interface.
-		enforcer := snapshot.evaluators.namespaces[currentNamespace().UID]
+		enforcer := snapshot.generation.evaluators.namespaces[currentNamespace().UID]
 		enforcer.GetModel()["m"]["m"].Value = "subjectCheck(r_sub)"
 		enforcer.AddFunction("subjectCheck", func(args ...any) (any, error) {
 			evaluated = append(evaluated, args[0])
@@ -297,7 +297,7 @@ func TestCompilePolicyEvaluators(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					snapshot := &Snapshot{evaluators: evaluators, subjects: subjects, records: records}
+					snapshot := &Snapshot{generation: &policyGeneration{evaluators: evaluators, records: records}, subjects: subjects}
 					for _, permission := range [][2]string{
 						{"capps", "get"}, {"capps", "update"}, {"secrets", "get"},
 						{"namespaces", "create"}, {"roles/capp-user", "replace"},

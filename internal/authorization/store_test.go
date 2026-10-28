@@ -85,9 +85,9 @@ func TestStoreSnapshot(t *testing.T) {
 					}
 					snapshot := awaitNamespaceSnapshot(t, store, credential)
 					release := make(chan struct{})
-					enforcer := snapshot.evaluators.cluster
+					enforcer := snapshot.generation.evaluators.cluster
 					if namespaced {
-						enforcer = snapshot.evaluators.namespaces["uid-1"]
+						enforcer = snapshot.generation.evaluators.namespaces["uid-1"]
 					}
 					enforcer.GetModel()["m"]["m"].Value = "pause()"
 					enforcer.AddFunction("pause", func(...any) (any, error) {
@@ -844,7 +844,7 @@ func newPolicyStore(t *testing.T) (*Store, *policySource) {
 			source.current = watch.NewRaceFreeFake()
 			return source.current, nil
 		},
-	})
+	}, snapshotObjects(t)...)
 	store, err := NewStore(target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)

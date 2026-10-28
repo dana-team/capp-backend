@@ -7,7 +7,6 @@ import (
 	"slices"
 	"unicode/utf8"
 
-	"github.com/dana-team/capp-backend/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,29 +22,30 @@ var (
 
 // ReplaceUsers replaces direct capp-user members, preserving operator bindings.
 // Nil leaves membership unchanged; an empty slice clears it.
-// Call after authorization and setup, using current namespace metadata and the snapshot's target/config.
+// Call after authorization and setup, using current namespace metadata.
+// Writes use the snapshot's store client and policy namespace.
 // Returns ErrInvalidMembership or ErrMembershipConflict as applicable.
 // Returns the sorted persisted direct users, or nil when users is nil (no write).
 // Successful writes and conflicts invalidate the local store without waiting for
 // reload. Writes are not retried, and captured records are never modified.
-func (s *Snapshot) ReplaceUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string) ([]string, error) {
-	return s.writeUsers(ctx, target, cfg, namespace, users, false)
+func (s *Snapshot) ReplaceUsers(ctx context.Context, namespace *corev1.Namespace, users []string) ([]string, error) {
+	return s.writeUsers(ctx, namespace, users, false)
 }
 
 // AddUsers adds direct capp-user members without duplicates; nil leaves membership
 // unchanged. It has the same caller prerequisites and error contract as ReplaceUsers.
-func (s *Snapshot) AddUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string) ([]string, error) {
-	return s.writeUsers(ctx, target, cfg, namespace, users, true)
+func (s *Snapshot) AddUsers(ctx context.Context, namespace *corev1.Namespace, users []string) ([]string, error) {
+	return s.writeUsers(ctx, namespace, users, true)
 }
 
-func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, namespace *corev1.Namespace, users []string, add bool) ([]string, error) {
+func (s *Snapshot) writeUsers(ctx context.Context, namespace *corev1.Namespace, users []string, add bool) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if users == nil {
 		return nil, nil
 	}
-	record, persistedUsers, err := s.prepareMembership(cfg.PolicyNamespace, namespace, users, add)
+	record, persistedUsers, err := s.prepareMembership(namespace, users, add)
 	if err != nil {
 		return nil, err
 	}
@@ -54,9 +54,9 @@ func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg con
 		// Patch only policy.json and the snapshot version, preserving other data and metadata.
 		base := record.DeepCopy()
 		base.Data = nil
-		err = target.Patch(ctx, record, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		err = s.store.target.Patch(ctx, record, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 	} else {
-		err = target.Create(ctx, record)
+		err = s.store.target.Create(ctx, record)
 	}
 	if k8serrors.IsConflict(err) || k8serrors.IsAlreadyExists(err) || (exists && k8serrors.IsNotFound(err)) {
 		s.store.Invalidate()
@@ -75,10 +75,11 @@ func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg con
 
 // prepareMembership builds a validated record without mutating the snapshot.
 // Existing records retain their snapshot version; new records have no version.
-func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.Namespace, users []string, add bool) (*corev1.ConfigMap, []string, error) {
-	if s == nil || s.store == nil || s.records == nil {
+func (s *Snapshot) prepareMembership(namespace *corev1.Namespace, users []string, add bool) (*corev1.ConfigMap, []string, error) {
+	if s == nil || s.store == nil || s.generation == nil || s.generation.records == nil {
 		return nil, nil, errors.New("authorization snapshot is unavailable")
 	}
+	policyNamespace := s.store.namespace
 	if namespace == nil || namespace.Name == "" || namespace.UID == "" || policyNamespace == "" {
 		return nil, nil, errors.New("membership requires current namespace metadata and a policy namespace")
 	}
@@ -88,7 +89,7 @@ func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.N
 			return nil, nil, ErrInvalidMembership
 		}
 	}
-	membership, exists := s.records.memberships[namespace.UID]
+	membership, exists := s.generation.records.memberships[namespace.UID]
 	if exists && membership.Namespace.Name != namespace.Name {
 		return nil, nil, errors.New("membership identity does not match current namespace")
 	}
@@ -110,7 +111,7 @@ func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.N
 		membership.Users = []string{}
 	}
 	if len(membership.Users) > 0 {
-		if _, ok := s.records.cluster.Roles[memberRole]; !ok {
+		if _, ok := s.generation.records.cluster.Roles[memberRole]; !ok {
 			return nil, nil, errors.New("users reference undefined capp-user role")
 		}
 	}
@@ -126,7 +127,7 @@ func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.N
 		}},
 	}}
 	if exists {
-		record.ResourceVersion = s.resourceVersions[record.Name]
+		record.ResourceVersion = s.generation.identities[record.Name].version
 		if record.ResourceVersion == "" {
 			return nil, nil, errors.New("membership snapshot is missing its resource version")
 		}

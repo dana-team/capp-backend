@@ -29,10 +29,7 @@ type Snapshot struct {
 	generation       *policyGeneration
 	namespaces       *namespaceGeneration
 	namespaceVersion string
-	evaluators       *policyEvaluators
 	subjects         []string
-	records          *policyRecords
-	resourceVersions map[string]string
 	listVersion      string
 }
 
@@ -106,7 +103,7 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 	if namespace == nil || namespace.Name == "" || namespace.UID == "" {
 		return false, errors.New("authorization requires current namespace metadata")
 	}
-	if s == nil || s.store == nil || s.records == nil {
+	if s == nil || s.store == nil || s.generation == nil || s.generation.records == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
 	cached, err := s.Namespace(namespace.Name)
@@ -117,7 +114,7 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 		return false, ErrPolicyUnavailable
 	}
 	namespace = cached
-	if membership, ok := s.records.memberships[namespace.UID]; ok && membership.Namespace.Name != namespace.Name {
+	if membership, ok := s.generation.records.memberships[namespace.UID]; ok && membership.Namespace.Name != namespace.Name {
 		return false, errors.New("membership identity does not match current namespace")
 	}
 	return s.check("ns/"+string(namespace.UID), resource, action)
@@ -131,7 +128,7 @@ func (s *Snapshot) validateNamespaces() error {
 }
 
 func (s *Snapshot) check(domain, resource, action string) (bool, error) {
-	if s == nil || s.store == nil || s.evaluators == nil {
+	if s == nil || s.store == nil || s.generation == nil || s.generation.evaluators == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
 	if err := s.store.validate(s.generation, s.namespaces, domain != clusterScope && domain != allNamespacesScope); err != nil {
@@ -148,14 +145,14 @@ func (s *Snapshot) evaluate(domain, resource, action string) (bool, error) {
 	if !knownPermission(resource, action) {
 		return false, nil
 	}
-	enforcer := s.evaluators.allNamespaces
+	enforcer := s.generation.evaluators.allNamespaces
 	switch domain {
 	case clusterScope:
-		enforcer = s.evaluators.cluster
+		enforcer = s.generation.evaluators.cluster
 	case allNamespacesScope:
 		// Only explicit global grants can satisfy this scope.
 	default:
-		if scoped, ok := s.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, "ns/"))]; ok {
+		if scoped, ok := s.generation.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, "ns/"))]; ok {
 			enforcer = scoped
 		}
 	}

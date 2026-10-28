@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/auth"
-	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -71,7 +70,7 @@ func TestSnapshotReplaceUsers(t *testing.T) {
 			}}, objects...)
 			snapshot := membershipSnapshot(t, target)
 			input := slices.Clone(tc.users)
-			result, err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), input)
+			result, err := snapshot.ReplaceUsers(ctx, currentNamespace(), input)
 			if !errors.Is(err, tc.wantError) {
 				t.Fatalf("ReplaceUsers() error = %v, want %v", err, tc.wantError)
 			}
@@ -99,11 +98,11 @@ func TestSnapshotReplaceUsers(t *testing.T) {
 			if diff := cmp.Diff(tc.want, membership.Users); diff != "" {
 				t.Errorf("stored users mismatch (-want +got):\n%s", diff)
 			}
-			original := snapshot.records.memberships[currentNamespace().UID]
+			original := snapshot.generation.records.memberships[currentNamespace().UID]
 			if diff := cmp.Diff(original.Bindings, membership.Bindings); diff != "" {
 				t.Errorf("operator bindings changed (-want +got):\n%s", diff)
 			}
-			if !slices.Equal(original.Users, []string{"alice"}) || snapshot.resourceVersions[stored.Name] != "20" {
+			if !slices.Equal(original.Users, []string{"alice"}) || snapshot.generation.identities[stored.Name].version != "20" {
 				t.Error("ReplaceUsers mutated the request snapshot")
 			}
 			if stored.Annotations["operator"] != "keep" || stored.Labels["extra"] != "keep" || stored.Data["extra"] != "keep" {
@@ -115,7 +114,7 @@ func TestSnapshotReplaceUsers(t *testing.T) {
 	t.Run("new membership has namespace ownership and no managed-resource label", func(t *testing.T) {
 		target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)[:1]...)
 		snapshot := membershipSnapshot(t, target)
-		if _, err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"}); err != nil {
+		if _, err := snapshot.ReplaceUsers(t.Context(), currentNamespace(), []string{"bob"}); err != nil {
 			t.Fatal(err)
 		}
 		stored := readMembership(t, target)
@@ -145,7 +144,7 @@ func TestSnapshotAddUsers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...)
 			snapshot := membershipSnapshot(t, target)
-			result, err := snapshot.AddUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), tc.users)
+			result, err := snapshot.AddUsers(t.Context(), currentNamespace(), tc.users)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,7 +218,7 @@ func TestSnapshotWriteUsers(t *testing.T) {
 			if tc.add {
 				write = snapshot.AddUsers
 			}
-			_, err := write(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"alice"})
+			_, err := write(t.Context(), currentNamespace(), []string{"alice"})
 			if !errors.Is(err, ErrMembershipConflict) || writes != 1 {
 				t.Fatalf("write users = %v, %d writes, want conflict and one attempt", err, writes)
 			}
@@ -236,7 +235,7 @@ func TestSnapshotWriteUsers(t *testing.T) {
 		target := snapshotClient(t, interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
 			return k8serrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "private-record", errors.New("private policy"))
 		}}, snapshotObjects(t)...)
-		_, err := membershipSnapshot(t, target).ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"})
+		_, err := membershipSnapshot(t, target).ReplaceUsers(t.Context(), currentNamespace(), []string{"bob"})
 		if err == nil || errors.Is(err, ErrInvalidMembership) || errors.Is(err, ErrMembershipConflict) || strings.Contains(err.Error(), "private") {
 			t.Fatalf("ReplaceUsers() error = %v, want sanitized persistence failure", err)
 		}
@@ -263,11 +262,11 @@ func TestSnapshotWriteUsers(t *testing.T) {
 			case "mismatched namespace identity":
 				namespace.Name = "other"
 			case "missing snapshot version":
-				clear(snapshot.resourceVersions)
+				clear(snapshot.generation.identities)
 			case "undefined member role":
-				delete(snapshot.records.cluster.Roles, memberRole)
+				delete(snapshot.generation.records.cluster.Roles, memberRole)
 			}
-			_, err := snapshot.ReplaceUsers(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, namespace, []string{"bob"})
+			_, err := snapshot.ReplaceUsers(ctx, namespace, []string{"bob"})
 			if err == nil || errors.Is(err, ErrInvalidMembership) || errors.Is(err, ErrMembershipConflict) {
 				t.Fatalf("ReplaceUsers() error = %v, want snapshot/context failure", err)
 			}
@@ -298,14 +297,8 @@ func testMembershipInvalidation(t *testing.T) {
 				if k8serrors.IsAlreadyExists(tc.writeErr) {
 					source.list.Items = source.list.Items[:1]
 				}
-				startPolicyStore(t, store)
-				credential := auth.ClusterCredential{ImpersonateUser: "admin"}
-				snapshot := awaitStoreSnapshot(t, store, credential)
-				source.mu.Lock()
-				source.listErr = errors.New("offline")
-				source.mu.Unlock()
 				writes := 0
-				target := snapshotClient(t, interceptor.Funcs{
+				store.target = interceptor.NewClient(store.target, interceptor.Funcs{
 					Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
 						writes++
 						return tc.writeErr
@@ -315,11 +308,18 @@ func testMembershipInvalidation(t *testing.T) {
 						return tc.writeErr
 					},
 				})
+				startPolicyStore(t, store)
+				credential := auth.ClusterCredential{ImpersonateUser: "admin"}
+				snapshot := awaitStoreSnapshot(t, store, credential)
+				source.mu.Lock()
+				source.listErr = errors.New("offline")
+				source.mu.Unlock()
+
 				var users []string
 				if tc.writeErr != nil {
 					users = []string{"bob"}
 				}
-				result, err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), users)
+				result, err := snapshot.ReplaceUsers(t.Context(), currentNamespace(), users)
 				if result != nil || (err != nil) != (tc.writeErr != nil) {
 					t.Fatalf("write = %v, %v, want no result and error presence %v", result, err, tc.writeErr != nil)
 				}
@@ -362,12 +362,11 @@ func testMembershipWriteReload(t *testing.T) {
 		source.listErr = errors.New("offline")
 		source.mu.Unlock()
 		reads, _ := source.counts()
-		target := snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...)
-		users, err := snapshot.ReplaceUsers(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, currentNamespace(), []string{"bob"})
+		users, err := snapshot.ReplaceUsers(t.Context(), currentNamespace(), []string{"bob"})
 		if err != nil || !slices.Equal(users, []string{"bob"}) {
 			t.Fatalf("persisted write = %v, %v, want [bob], nil", users, err)
 		}
-		stored, err := parseMembershipPolicy(readMembership(t, target))
+		stored, err := parseMembershipPolicy(readMembership(t, store.target))
 		if err != nil || !slices.Equal(stored.Users, users) {
 			t.Fatalf("stored membership = %+v, %v, want users %v", stored, err, users)
 		}
