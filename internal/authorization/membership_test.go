@@ -390,13 +390,9 @@ func testMembershipWriteReload(t *testing.T) {
 	})
 }
 
-func membershipSnapshot(t *testing.T, target client.Client) *Snapshot {
+func membershipSnapshot(t *testing.T, target client.WithWatch) *Snapshot {
 	t.Helper()
-	snapshot, err := Load(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return snapshot
+	return cachedSnapshot(t, target, auth.ClusterCredential{ImpersonateUser: "alice"})
 }
 
 func readMembership(t *testing.T, target client.Client) *corev1.ConfigMap {

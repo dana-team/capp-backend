@@ -2,22 +2,18 @@
 package authorization
 
 import (
-	"context"
 	_ "embed"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/casbin/casbin/v3"
 	"github.com/casbin/casbin/v3/model"
 	"github.com/dana-team/capp-backend/internal/auth"
-	"github.com/dana-team/capp-backend/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // policyModel is bundled with the evaluator so authorization semantics are versioned together.
@@ -46,49 +42,6 @@ type policyEvaluators struct {
 	cluster       *casbin.SyncedEnforcer
 	allNamespaces *casbin.SyncedEnforcer
 	namespaces    map[types.UID]*casbin.SyncedEnforcer
-}
-
-// Load reads and validates all labeled policy records in one unpaginated LIST.
-// The caller must supply a direct, uncached service-account client for the target
-// and a credential produced by authentication. Policy errors never produce a usable snapshot.
-func Load(ctx context.Context, target client.Client, cfg config.ClusterAuthorizationConfig, credential auth.ClusterCredential) (*Snapshot, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	subjects, err := verifiedSubjects(credential)
-	if err != nil {
-		return nil, err
-	}
-	if cfg.PolicyNamespace == "" {
-		return nil, errors.New("authorization requires a policy namespace")
-	}
-
-	var list corev1.ConfigMapList
-	if err := target.List(ctx, &list, client.InNamespace(cfg.PolicyNamespace), client.MatchingLabels{policyLabelKey: policyLabelValue}); err != nil {
-		return nil, fmt.Errorf("read authorization policy: %w", err)
-	}
-	if list.Continue != "" {
-		return nil, errors.New("authorization policy list is incomplete")
-	}
-	records, err := parsePolicyRecords(list.Items, cfg.PolicyNamespace)
-	if err != nil {
-		return nil, err
-	}
-	evaluators, err := compilePolicyEvaluators(records)
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	versions := make(map[string]string, len(list.Items))
-	for i := range list.Items {
-		versions[list.Items[i].Name] = list.Items[i].ResourceVersion
-	}
-	return &Snapshot{
-		evaluators: evaluators, subjects: subjects, records: records,
-		resourceVersions: versions, listVersion: list.ResourceVersion,
-	}, nil
 }
 
 // ResourceVersion returns the policy LIST version for audit correlation.
@@ -147,26 +100,23 @@ func (s *Snapshot) CheckAllNamespaces(resource, action string) (bool, error) {
 	return s.check(allNamespacesScope, resource, action)
 }
 
-// CheckNamespace checks access to a namespace instance. Shared snapshots verify
-// the supplied identity against their captured namespace collection. Direct-load
-// callers must supply metadata read from the target, never request-body identity.
+// CheckNamespace checks access to a namespace instance, verifying the supplied
+// identity against the captured namespace collection.
 func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action string) (bool, error) {
 	if namespace == nil || namespace.Name == "" || namespace.UID == "" {
 		return false, errors.New("authorization requires current namespace metadata")
 	}
-	if s == nil || s.records == nil {
+	if s == nil || s.store == nil || s.records == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
-	if s.store != nil {
-		cached, err := s.Namespace(namespace.Name)
-		if err != nil {
-			return false, err
-		}
-		if cached.UID != namespace.UID {
-			return false, ErrPolicyUnavailable
-		}
-		namespace = cached
+	cached, err := s.Namespace(namespace.Name)
+	if err != nil {
+		return false, err
 	}
+	if cached.UID != namespace.UID {
+		return false, ErrPolicyUnavailable
+	}
+	namespace = cached
 	if membership, ok := s.records.memberships[namespace.UID]; ok && membership.Namespace.Name != namespace.Name {
 		return false, errors.New("membership identity does not match current namespace")
 	}
@@ -181,19 +131,15 @@ func (s *Snapshot) validateNamespaces() error {
 }
 
 func (s *Snapshot) check(domain, resource, action string) (bool, error) {
-	if s == nil || s.evaluators == nil {
+	if s == nil || s.store == nil || s.evaluators == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
-	if s.store != nil {
-		if err := s.store.validate(s.generation, s.namespaces, domain != clusterScope && domain != allNamespacesScope); err != nil {
-			return false, err
-		}
+	if err := s.store.validate(s.generation, s.namespaces, domain != clusterScope && domain != allNamespacesScope); err != nil {
+		return false, err
 	}
 	allowed, err := s.evaluate(domain, resource, action)
-	if s.store != nil {
-		if err := s.store.validate(s.generation, s.namespaces, domain != clusterScope && domain != allNamespacesScope); err != nil {
-			return false, err
-		}
+	if err := s.store.validate(s.generation, s.namespaces, domain != clusterScope && domain != allNamespacesScope); err != nil {
+		return false, err
 	}
 	return allowed, err
 }

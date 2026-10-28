@@ -59,9 +59,7 @@ func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg con
 		err = target.Create(ctx, record)
 	}
 	if k8serrors.IsConflict(err) || k8serrors.IsAlreadyExists(err) || (exists && k8serrors.IsNotFound(err)) {
-		if s.store != nil {
-			s.store.Invalidate()
-		}
+		s.store.Invalidate()
 		return nil, ErrMembershipConflict
 	}
 	if err != nil {
@@ -71,16 +69,14 @@ func (s *Snapshot) writeUsers(ctx context.Context, target client.Client, cfg con
 		// Kubernetes diagnostics can include submitted policy values.
 		return nil, errors.New("cannot persist namespace membership")
 	}
-	if s.store != nil {
-		s.store.Invalidate()
-	}
+	s.store.Invalidate()
 	return persistedUsers, nil
 }
 
 // prepareMembership builds a validated record without mutating the snapshot.
 // Existing records retain their snapshot version; new records have no version.
 func (s *Snapshot) prepareMembership(policyNamespace string, namespace *corev1.Namespace, users []string, add bool) (*corev1.ConfigMap, []string, error) {
-	if s == nil || s.records == nil {
+	if s == nil || s.store == nil || s.records == nil {
 		return nil, nil, errors.New("authorization snapshot is unavailable")
 	}
 	if namespace == nil || namespace.Name == "" || namespace.UID == "" || policyNamespace == "" {

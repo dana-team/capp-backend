@@ -23,6 +23,18 @@ import (
 )
 
 func TestStoreSnapshot(t *testing.T) {
+	t.Run("invalid caller cannot capture usable policy", func(t *testing.T) {
+		snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice"})
+		for _, credential := range []auth.ClusterCredential{
+			{},
+			{ImpersonateUser: "alice", ImpersonateGroups: []string{" "}},
+		} {
+			if got, err := snapshot.store.Snapshot(credential); got != nil || err == nil || errors.Is(err, ErrPolicyUnavailable) {
+				t.Errorf("Snapshot(%+v) = %v, %v, want caller validation error", credential, got, err)
+			}
+		}
+	})
+
 	synctest.Test(t, func(t *testing.T) {
 		store, source := newPolicyStore(t)
 		if _, err := store.Snapshot(auth.ClusterCredential{ImpersonateUser: "admin"}); !errors.Is(err, ErrPolicyUnavailable) {
@@ -164,6 +176,7 @@ func TestStoreReload(t *testing.T) {
 		{name: "partial list"},
 		{name: "missing required policy", invalidate: true},
 		{name: "malformed policy", invalidate: true},
+		{name: "invalid binding in unrelated namespace", invalidate: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -180,6 +193,13 @@ func TestStoreReload(t *testing.T) {
 					source.list.Items = nil
 				case "missing required policy":
 					source.list.Items = source.list.Items[1:]
+				case "invalid binding in unrelated namespace":
+					other := source.list.Items[1].DeepCopy()
+					other.Name = membershipNamePrefix + "uid-2"
+					other.ResourceVersion = "101"
+					other.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Namespace", Name: "other", UID: "uid-2"}}
+					other.Data[policyDataKey] = `{"version":1,"namespace":{"name":"other","uid":"uid-2"},"users":[],"bindings":[{"kind":"User","name":"bob","role":"undefined"}]}`
+					source.list.Items = append(source.list.Items, *other)
 				case "malformed policy":
 					source.list.Items[0].Data[policyDataKey] = "invalid"
 					source.list.Items[0].ResourceVersion = "101"

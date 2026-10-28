@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/casbin/casbin/v3"
@@ -13,6 +12,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -20,146 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
-
-func TestLoad(t *testing.T) {
-	t.Run("one authoritative list retains versions and serves repeated checks", func(t *testing.T) {
-		objects := snapshotObjects(t)
-		objects = append(objects,
-			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "policies"}, Data: map[string]string{policyDataKey: "invalid"}},
-			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: clusterPolicyName, Namespace: "other", Labels: map[string]string{policyLabelKey: "true"}}},
-		)
-		ctx := t.Context()
-		reads := 0
-		target := snapshotClient(t, interceptor.Funcs{
-			List: func(gotCtx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-				reads++
-				if gotCtx != ctx {
-					t.Fatal("Load did not propagate the request context")
-				}
-				options := (&client.ListOptions{}).ApplyOptions(opts)
-				raw := options.AsListOptions()
-				if options.Namespace != "policies" || raw.LabelSelector != policyLabelKey+"=true" || raw.ResourceVersion != "" || raw.Limit != 0 || raw.Continue != "" {
-					t.Fatalf("Load LIST options = %+v, want namespace/label filter and default authoritative unpaginated read", options)
-				}
-				if err := c.List(gotCtx, list, opts...); err != nil {
-					return err
-				}
-				list.SetResourceVersion("42")
-				return nil
-			},
-		}, objects...)
-		snapshot, err := Load(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := snapshot.ResourceVersion(); got != "42" {
-			t.Errorf("ResourceVersion() = %q, want 42", got)
-		}
-		wantVersions := map[string]string{clusterPolicyName: "10", membershipNamePrefix + "uid-1": "20"}
-		if diff := cmp.Diff(wantVersions, snapshot.resourceVersions); diff != "" {
-			t.Errorf("record versions mismatch (-want +got):\n%s", diff)
-		}
-		for range 2 {
-			allowed, err := snapshot.CheckNamespace(currentNamespace(), "capps", "get")
-			if err != nil || !allowed {
-				t.Fatalf("CheckNamespace(capps, get) = %v, %v, want true, nil", allowed, err)
-			}
-		}
-		if reads != 1 {
-			t.Errorf("policy reads = %d, want 1", reads)
-		}
-	})
-
-	for _, tc := range []struct {
-		name   string
-		modify func([]*corev1.ConfigMap) []*corev1.ConfigMap
-		want   string
-	}{
-		{name: "missing policy", modify: func(objects []*corev1.ConfigMap) []*corev1.ConfigMap { return objects[1:] }, want: "missing cluster policy"},
-		{name: "malformed policy", modify: func(objects []*corev1.ConfigMap) []*corev1.ConfigMap {
-			objects[0].Data[policyDataKey] = "invalid"
-			return objects
-		}, want: "invalid policy JSON"},
-		{name: "unknown permission", modify: func(objects []*corev1.ConfigMap) []*corev1.ConfigMap {
-			record := objects[0]
-			record.Data[policyDataKey] = strings.ReplaceAll(record.Data[policyDataKey], `"get"`, `"unknown"`)
-			return objects
-		}, want: "unsupported resource or action"},
-		{name: "invalid binding in unrelated namespace", modify: func(objects []*corev1.ConfigMap) []*corev1.ConfigMap {
-			other := objects[1].DeepCopy()
-			other.Name = membershipNamePrefix + "uid-2"
-			other.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Namespace", Name: "other", UID: "uid-2"}}
-			other.Data[policyDataKey] = `{"version":1,"namespace":{"name":"other","uid":"uid-2"},"users":[],"bindings":[{"kind":"User","name":"bob","role":"undefined"}]}`
-			return append(objects, other)
-		}, want: "undefined role"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			target := snapshotClient(t, interceptor.Funcs{}, tc.modify(snapshotObjects(t))...)
-			snapshot, err := Load(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
-			if err == nil || !strings.Contains(err.Error(), tc.want) || snapshot != nil {
-				t.Fatalf("Load() = %v, %v, want nil snapshot and %q error", snapshot, err, tc.want)
-			}
-		})
-	}
-
-	t.Run("read failure is distinct from denial", func(t *testing.T) {
-		unavailable := errors.New("API server unavailable")
-		target := snapshotClient(t, interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
-			return unavailable
-		}})
-		snapshot, err := Load(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
-		if !errors.Is(err, unavailable) || snapshot != nil {
-			t.Fatalf("Load() = %v, %v, want nil snapshot and API error", snapshot, err)
-		}
-	})
-
-	t.Run("incomplete list cannot authorize", func(t *testing.T) {
-		target := snapshotClient(t, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-			if err := c.List(ctx, list, opts...); err != nil {
-				return err
-			}
-			list.SetContinue("next-page")
-			return nil
-		}}, snapshotObjects(t)...)
-		snapshot, err := Load(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
-		if err == nil || !strings.Contains(err.Error(), "incomplete") || snapshot != nil {
-			t.Fatalf("Load() = %v, %v, want nil snapshot and incomplete-list error", snapshot, err)
-		}
-	})
-
-	t.Run("cancelled request performs no read", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		target := snapshotClient(t, interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
-			t.Fatal("cancelled Load issued a policy read")
-			return nil
-		}})
-		_, err := Load(ctx, target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Load() error = %v, want context.Canceled", err)
-		}
-	})
-
-	for _, tc := range []struct {
-		name       string
-		cfg        config.ClusterAuthorizationConfig
-		credential auth.ClusterCredential
-	}{
-		{name: "missing username", cfg: config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}},
-		{name: "missing namespace", credential: auth.ClusterCredential{ImpersonateUser: "alice"}},
-		{name: "blank group", cfg: config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, credential: auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{" "}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			target := snapshotClient(t, interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
-				t.Fatal("invalid input caused a policy read")
-				return nil
-			}})
-			if snapshot, err := Load(t.Context(), target, tc.cfg, tc.credential); err == nil || snapshot != nil {
-				t.Fatalf("Load() = %v, %v, want nil snapshot and validation error", snapshot, err)
-			}
-		})
-	}
-}
 
 func TestSnapshotCheckNamespace(t *testing.T) {
 	for _, tc := range []struct {
@@ -191,11 +51,11 @@ func TestSnapshotCheckNamespace(t *testing.T) {
 		{name: "unknown requested resource", user: "alice", resource: "pods", action: "get"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			snapshot := loadSnapshot(t, auth.ClusterCredential{ImpersonateUser: tc.user, ImpersonateGroups: tc.groups})
 			namespace := tc.namespace
 			if namespace == nil {
 				namespace = currentNamespace()
 			}
+			snapshot := cachedSnapshot(t, snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...), auth.ClusterCredential{ImpersonateUser: tc.user, ImpersonateGroups: tc.groups}, namespace)
 			got, err := snapshot.CheckNamespace(namespace, tc.resource, tc.action)
 			if err != nil || got != tc.want {
 				t.Errorf("CheckNamespace(%s, %s, %s) = %v, %v, want %v, nil", namespace.Name, tc.resource, tc.action, got, err, tc.want)
@@ -212,7 +72,11 @@ func TestSnapshotCheckNamespace(t *testing.T) {
 		{name: "policy name disagrees with current UID", namespace: &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "other", UID: "uid-1"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			snapshot := loadSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice"})
+			namespaces := []*corev1.Namespace{currentNamespace()}
+			if tc.namespace != nil && tc.namespace.UID != "" {
+				namespaces = []*corev1.Namespace{tc.namespace}
+			}
+			snapshot := cachedSnapshot(t, snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...), auth.ClusterCredential{ImpersonateUser: "alice"}, namespaces...)
 			if allowed, err := snapshot.CheckNamespace(tc.namespace, "capps", "get"); allowed || err == nil {
 				t.Errorf("CheckNamespace(%v) = %v, %v, want false and metadata error", tc.namespace, allowed, err)
 			}
@@ -233,7 +97,7 @@ func TestSnapshotCheckCluster(t *testing.T) {
 		{name: "allNamespaces excludes cluster domain", user: "global-reader", resource: "secrets", action: "get"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			snapshot := loadSnapshot(t, auth.ClusterCredential{ImpersonateUser: tc.user})
+			snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: tc.user})
 			if got, err := snapshot.CheckCluster(tc.resource, tc.action); got != tc.want || err != nil {
 				t.Errorf("CheckCluster(%s, %s) = %v, %v, want %v, nil", tc.resource, tc.action, got, err, tc.want)
 			}
@@ -250,7 +114,7 @@ func TestSnapshotCheckAllNamespaces(t *testing.T) {
 		{user: "alice"},
 	} {
 		t.Run(tc.user, func(t *testing.T) {
-			snapshot := loadSnapshot(t, auth.ClusterCredential{ImpersonateUser: tc.user})
+			snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: tc.user})
 			if got, err := snapshot.CheckAllNamespaces("roles/capp-user", "grant"); got != tc.want || err != nil {
 				t.Errorf("CheckAllNamespaces(grant) for %s = %v, %v, want %v, nil", tc.user, got, err, tc.want)
 			}
@@ -281,10 +145,7 @@ func TestSnapshotCheck(t *testing.T) {
 			{user: "a", allowedResource: "secrets", deniedResource: "capps"},
 			{user: "a,Role/x", allowedResource: "capps", deniedResource: "secrets"},
 		} {
-			snapshot, err := Load(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: tc.user})
-			if err != nil {
-				t.Fatal(err)
-			}
+			snapshot := cachedSnapshot(t, target, auth.ClusterCredential{ImpersonateUser: tc.user})
 			if allowed, err := snapshot.CheckNamespace(currentNamespace(), tc.allowedResource, "get"); !allowed || err != nil {
 				t.Errorf("CheckNamespace(%s) for %q = %v, %v, want true, nil", tc.allowedResource, tc.user, allowed, err)
 			}
@@ -295,7 +156,7 @@ func TestSnapshotCheck(t *testing.T) {
 	})
 
 	t.Run("evaluation error overrides an earlier subject grant", func(t *testing.T) {
-		snapshot := loadSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"team-editors"}})
+		snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"team-editors"}})
 		var evaluated []any
 		// Inject an evaluator failure without introducing a production test interface.
 		enforcer := snapshot.evaluators.namespaces[currentNamespace().UID]
@@ -321,10 +182,7 @@ func TestSnapshotCheck(t *testing.T) {
 		objects := snapshotObjects(t)[:1]
 		objects[0].Data[policyDataKey] = `{"version":1,"roles":{},"bindings":[]}`
 		target := snapshotClient(t, interceptor.Funcs{}, objects...)
-		snapshot, err := Load(t.Context(), target, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, auth.ClusterCredential{ImpersonateUser: "alice"})
-		if err != nil {
-			t.Fatal(err)
-		}
+		snapshot := cachedSnapshot(t, target, auth.ClusterCredential{ImpersonateUser: "alice"})
 		if allowed, err := snapshot.CheckCluster("clusters", "get"); allowed || err != nil {
 			t.Errorf("CheckCluster() = %v, %v, want false, nil", allowed, err)
 		}
@@ -335,22 +193,15 @@ func TestSnapshot(t *testing.T) {
 	objects := snapshotObjects(t)
 	target := snapshotClient(t, interceptor.Funcs{}, objects...)
 	credential := auth.ClusterCredential{ImpersonateUser: "bob", ImpersonateGroups: []string{"global-readers"}}
-	cfg := config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}
-	first, err := Load(t.Context(), target, cfg, credential)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := cachedSnapshot(t, target, credential)
 	credential.ImpersonateGroups[0] = "unknown"
-	second, err := Load(t.Context(), target, cfg, credential)
+	second, err := first.store.Snapshot(credential)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A separately loaded target with no bindings must not reuse the first enforcer.
 	objects[0].Data[policyDataKey] = `{"version":1,"roles":{"capp-user":[],"editor":[],"reader":[],"delegator":[]},"bindings":[]}`
-	other, err := Load(t.Context(), snapshotClient(t, interceptor.Funcs{}, objects...), cfg, auth.ClusterCredential{ImpersonateUser: "bob", ImpersonateGroups: []string{"global-readers"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	other := cachedSnapshot(t, snapshotClient(t, interceptor.Funcs{}, objects...), auth.ClusterCredential{ImpersonateUser: "bob", ImpersonateGroups: []string{"global-readers"}})
 	for _, tc := range []struct {
 		name     string
 		snapshot *Snapshot
@@ -461,7 +312,7 @@ func TestCompilePolicyEvaluators(t *testing.T) {
 							want = want || allowed
 						}
 						for range 20 {
-							got, err := snapshot.check(scope.domain, permission[0], permission[1])
+							got, err := snapshot.evaluate(scope.domain, permission[0], permission[1])
 							if err != nil || got != want {
 								t.Fatalf("check(%s, %s) = %v, %v, want %v, nil", permission[0], permission[1], got, err, want)
 							}
@@ -473,9 +324,47 @@ func TestCompilePolicyEvaluators(t *testing.T) {
 	}
 }
 
-func loadSnapshot(t *testing.T, credential auth.ClusterCredential) *Snapshot {
+func defaultSnapshot(t *testing.T, credential auth.ClusterCredential) *Snapshot {
 	t.Helper()
-	snapshot, err := Load(t.Context(), snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...), config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, credential)
+	return cachedSnapshot(t, snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...), credential)
+}
+
+// cachedSnapshot publishes fixtures synchronously through the store's reload paths.
+// Lifecycle and watch behavior are exercised separately by the store tests.
+func cachedSnapshot(t *testing.T, target client.WithWatch, credential auth.ClusterCredential, namespaces ...*corev1.Namespace) *Snapshot {
+	t.Helper()
+	if len(namespaces) == 0 {
+		namespaces = []*corev1.Namespace{currentNamespace()}
+	}
+	source := interceptor.NewClient(target, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if nsList, ok := list.(*corev1.NamespaceList); ok {
+				for _, ns := range namespaces {
+					metadata := ns.DeepCopy()
+					metadata.ResourceVersion = "1"
+					nsList.Items = append(nsList.Items, *metadata)
+				}
+			} else if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			list.SetResourceVersion("42")
+			return nil
+		},
+	})
+	store, err := NewStore(source, config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Stop)
+	store.policy.observing = true
+	store.namespaceState.observing = true
+	if err := store.reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reloadNamespaces(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(credential)
 	if err != nil {
 		t.Fatal(err)
 	}
