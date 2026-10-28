@@ -28,6 +28,8 @@ var policyModel string
 // Checks are safe to use concurrently. Caller subjects stay request-local while
 // immutable policy evaluators can be shared by snapshots for the same target.
 type Snapshot struct {
+	store            *Store
+	generation       *policyGeneration
 	evaluators       *policyEvaluators
 	subjects         []string
 	records          *policyRecords
@@ -112,6 +114,10 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 	if s == nil || s.records == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
+	if s.store != nil {
+		// Shared policy alone cannot establish the current namespace identity.
+		return false, ErrPolicyUnavailable
+	}
 	if membership, ok := s.records.memberships[namespace.UID]; ok && membership.Namespace.Name != namespace.Name {
 		return false, errors.New("membership identity does not match current namespace")
 	}
@@ -122,6 +128,21 @@ func (s *Snapshot) check(domain, resource, action string) (bool, error) {
 	if s == nil || s.evaluators == nil {
 		return false, errors.New("authorization snapshot is unavailable")
 	}
+	if s.store != nil {
+		if err := s.store.validate(s.generation); err != nil {
+			return false, err
+		}
+	}
+	allowed, err := s.evaluate(domain, resource, action)
+	if s.store != nil {
+		if err := s.store.validate(s.generation); err != nil {
+			return false, err
+		}
+	}
+	return allowed, err
+}
+
+func (s *Snapshot) evaluate(domain, resource, action string) (bool, error) {
 	if !knownPermission(resource, action) {
 		return false, nil
 	}

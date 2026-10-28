@@ -486,7 +486,7 @@ func currentNamespace() *corev1.Namespace {
 	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-1"}}
 }
 
-func snapshotClient(t *testing.T, funcs interceptor.Funcs, records ...*corev1.ConfigMap) client.Client {
+func snapshotClient(t *testing.T, funcs interceptor.Funcs, records ...*corev1.ConfigMap) client.WithWatch {
 	t.Helper()
 	// Avoid coupling authorization tests to middleware through testutil.
 	scheme := runtime.NewScheme()
