@@ -27,7 +27,8 @@ const (
 	CredentialKey contextKey = "credential"
 
 	// AuthorizationKey holds *AuthorizationState for application-policy checks.
-	// Its target snapshots and decision metadata are shared with body/aggregate handlers.
+	// Its request-local snapshots capture shared cache generations and are reused
+	// with decision metadata by body/aggregate handlers.
 	AuthorizationKey contextKey = "authorization"
 
 	// K8sClientKey is the gin.Context key for the controller-runtime

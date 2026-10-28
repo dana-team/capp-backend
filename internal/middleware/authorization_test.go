@@ -9,7 +9,11 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
@@ -22,8 +26,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
@@ -35,20 +41,23 @@ const (
 )
 
 func TestAuthorization(t *testing.T) {
+	t.Run("last-valid cache during failures", testAuthorizationCacheFailures)
+	t.Run("captured generations retire before handler decisions", testAuthorizationCapturedGenerations)
+	t.Run("only namespace-dependent requests require namespace availability", func(t *testing.T) { synctest.Test(t, testAuthorizationPolicyOnly) })
 	t.Run("requires every permission for each registered operation", testAuthorizationPermissions)
-	t.Run("matches method and registered path rather than URL text", testAuthorizationRouteMatching)
-	t.Run("public exemptions require exact method and path", testAuthorizationPublicRoutes)
-	t.Run("namespace restrictions override grants before reads", testAuthorizationNamespaceRestrictions)
-	t.Run("passes snapshots and current metadata to body handlers", testAuthorizationBodyContext)
-	t.Run("reuses the source service client and rejects invalid context", testAuthorizationServiceClient)
-	t.Run("aggregate handlers receive policy without a blanket grant", testAuthorizationAggregateContext)
+	t.Run("matches method and registered path rather than URL text", func(t *testing.T) { synctest.Test(t, testAuthorizationRouteMatching) })
+	t.Run("public exemptions require exact method and path", func(t *testing.T) { synctest.Test(t, testAuthorizationPublicRoutes) })
+	t.Run("namespace restrictions override grants before reads", func(t *testing.T) { synctest.Test(t, testAuthorizationNamespaceRestrictions) })
+	t.Run("passes snapshots and current metadata to body handlers", func(t *testing.T) { synctest.Test(t, testAuthorizationBodyContext) })
+	t.Run("uses the reusable service client", func(t *testing.T) { synctest.Test(t, testAuthorizationServiceClient) })
+	t.Run("aggregate handlers receive policy without a blanket grant", func(t *testing.T) { synctest.Test(t, testAuthorizationAggregateContext) })
 	t.Run("policy and metadata failures never reach handlers", testAuthorizationFailures)
-	t.Run("cluster discovery loads each target and rejects partial policy", testAuthorizationDiscovery)
-	t.Run("subsequent requests reload policy and preserve verified identity", testAuthorizationRequestIsolation)
-	t.Run("old namespace memberships cannot authorize a replacement", testAuthorizationNamespaceIdentity)
-	t.Run("unknown clusters and missing namespaces retain not found responses", testAuthorizationBusinessErrors)
-	t.Run("legacy modes bypass policy", testAuthorizationLegacyModes)
-	t.Run("fails closed on missing identity or unsupported mode", testAuthorizationInvalidContext)
+	t.Run("cluster discovery captures each target and rejects missing stores", func(t *testing.T) { synctest.Test(t, testAuthorizationDiscovery) })
+	t.Run("subsequent requests reuse cached policy and preserve verified identity", func(t *testing.T) { synctest.Test(t, testAuthorizationRequestIsolation) })
+	t.Run("old namespace memberships cannot authorize a replacement", func(t *testing.T) { synctest.Test(t, testAuthorizationNamespaceIdentity) })
+	t.Run("unknown clusters and missing namespaces retain not found responses", func(t *testing.T) { synctest.Test(t, testAuthorizationBusinessErrors) })
+	t.Run("legacy modes bypass policy", func(t *testing.T) { synctest.Test(t, testAuthorizationLegacyModes) })
+	t.Run("fails closed on missing identity or unsupported mode", func(t *testing.T) { synctest.Test(t, testAuthorizationInvalidContext) })
 }
 
 func testAuthorizationPermissions(t *testing.T) {
@@ -87,32 +96,34 @@ func testAuthorizationPermissions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.route, func(t *testing.T) {
-			scope := "allNamespaces"
-			if tc.route == authorizationClusterRoute+"/namespaces" {
-				scope = "cluster"
-			}
-			for missing := -1; missing < len(tc.permissions); missing++ {
-				grants := slices.Clone(tc.permissions)
-				wantStatus := http.StatusNoContent
-				if missing >= 0 {
-					grants = slices.Delete(grants, missing, missing+1)
-					wantStatus = http.StatusForbidden
+			synctest.Test(t, func(t *testing.T) {
+				scope := "allNamespaces"
+				if tc.route == authorizationClusterRoute+"/namespaces" {
+					scope = "cluster"
 				}
-				f := newAuthorizationFixture(t, grants, scope)
-				w := f.serve(t, tc.method, tc.route, authorizationPath(tc.route), nil)
-				if w.Code != wantStatus {
-					t.Fatalf("grants %v: status = %d, want %d; %s", grants, w.Code, wantStatus, w.Body.String())
-				}
-				if f.called != (missing == -1) {
-					t.Fatalf("grants %v: handler called = %t, want %t", grants, f.called, missing == -1)
-				}
-				if missing >= 0 {
-					last := f.state.Decisions[len(f.state.Decisions)-1]
-					if got := last.Resource + ":" + last.Action; got != tc.permissions[missing] || last.Reason != "POLICY_DENIED" {
-						t.Errorf("denied decision = %+v, want missing permission %s", last, tc.permissions[missing])
+				for missing := -1; missing < len(tc.permissions); missing++ {
+					grants := slices.Clone(tc.permissions)
+					wantStatus := http.StatusNoContent
+					if missing >= 0 {
+						grants = slices.Delete(grants, missing, missing+1)
+						wantStatus = http.StatusForbidden
+					}
+					f := newAuthorizationFixture(t, grants, scope)
+					w := f.serve(t, tc.method, tc.route, authorizationPath(tc.route), nil)
+					if w.Code != wantStatus {
+						t.Fatalf("grants %v: status = %d, want %d; %s", grants, w.Code, wantStatus, w.Body.String())
+					}
+					if f.called != (missing == -1) {
+						t.Fatalf("grants %v: handler called = %t, want %t", grants, f.called, missing == -1)
+					}
+					if missing >= 0 {
+						last := f.state.Decisions[len(f.state.Decisions)-1]
+						if got := last.Resource + ":" + last.Action; got != tc.permissions[missing] || last.Reason != "POLICY_DENIED" {
+							t.Errorf("denied decision = %+v, want missing permission %s", last, tc.permissions[missing])
+						}
 					}
 				}
-			}
+			})
 		})
 	}
 }
@@ -128,8 +139,8 @@ func testAuthorizationRouteMatching(t *testing.T) {
 		f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
 		w := f.serve(t, tc.method, tc.route, tc.path, nil)
 		assertAuthorizationError(t, w, http.StatusForbidden, apierrors.CodeForbidden, "POLICY_DENIED", "operation is not permitted")
-		if f.called || f.lists != 0 || f.gets != 0 {
-			t.Fatalf("unknown route %s %s: handler=%t lists=%d gets=%d, want no execution or reads", tc.method, tc.route, f.called, f.lists, f.gets)
+		if f.called || f.lists.Load() != 0 || f.gets.Load() != 0 {
+			t.Fatalf("unknown route %s %s: handler=%t lists=%d gets=%d, want no execution or reads", tc.method, tc.route, f.called, f.lists.Load(), f.gets.Load())
 		}
 	}
 }
@@ -148,8 +159,8 @@ func testAuthorizationPublicRoutes(t *testing.T) {
 		f := newAuthorizationFixture(t, nil, "allNamespaces")
 		f.credential = nil
 		w := f.serve(t, tc.method, tc.path, tc.path, nil)
-		if w.Code != http.StatusNoContent || f.state != nil || f.lists != 0 {
-			t.Fatalf("public %s %s: status=%d state=%+v lists=%d", tc.method, tc.path, w.Code, f.state, f.lists)
+		if w.Code != http.StatusNoContent || f.state != nil || f.lists.Load() != 0 {
+			t.Fatalf("public %s %s: status=%d state=%+v lists=%d", tc.method, tc.path, w.Code, f.state, f.lists.Load())
 		}
 	}
 	for _, tc := range []struct{ method, path string }{
@@ -182,8 +193,8 @@ func testAuthorizationNamespaceRestrictions(t *testing.T) {
 				t.Fatalf("protected namespace decisions = %+v, want one protected denial", f.state.Decisions)
 			}
 		}
-		if f.called || f.lists != 0 || f.gets != 0 {
-			t.Fatalf("restricted %s: handler=%t lists=%d gets=%d, want no execution or reads", namespace, f.called, f.lists, f.gets)
+		if f.called || f.lists.Load() != 0 || f.gets.Load() != 0 {
+			t.Fatalf("restricted %s: handler=%t lists=%d gets=%d, want no execution or reads", namespace, f.called, f.lists.Load(), f.gets.Load())
 		}
 	}
 }
@@ -203,8 +214,8 @@ func testAuthorizationBodyContext(t *testing.T) {
 			t.Fatalf("reused snapshot delegation: allowed=%t error=%v", allowed, err)
 		}
 	})
-	if w.Code != http.StatusNoContent || f.lists != 1 || f.gets != 1 {
-		t.Fatalf("body route: status=%d lists=%d gets=%d, want 204/1/1", w.Code, f.lists, f.gets)
+	if w.Code != http.StatusNoContent || f.lists.Load() != 0 || f.gets.Load() != 0 {
+		t.Fatalf("body route: status=%d lists=%d gets=%d, want 204/0/0", w.Code, f.lists.Load(), f.gets.Load())
 	}
 	want := []middleware.AuthorizationDecision{
 		{Cluster: "prod", Namespace: "team", Resource: "namespaces", Action: "update", PolicyVersion: "policy-version", Outcome: "allowed"},
@@ -220,27 +231,23 @@ func testAuthorizationBodyContext(t *testing.T) {
 
 func testAuthorizationServiceClient(t *testing.T) {
 	t.Helper()
-	for _, invalid := range []bool{false, true} {
-		f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
-		f.adminClient = f.client
-		if invalid {
-			f.adminClient = "invalid client"
+	f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
+	var acquired bool
+	f.mgr.ServiceClientForFn = func(*cluster.ClusterClient) (client.WithWatch, error) {
+		acquired = true
+		return f.serviceClient, nil
+	}
+	f.mgr.ClientForFn = func(*cluster.ClusterClient, auth.ClusterCredential) (client.Client, error) {
+		t.Fatal("authorization constructed a caller-scoped client")
+		return nil, nil
+	}
+	w := f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), func(c *gin.Context) {
+		if !acquired || authorizationState(t, c).Targets["prod"].Client == nil {
+			t.Fatal("handler did not receive the reusable service client")
 		}
-		f.mgr.ClientForFn = func(*cluster.ClusterClient, auth.ClusterCredential) (client.Client, error) {
-			t.Fatal("ClientFor called despite an existing source service client")
-			return nil, nil
-		}
-		w := f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), nil)
-		if invalid {
-			assertAuthorizationError(t, w, http.StatusServiceUnavailable, apierrors.CodeInternal, "POLICY_UNAVAILABLE", "authorization policy is unavailable")
-			if f.called || f.lists != 0 || f.gets != 0 {
-				t.Fatalf("invalid client: handler=%t lists=%d gets=%d, want no execution or reads", f.called, f.lists, f.gets)
-			}
-			continue
-		}
-		if w.Code != http.StatusNoContent || f.lists != 1 || f.gets != 1 {
-			t.Fatalf("source client reuse: status=%d lists=%d gets=%d, want 204/1/1", w.Code, f.lists, f.gets)
-		}
+	})
+	if w.Code != http.StatusNoContent || f.lists.Load() != 0 || f.gets.Load() != 0 {
+		t.Fatalf("service client reuse: status=%d lists=%d gets=%d, want 204/0/0", w.Code, f.lists.Load(), f.gets.Load())
 	}
 }
 
@@ -254,8 +261,8 @@ func testAuthorizationAggregateContext(t *testing.T) {
 				t.Fatalf("aggregate context = %+v, want policy and no single namespace", state)
 			}
 		})
-		if w.Code != http.StatusNoContent || f.lists != 1 || f.gets != 0 {
-			t.Fatalf("aggregate %s: status=%d lists=%d gets=%d, want 204/1/0", route, w.Code, f.lists, f.gets)
+		if w.Code != http.StatusNoContent || f.lists.Load() != 0 || f.gets.Load() != 0 {
+			t.Fatalf("aggregate %s: status=%d lists=%d gets=%d, want 204/0/0", route, w.Code, f.lists.Load(), f.gets.Load())
 		}
 	}
 }
@@ -283,8 +290,11 @@ func testAuthorizationFailures(t *testing.T) {
 		}},
 		{name: "namespace read failure", prepare: func(f *authorizationFixture) {
 			f.client = testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
-				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
-					return errors.New("sensitive namespace read diagnostic")
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*corev1.NamespaceList); ok {
+						return errors.New("sensitive namespace read diagnostic")
+					}
+					return c.List(ctx, list, opts...)
 				},
 			}, policyWithPermissions(t, []string{"capps:get"}, "allNamespaces"))
 		}},
@@ -293,19 +303,21 @@ func testAuthorizationFailures(t *testing.T) {
 				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team"}})
 		}},
 		{name: "service client failure", prepare: func(f *authorizationFixture) {
-			f.mgr.ClientForFn = func(*cluster.ClusterClient, auth.ClusterCredential) (client.Client, error) {
+			f.mgr.ServiceClientForFn = func(*cluster.ClusterClient) (client.WithWatch, error) {
 				return nil, errors.New("sensitive credential diagnostic")
 			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
-			tc.prepare(f)
-			w := f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), nil)
-			assertAuthorizationError(t, w, http.StatusServiceUnavailable, apierrors.CodeInternal, "POLICY_UNAVAILABLE", "authorization policy is unavailable")
-			if f.called || len(f.state.Decisions) != 1 || f.state.Decisions[0].Outcome != "unavailable" {
-				t.Fatalf("failure: handler=%t decisions=%+v, want one unavailable decision", f.called, f.state.Decisions)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
+				tc.prepare(f)
+				w := f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), nil)
+				assertAuthorizationError(t, w, http.StatusServiceUnavailable, apierrors.CodeInternal, "POLICY_UNAVAILABLE", "authorization policy is unavailable")
+				if f.called || len(f.state.Decisions) != 1 || f.state.Decisions[0].Outcome != "unavailable" {
+					t.Fatalf("failure: handler=%t decisions=%+v, want one unavailable decision", f.called, f.state.Decisions)
+				}
+			})
 		})
 	}
 }
@@ -315,16 +327,11 @@ func testAuthorizationDiscovery(t *testing.T) {
 	f := newAuthorizationFixture(t, nil, "allNamespaces")
 	f.cfg.Clusters = append(f.cfg.Clusters, config.ClusterConfig{Name: "other", Authorization: f.cfg.Clusters[0].Authorization})
 	w := f.serve(t, http.MethodGet, "/api/v1/clusters", "/api/v1/clusters", nil)
-	if w.Code != http.StatusNoContent || len(f.state.Targets) != 2 || f.lists != 2 {
-		t.Fatalf("discovery: status=%d targets=%d lists=%d, want 204/2/2", w.Code, len(f.state.Targets), f.lists)
+	if w.Code != http.StatusNoContent || len(f.state.Targets) != 2 || f.lists.Load() != 0 {
+		t.Fatalf("discovery: status=%d targets=%d lists=%d, want 204/2/0", w.Code, len(f.state.Targets), f.lists.Load())
 	}
 	f.called = false
-	f.mgr.ClientForFn = func(cc *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-		if cc.Meta.Name == "other" {
-			return testutil.FakeClient(t), nil
-		}
-		return f.client, nil
-	}
+	delete(f.stores, "other")
 	w = f.serve(t, http.MethodGet, "/api/v1/clusters", "/api/v1/clusters", nil)
 	assertAuthorizationError(t, w, 503, apierrors.CodeInternal, "POLICY_UNAVAILABLE", "authorization policy is unavailable")
 	if f.called || f.state.Decisions[0].Cluster != "other" {
@@ -335,13 +342,14 @@ func testAuthorizationDiscovery(t *testing.T) {
 func testAuthorizationRequestIsolation(t *testing.T) {
 	t.Helper()
 	f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
+	f.startStores(t)
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
 		c.Set(string(middleware.CredentialKey), f.credential)
 		c.Next()
 		f.state = authorizationState(t, c)
 	})
-	engine.Use(middleware.Authorization(f.cfg, f.mgr))
+	engine.Use(middleware.Authorization(f.cfg, f.mgr, f.stores))
 	engine.GET(authorizationCappRoute, func(c *gin.Context) {
 		f.called = true
 		c.Status(http.StatusNoContent)
@@ -355,8 +363,141 @@ func testAuthorizationRequestIsolation(t *testing.T) {
 	f.called = false
 	w = testutil.ServeHTTP(engine, http.MethodGet, authorizationPath(authorizationCappRoute), nil)
 	assertAuthorizationError(t, w, 403, apierrors.CodeForbidden, "POLICY_DENIED", "operation is not permitted")
-	if f.called || f.state.Username != "bob" || previous == f.state.Targets["prod"].Snapshot || f.lists != 2 {
-		t.Fatalf("subsequent request: handler=%t user=%q lists=%d", f.called, f.state.Username, f.lists)
+	if f.called || f.state.Username != "bob" || previous == f.state.Targets["prod"].Snapshot || f.lists.Load() != 0 {
+		t.Fatalf("subsequent request: handler=%t user=%q lists=%d", f.called, f.state.Username, f.lists.Load())
+	}
+}
+
+func testAuthorizationCacheFailures(t *testing.T) {
+	t.Helper()
+	for _, failure := range []string{"read", "watch"} {
+		t.Run(failure, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
+				f.startStores(t)
+				f.failReads.Store(true)
+				f.mu.Lock()
+				policyStream, namespaceStream := f.policyWatch, f.namespaceWatch
+				f.mu.Unlock()
+				attempts := f.watchAttempts.Load()
+				if failure == "watch" {
+					f.failWatch.Store(true)
+					policyStream.Stop()
+					namespaceStream.Stop()
+				} else {
+					policyStream.Modify(policyWithPermissions(t, nil, "allNamespaces"))
+					namespaceStream.Modify(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team"}})
+				}
+				synctest.Wait()
+				time.Sleep(time.Second)
+				synctest.Wait()
+				if failure == "watch" && f.watchAttempts.Load() <= attempts {
+					t.Fatal("watch reconnect failure was not exercised")
+				}
+				if failure == "read" && f.lists.Load() == 0 {
+					t.Fatal("background read failure was not exercised")
+				}
+				f.lists.Store(0)
+				for range 3 {
+					w := f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), nil)
+					if w.Code != http.StatusNoContent {
+						t.Fatalf("last-valid request during %s failure = %d, want 204", failure, w.Code)
+					}
+				}
+				missing := f.serve(t, http.MethodGet, authorizationCappRoute, "/api/v1/clusters/prod/namespaces/absent/capps/app", nil)
+				if missing.Code != http.StatusNotFound || decodeError(t, missing).Code != apierrors.CodeNotFound {
+					t.Fatalf("cached miss during %s failure = %d, want NotFound", failure, missing.Code)
+				}
+				if f.lists.Load() != 0 || f.gets.Load() != 0 {
+					t.Fatalf("warm authorization reads = %d/%d, want zero", f.lists.Load(), f.gets.Load())
+				}
+				f.stores["prod"].Invalidate()
+				f.called = false
+				w := f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), nil)
+				assertAuthorizationError(t, w, 503, apierrors.CodeInternal, "POLICY_UNAVAILABLE", "authorization policy is unavailable")
+				if f.called {
+					t.Fatal("invalidated policy reached handler")
+				}
+			})
+		})
+	}
+}
+
+func testAuthorizationCapturedGenerations(t *testing.T) {
+	t.Helper()
+	for _, retirement := range []string{"policy invalidation", "namespace invalidation", "policy publication", "namespace publication"} {
+		t.Run(retirement, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newAuthorizationFixture(t, []string{"capps:get"}, "allNamespaces")
+				w := f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), func(c *gin.Context) {
+					state := authorizationState(t, c)
+					switch retirement {
+					case "policy invalidation":
+						f.stores["prod"].Invalidate()
+					case "namespace invalidation":
+						f.stores["prod"].InvalidateNamespaces()
+					case "policy publication":
+						var policy corev1.ConfigMap
+						if err := f.client.Get(t.Context(), client.ObjectKey{Namespace: "policies", Name: "capp-policy"}, &policy); err != nil {
+							t.Fatal(err)
+						}
+						policy.Data = policyWithPermissions(t, nil, "allNamespaces").Data
+						if err := f.client.Update(t.Context(), &policy); err != nil {
+							t.Fatal(err)
+						}
+						f.mu.Lock()
+						stream := f.policyWatch
+						f.mu.Unlock()
+						stream.Modify(&policy)
+						synctest.Wait()
+					case "namespace publication":
+						var namespace corev1.Namespace
+						if err := f.client.Get(t.Context(), client.ObjectKey{Name: "team"}, &namespace); err != nil {
+							t.Fatal(err)
+						}
+						namespace.Labels = map[string]string{"changed": "true"}
+						if err := f.client.Update(t.Context(), &namespace); err != nil {
+							t.Fatal(err)
+						}
+						f.mu.Lock()
+						stream := f.namespaceWatch
+						f.mu.Unlock()
+						stream.Modify(&namespace)
+						synctest.Wait()
+					}
+					allowed, err := state.Targets["prod"].Snapshot.CheckNamespace(state.Namespace, "capps", "get")
+					if allowed || !errors.Is(err, authorization.ErrPolicyUnavailable) {
+						t.Fatalf("captured check after %s = %v,%v, want unavailable", retirement, allowed, err)
+					}
+					state.RecordDecision("prod", "team", "capps", "get", allowed, err)
+					middleware.RespondAuthorization(c, err)
+				})
+				assertAuthorizationError(t, w, 503, apierrors.CodeInternal, "POLICY_UNAVAILABLE", "authorization policy is unavailable")
+				if len(f.state.Decisions) != 2 || f.state.Decisions[1].Outcome != "unavailable" {
+					t.Fatalf("captured decision audit = %+v", f.state.Decisions)
+				}
+			})
+		})
+	}
+}
+
+func testAuthorizationPolicyOnly(t *testing.T) {
+	t.Helper()
+	f := newAuthorizationFixture(t, []string{"namespaces:create"}, "cluster")
+	f.startStores(t)
+	f.failReads.Store(true)
+	f.stores["prod"].InvalidateNamespaces()
+	synctest.Wait()
+	f.lists.Store(0)
+	w := f.serve(t, http.MethodPost, authorizationClusterRoute+"/namespaces", "/api/v1/clusters/prod/namespaces", nil)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("policy-only request with unavailable namespaces = %d, want 204", w.Code)
+	}
+	f.called = false
+	w = f.serve(t, http.MethodGet, authorizationCappRoute, authorizationPath(authorizationCappRoute), nil)
+	assertAuthorizationError(t, w, 503, apierrors.CodeInternal, "POLICY_UNAVAILABLE", "authorization policy is unavailable")
+	if f.called || f.lists.Load() != 0 || f.gets.Load() != 0 {
+		t.Fatalf("unavailable namespace request: handler=%v reads=%d/%d", f.called, f.lists.Load(), f.gets.Load())
 	}
 }
 
@@ -407,8 +548,8 @@ func testAuthorizationLegacyModes(t *testing.T) {
 		f.cfg.Authorization.Mode = mode
 		f.credential = nil
 		w := f.serve(t, http.MethodGet, "/legacy", "/legacy", nil)
-		if w.Code != http.StatusNoContent || f.state != nil || f.lists != 0 {
-			t.Fatalf("legacy mode %q: status=%d state=%+v lists=%d", mode, w.Code, f.state, f.lists)
+		if w.Code != http.StatusNoContent || f.state != nil || f.lists.Load() != 0 {
+			t.Fatalf("legacy mode %q: status=%d state=%+v lists=%d", mode, w.Code, f.state, f.lists.Load())
 		}
 	}
 }
@@ -465,38 +606,48 @@ func TestRespondProtectedNamespace(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newAuthorizationFixture(t, tc.permissions, tc.scope)
-			w := f.serve(t, http.MethodPost, tc.route, authorizationPath(tc.route), func(c *gin.Context) {
-				middleware.RespondProtectedNamespace(c, tc.clusterName, "credentials")
+			synctest.Test(t, func(t *testing.T) {
+				f := newAuthorizationFixture(t, tc.permissions, tc.scope)
+				w := f.serve(t, http.MethodPost, tc.route, authorizationPath(tc.route), func(c *gin.Context) {
+					middleware.RespondProtectedNamespace(c, tc.clusterName, "credentials")
+				})
+				assertAuthorizationError(t, w, http.StatusForbidden, apierrors.CodeNamespaceDenied, "PROTECTED_NAMESPACE", "namespace is not accessible")
+				if got, want := len(f.state.Decisions), len(tc.permissions)+1; got != want {
+					t.Fatalf("decision count = %d, want %d", got, want)
+				}
+				want := middleware.AuthorizationDecision{
+					Cluster: tc.clusterName, Namespace: "credentials", Resource: tc.route, Action: http.MethodPost,
+					Outcome: "denied", Reason: "PROTECTED_NAMESPACE",
+				}
+				if tc.clusterName == "prod" {
+					want.PolicyVersion = "policy-version"
+				}
+				if diff := cmp.Diff(want, f.state.Decisions[len(f.state.Decisions)-1]); diff != "" {
+					t.Errorf("protected body target decision (-want +got):\n%s", diff)
+				}
 			})
-			assertAuthorizationError(t, w, http.StatusForbidden, apierrors.CodeNamespaceDenied, "PROTECTED_NAMESPACE", "namespace is not accessible")
-			if got, want := len(f.state.Decisions), len(tc.permissions)+1; got != want {
-				t.Fatalf("decision count = %d, want %d", got, want)
-			}
-			want := middleware.AuthorizationDecision{
-				Cluster: tc.clusterName, Namespace: "credentials", Resource: tc.route, Action: http.MethodPost,
-				Outcome: "denied", Reason: "PROTECTED_NAMESPACE",
-			}
-			if tc.clusterName == "prod" {
-				want.PolicyVersion = "policy-version"
-			}
-			if diff := cmp.Diff(want, f.state.Decisions[len(f.state.Decisions)-1]); diff != "" {
-				t.Errorf("protected body target decision (-want +got):\n%s", diff)
-			}
 		})
 	}
 }
 
 type authorizationFixture struct {
-	cfg         *config.Config
-	mgr         *testutil.MockClusterManager
-	client      client.Client
-	adminClient any
-	credential  any
-	state       *middleware.AuthorizationState
-	called      bool
-	lists       int
-	gets        int
+	cfg            *config.Config
+	mgr            *testutil.MockClusterManager
+	client         client.Client
+	credential     any
+	state          *middleware.AuthorizationState
+	called         bool
+	lists          atomic.Int64
+	gets           atomic.Int64
+	serviceClient  client.WithWatch
+	stores         map[string]*authorization.Store
+	started        bool
+	failReads      atomic.Bool
+	failWatch      atomic.Bool
+	watchAttempts  atomic.Int64
+	mu             sync.Mutex
+	policyWatch    *watch.RaceFreeFakeWatcher
+	namespaceWatch *watch.RaceFreeFakeWatcher
 }
 
 func newAuthorizationFixture(t *testing.T, permissions []string, scope string) *authorizationFixture {
@@ -509,48 +660,91 @@ func newAuthorizationFixture(t *testing.T, permissions []string, scope string) *
 		},
 		credential: auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"developers"}},
 	}
-	f.client = testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
-		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-			f.lists++
-			policies, ok := list.(*corev1.ConfigMapList)
-			if !ok {
-				t.Fatalf("unexpected list %T; middleware may only list policy", list)
-			}
-			if err := c.List(ctx, list, opts...); err != nil {
-				return err
-			}
-			policies.ResourceVersion = "policy-version"
-			return nil
-		},
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			f.gets++
-			if _, ok := obj.(*corev1.Namespace); !ok {
-				t.Fatalf("unexpected get %T; middleware may only read namespace metadata", obj)
-			}
-			return c.Get(ctx, key, obj, opts...)
-		},
-	}, policyWithPermissions(t, permissions, scope), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "current-uid"}})
+	f.client = testutil.FakeClient(t, policyWithPermissions(t, permissions, scope), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "current-uid"}})
 	f.mgr = &testutil.MockClusterManager{
 		GetFn: func(name string) (*cluster.ClusterClient, error) {
 			return &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: name}}, nil
 		},
-		ClientForFn: func(_ *cluster.ClusterClient, cred auth.ClusterCredential) (client.Client, error) {
-			if diff := cmp.Diff(auth.ClusterCredential{}, cred); diff != "" {
-				t.Fatalf("policy client credential (-want +got):\n%s", diff)
-			}
-			return f.client, nil
+		ServiceClientForFn: func(*cluster.ClusterClient) (client.WithWatch, error) {
+			return f.serviceClient, nil
 		},
 	}
 	return f
 }
 
+// startStores models server-owned startup before requests are served.
+func (f *authorizationFixture) startStores(t *testing.T) {
+	t.Helper()
+	if f.started {
+		return
+	}
+	f.started = true
+	target, ok := f.client.(client.WithWatch)
+	if !ok {
+		t.Fatal("fixture client must support watches")
+	}
+	f.serviceClient = interceptor.NewClient(target, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			f.lists.Add(1)
+			if f.failReads.Load() {
+				return errors.New("offline")
+			}
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			switch list := list.(type) {
+			case *corev1.ConfigMapList:
+				list.ResourceVersion = "policy-version"
+			case *corev1.NamespaceList:
+				list.ResourceVersion = "namespace-version"
+			}
+			return nil
+		},
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			f.gets.Add(1)
+			return c.Get(ctx, key, obj, opts...)
+		},
+		Watch: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) (watch.Interface, error) {
+			f.watchAttempts.Add(1)
+			if f.failWatch.Load() {
+				return nil, errors.New("offline")
+			}
+			stream := watch.NewRaceFreeFake()
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			switch list.(type) {
+			case *corev1.ConfigMapList:
+				f.policyWatch = stream
+			case *corev1.NamespaceList:
+				f.namespaceWatch = stream
+			}
+			return stream, nil
+		},
+	})
+	f.stores = make(map[string]*authorization.Store)
+	for _, cfg := range f.cfg.Clusters {
+		store, err := authorization.NewStore(f.serviceClient, cfg.Authorization, zap.NewNop())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(store.Stop)
+		if err := store.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		f.stores[cfg.Name] = store
+	}
+	synctest.Wait()
+	time.Sleep(time.Second)
+	synctest.Wait()
+	f.lists.Store(0)
+	f.gets.Store(0)
+}
+
 func (f *authorizationFixture) serve(t *testing.T, method, route, path string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
+	f.startStores(t)
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
-		if f.adminClient != nil {
-			c.Set(string(middleware.AdminK8sClientKey), f.adminClient)
-		}
 		if f.credential != nil {
 			c.Set(string(middleware.CredentialKey), f.credential)
 		}
@@ -559,7 +753,7 @@ func (f *authorizationFixture) serve(t *testing.T, method, route, path string, h
 			f.state, _ = value.(*middleware.AuthorizationState)
 		}
 	})
-	engine.Use(middleware.Authorization(f.cfg, f.mgr))
+	engine.Use(middleware.Authorization(f.cfg, f.mgr, f.stores))
 	if route != "" {
 		engine.Handle(method, route, func(c *gin.Context) {
 			f.called = true

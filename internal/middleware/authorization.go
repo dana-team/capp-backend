@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -31,7 +32,7 @@ type AuthorizationState struct {
 }
 
 // AuthorizationTarget pairs a policy snapshot with the service client and configuration
-// that loaded it. Handlers may use it only for operations authorized by the snapshot.
+// for resource operations. Handlers may use it only for operations authorized by the snapshot.
 type AuthorizationTarget struct {
 	Snapshot *authorization.Snapshot
 	Client   client.Client
@@ -72,8 +73,11 @@ var errProtectedNamespace = errors.New("namespace is protected")
 
 // Authorization enforces application policy after authentication and cluster
 // resolution. It leaves legacy modes unchanged and must also wrap cluster discovery.
-// Configuration must be validated before serving and remain immutable.
-func Authorization(cfg *config.Config, mgr cluster.ClusterManager) gin.HandlerFunc {
+// Configuration must be validated before serving and remain immutable. Stores are
+// supplied per target and started/stopped by the server lifecycle owner. The store
+// registry is copied on construction; requests never start or refresh a store.
+func Authorization(cfg *config.Config, mgr cluster.ClusterManager, stores map[string]*authorization.Store) gin.HandlerFunc {
+	stores = maps.Clone(stores)
 	routes := authorizationRoutes()
 	return func(c *gin.Context) {
 		if cfg.Authorization.Mode == "" || cfg.Authorization.Mode == config.AuthorizationModeKubernetes {
@@ -100,7 +104,7 @@ func Authorization(cfg *config.Config, mgr cluster.ClusterManager) gin.HandlerFu
 			RespondAuthorization(c, nil)
 			return
 		}
-		if err := prepareAuthorization(c, cfg, mgr, cred, state); err != nil {
+		if err := prepareAuthorization(c, cfg, mgr, stores, cred, state); err != nil {
 			var apiErr *apierrors.APIError
 			if errors.As(err, &apiErr) {
 				apierrors.Respond(c, apiErr)
@@ -172,7 +176,7 @@ func RespondProtectedNamespace(c *gin.Context, clusterName, namespace string) {
 	respondAuthorizationReason(c, protectedNamespace, clusterName, namespace)
 }
 
-func prepareAuthorization(c *gin.Context, cfg *config.Config, mgr cluster.ClusterManager, cred auth.ClusterCredential, state *AuthorizationState) error {
+func prepareAuthorization(c *gin.Context, cfg *config.Config, mgr cluster.ClusterManager, stores map[string]*authorization.Store, cred auth.ClusterCredential, state *AuthorizationState) error {
 	clusterName := c.Param("cluster")
 	for _, targetConfig := range cfg.Clusters {
 		if clusterName != "" && targetConfig.Name != clusterName {
@@ -192,7 +196,7 @@ func prepareAuthorization(c *gin.Context, cfg *config.Config, mgr cluster.Cluste
 				return apierrors.NewNamespaceDenied(namespace, targetConfig.Name)
 			}
 		}
-		serviceClient, err := authorizationClient(c, mgr, cc)
+		serviceClient, err := mgr.ServiceClientFor(cc)
 		if err != nil {
 			state.RecordDecision(targetConfig.Name, c.Param("namespace"), c.FullPath(), c.Request.Method, false, err)
 			return err
@@ -202,7 +206,12 @@ func prepareAuthorization(c *gin.Context, cfg *config.Config, mgr cluster.Cluste
 			state.RecordDecision(targetConfig.Name, c.Param("namespace"), c.FullPath(), c.Request.Method, false, err)
 			return err
 		}
-		snapshot, err := authorization.Load(c.Request.Context(), serviceClient, targetConfig.Authorization, cred)
+		store := stores[targetConfig.Name]
+		if store == nil {
+			state.RecordDecision(targetConfig.Name, c.Param("namespace"), c.FullPath(), c.Request.Method, false, authorization.ErrPolicyUnavailable)
+			return authorization.ErrPolicyUnavailable
+		}
+		snapshot, err := store.Snapshot(cred)
 		if err != nil {
 			state.RecordDecision(targetConfig.Name, c.Param("namespace"), c.FullPath(), c.Request.Method, false, err)
 			return err
@@ -219,31 +228,16 @@ func prepareAuthorization(c *gin.Context, cfg *config.Config, mgr cluster.Cluste
 		return apierrors.NewClusterNotFound(clusterName)
 	}
 	if namespace := c.Param("namespace"); namespace != "" {
-		var ns corev1.Namespace
-		if err := target.Client.Get(c.Request.Context(), client.ObjectKey{Name: namespace}, &ns); err != nil {
+		ns, err := target.Snapshot.Namespace(namespace)
+		if err != nil {
 			if k8serrors.IsNotFound(err) {
 				return apierrors.NewNotFound("Namespace", namespace)
 			}
 			return err
 		}
-		state.Namespace = &ns
+		state.Namespace = ns
 	}
 	return nil
-}
-
-// authorizationClient reuses the resolved source's service client. Discovery
-// targets without cluster middleware need their own service clients.
-func authorizationClient(c *gin.Context, mgr cluster.ClusterManager, cc *cluster.ClusterClient) (client.Client, error) {
-	if c.Param("cluster") == cc.Meta.Name {
-		if value, exists := c.Get(string(AdminK8sClientKey)); exists {
-			serviceClient, ok := value.(client.Client)
-			if !ok || serviceClient == nil {
-				return nil, errors.New("authorization service client is unavailable")
-			}
-			return serviceClient, nil
-		}
-	}
-	return mgr.ClientFor(cc, auth.ClusterCredential{})
 }
 
 func respondAuthorizationReason(c *gin.Context, reason, clusterName, namespace string) {
@@ -279,7 +273,7 @@ func respondAuthorizationReason(c *gin.Context, reason, clusterName, namespace s
 }
 
 // An empty permission list delegates filtering or body-dependent checks to the
-// handler; it never exempts the route from loading valid policy.
+// handler; it never exempts the route from capturing valid policy.
 func authorizationRoutes() map[authorizationRoute][]routePermission {
 	const clusters = "/api/v1/clusters"
 	const target = clusters + "/:cluster"
