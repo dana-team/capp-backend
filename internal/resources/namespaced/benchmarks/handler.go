@@ -1,7 +1,8 @@
 // Package benchmarks implements the benchmark resource handler.
 // Trigger creates one Job for a Capp. A Job that is still running blocks
 // another trigger. A finished Job is replaced. Status reports that Job.
-// Query and query_range proxy PromQL to the first configured Prometheus URL.
+// Dashboards returns the preset PromQL for a Capp. Query and query_range
+// proxy those expressions to the first configured Prometheus URL.
 // Routes are registered only when benchmarks are enabled.
 package benchmarks
 
@@ -50,6 +51,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	bench.GET("", h.status)
 
 	metrics := rg.Group("/namespaces/:namespace/capps/:name/metrics")
+	metrics.GET("/dashboards", h.dashboards)
 	metrics.GET("/query", h.query)
 	metrics.GET("/query_range", h.queryRange)
 }
