@@ -3,6 +3,7 @@
 # using underscores as separators, e.g.:
 #   server.port          → CAPP_SERVER_PORT
 #   auth.mode            → CAPP_AUTH_MODE
+#   authorization.mode   → CAPP_AUTHORIZATION_MODE
 #   clusters[0].credential.inline.token → CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
 # Supply auth.ldap.verificationKeys as a map in mounted YAML, not JSON in an env var.
 
@@ -102,6 +103,12 @@ auth:
     # Maximum burst above the sustained rate.
     burst: 40
 
+# ── Authorization ─────────────────────────────────────────────────────────────
+authorization:
+  # kubernetes preserves existing authorization for every authentication mode.
+  # application requires auth.mode=ldap and per-cluster authorization settings.
+  mode: "kubernetes"
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging:
   # Minimum log level. One of: debug, info, warn, error.
@@ -161,6 +168,14 @@ clusters:
     # allowedNamespaces restricts which namespaces are visible through this
     # cluster entry. Empty list means all namespaces are accessible.
     allowedNamespaces: []
+
+    # Required policy namespace and exclusions for authorization.mode=application.
+    # These per-cluster settings are supplied in YAML. The policy namespace is
+    # protected automatically; also list backend and credential-bearing namespaces.
+    # Protected namespaces take precedence over allowedNamespaces and grants.
+    # authorization:
+    #   policyNamespace: "capp-backend-policy"
+    #   protectedNamespaces: ["capp-backend"]
 
   # Production cluster example (comment out above and fill in below):
   # - name: "production"
