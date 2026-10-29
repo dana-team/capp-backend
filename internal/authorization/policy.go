@@ -24,6 +24,33 @@ const (
 	maxPolicyRecordBytes = 512 * 1024
 	clusterScope         = "cluster"
 	allNamespacesScope   = "allNamespaces"
+	namespaceScopePrefix = "ns/"
+)
+
+// Actions recognized by the application permission validator. Valid actions vary by resource.
+const (
+	ActionGet     = "get"
+	ActionList    = "list"
+	ActionCreate  = "create"
+	ActionUpdate  = "update"
+	ActionDelete  = "delete"
+	ActionSync    = "sync"
+	ActionUnsync  = "unsync"
+	ActionMigrate = "migrate"
+	ActionGrant   = "grant"
+	ActionReplace = "replace"
+)
+
+// Resources recognized by the application permission validator.
+const (
+	ResourceClusters      = "clusters"
+	ResourceNamespaces    = "namespaces"
+	ResourceCapps         = consts.CappResource
+	ResourceSecrets       = "secrets"
+	ResourceConfigMaps    = "configmaps"
+	ResourceCappRevisions = "capprevisions"
+	ResourceBenchmarks    = "benchmarks"
+	ResourceCappUserRole  = "roles/" + memberRole
 )
 
 type permission struct {
@@ -66,7 +93,7 @@ type policyRecords struct {
 }
 
 // parsePolicyRecords validates a complete set of labeled records, independent of LIST order.
-// Matching memberships to live Namespace UIDs is the snapshot loader's responsibility.
+// Snapshot checks match memberships against captured namespace identities.
 func parsePolicyRecords(records []corev1.ConfigMap, policyNamespace string) (*policyRecords, error) {
 	result := &policyRecords{memberships: make(map[types.UID]membershipPolicy)}
 	seen := make(map[string]bool, len(records))
@@ -256,30 +283,25 @@ func validateBinding(grant binding, roles map[string][]permission) error {
 }
 
 func knownPermission(resource, action string) bool {
-	const (
-		actionGet    = "get"
-		actionList   = "list"
-		actionCreate = "create"
-		actionUpdate = "update"
-		actionDelete = "delete"
-	)
+	for _, permission := range permissionInventory() {
+		if permission.Resource == resource {
+			return slices.Contains(permission.Actions, action)
+		}
+	}
+	return false
+}
 
-	switch resource {
-	case "clusters":
-		return action == actionGet
-	case "namespaces":
-		return slices.Contains([]string{actionGet, actionCreate, actionUpdate, actionDelete}, action)
-	case consts.CappResource:
-		return slices.Contains([]string{actionList, actionGet, actionCreate, actionUpdate, actionDelete, "sync", "unsync", "migrate"}, action)
-	case "secrets", "configmaps":
-		return slices.Contains([]string{actionList, actionGet, actionCreate, actionUpdate, actionDelete}, action)
-	case "capprevisions":
-		return slices.Contains([]string{actionList, actionGet}, action)
-	case "benchmarks":
-		return slices.Contains([]string{actionGet, actionCreate}, action)
-	case "roles/" + memberRole:
-		return slices.Contains([]string{"grant", "replace"}, action)
-	default:
-		return false
+// permissionInventory defines the supported resource/action pairs for validation
+// and discovery. Namespace discovery excludes cluster-only operations.
+func permissionInventory() []permission {
+	return []permission{
+		{Resource: ResourceClusters, Actions: []string{ActionGet}},
+		{Resource: ResourceNamespaces, Actions: []string{ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceCapps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete, ActionSync, ActionUnsync, ActionMigrate}},
+		{Resource: ResourceSecrets, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceConfigMaps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceCappRevisions, Actions: []string{ActionList, ActionGet}},
+		{Resource: ResourceBenchmarks, Actions: []string{ActionGet, ActionCreate}},
+		{Resource: ResourceCappUserRole, Actions: []string{ActionGrant, ActionReplace}},
 	}
 }

@@ -22,8 +22,7 @@ import (
 var policyModel string
 
 // Snapshot holds one target's policy and one verified caller's identity for a request.
-// Checks are safe to use concurrently. Caller subjects stay request-local while
-// immutable policy evaluators can be shared by snapshots for the same target.
+// Checks are safe to use concurrently; the caller's identity stays request-local.
 type Snapshot struct {
 	store            *Store
 	generation       *policyGeneration
@@ -57,7 +56,7 @@ func (s *Snapshot) Namespace(name string) (*corev1.Namespace, error) {
 		return nil, err
 	}
 	if namespace == nil {
-		return nil, k8serrors.NewNotFound(corev1.Resource("namespaces"), name)
+		return nil, k8serrors.NewNotFound(corev1.Resource(ResourceNamespaces), name)
 	}
 	return namespace, nil
 }
@@ -117,7 +116,30 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 	if membership, ok := s.generation.records.memberships[namespace.UID]; ok && membership.Namespace.Name != namespace.Name {
 		return false, errors.New("membership identity does not match current namespace")
 	}
-	return s.check("ns/"+string(namespace.UID), resource, action)
+	return s.check(namespaceScopePrefix+string(namespace.UID), resource, action)
+}
+
+// HasNamespaceAccess reports whether the caller has any permission applicable to
+// the supplied namespace instance. It checks every permission so an evaluation
+// error cannot be hidden by an earlier grant.
+func (s *Snapshot) HasNamespaceAccess(namespace *corev1.Namespace) (bool, error) {
+	allowed := false
+	for _, permission := range permissionInventory() {
+		if permission.Resource == ResourceClusters {
+			continue
+		}
+		for _, action := range permission.Actions {
+			if permission.Resource == ResourceNamespaces && action == ActionCreate {
+				continue
+			}
+			granted, err := s.CheckNamespace(namespace, permission.Resource, action)
+			if err != nil {
+				return false, err
+			}
+			allowed = allowed || granted
+		}
+	}
+	return allowed, nil
 }
 
 func (s *Snapshot) validateNamespaces() error {
@@ -150,9 +172,8 @@ func (s *Snapshot) evaluate(domain, resource, action string) (bool, error) {
 	case clusterScope:
 		enforcer = s.generation.evaluators.cluster
 	case allNamespacesScope:
-		// Only explicit global grants can satisfy this scope.
 	default:
-		if scoped, ok := s.generation.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, "ns/"))]; ok {
+		if scoped, ok := s.generation.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, namespaceScopePrefix))]; ok {
 			enforcer = scoped
 		}
 	}
@@ -253,7 +274,7 @@ func compilePolicy(records *policyRecords) (*casbin.SyncedEnforcer, error) {
 		addBinding(grant.binding, grant.Scope)
 	}
 	for uid, membership := range records.memberships {
-		domain := "ns/" + string(uid)
+		domain := namespaceScopePrefix + string(uid)
 		for _, user := range membership.Users {
 			addBinding(binding{Kind: rbacv1.UserKind, Name: user, Role: memberRole}, domain)
 		}

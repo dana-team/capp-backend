@@ -434,3 +434,159 @@ func snapshotObjects(t *testing.T) []*corev1.ConfigMap {
 		},
 	}
 }
+
+func TestSnapshotHasNamespaceAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		user   string
+		groups []string
+		want   bool
+	}{
+		{name: "direct member", user: "alice", want: true},
+		{name: "operator user", user: "inviter", want: true},
+		{name: "verified group", user: "bob", groups: []string{"team-editors"}, want: true},
+		{name: "global permission without membership", user: "global-reader", want: true},
+		{name: "no grants", user: "bob"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			namespace := currentNamespace()
+			if tc.name == "global permission without membership" {
+				namespace = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "other", UID: "uid-2"}}
+			}
+			snapshot := cachedSnapshot(t, snapshotClient(t, interceptor.Funcs{}, snapshotObjects(t)...),
+				auth.ClusterCredential{ImpersonateUser: tc.user, ImpersonateGroups: tc.groups}, namespace)
+			evaluators := snapshot.generation.evaluators
+			snapshot.store.target = snapshotClient(t, interceptor.Funcs{
+				List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+					t.Fatal("HasNamespaceAccess performed a LIST")
+					return nil
+				},
+				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+					t.Fatal("HasNamespaceAccess performed a GET")
+					return nil
+				},
+			})
+			got, err := snapshot.HasNamespaceAccess(namespace)
+			if got != tc.want || err != nil {
+				t.Fatalf("HasNamespaceAccess(%s) = %v, %v, want %v, nil", namespace.Name, got, err, tc.want)
+			}
+			if snapshot.generation.evaluators != evaluators {
+				t.Fatal("HasNamespaceAccess replaced compiled evaluators")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		resource string
+		actions  []string
+		want     bool
+	}{
+		{resource: "namespaces", actions: []string{"get", "update", "delete"}, want: true},
+		{resource: "capps", actions: []string{"list", "get", "create", "update", "delete", "sync", "unsync", "migrate"}, want: true},
+		{resource: "secrets", actions: []string{"list", "get", "create", "update", "delete"}, want: true},
+		{resource: "configmaps", actions: []string{"list", "get", "create", "update", "delete"}, want: true},
+		{resource: "capprevisions", actions: []string{"list", "get"}, want: true},
+		{resource: "benchmarks", actions: []string{"get", "create"}, want: true},
+		{resource: "roles/capp-user", actions: []string{"grant", "replace"}, want: true},
+		{resource: "clusters", actions: []string{"get"}},
+		{resource: "namespaces", actions: []string{"create"}},
+	} {
+		for _, action := range tc.actions {
+			t.Run(tc.resource+":"+action, func(t *testing.T) {
+				objects := snapshotObjects(t)[:1]
+				payload, err := json.Marshal(clusterPolicy{Version: 1,
+					Roles:    map[string][]permission{"only": {{Resource: tc.resource, Actions: []string{action}}}},
+					Bindings: []clusterBinding{{binding: binding{Kind: "User", Name: "alice", Role: "only"}, Scope: allNamespacesScope}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				objects[0].Data[policyDataKey] = string(payload)
+				snapshot := cachedSnapshot(t, snapshotClient(t, interceptor.Funcs{}, objects...), auth.ClusterCredential{ImpersonateUser: "alice"})
+				got, err := snapshot.HasNamespaceAccess(currentNamespace())
+				if got != tc.want || err != nil {
+					t.Fatalf("HasNamespaceAccess with %s:%s = %v, %v, want %v, nil", tc.resource, action, got, err, tc.want)
+				}
+			})
+		}
+	}
+	t.Run("empty role", func(t *testing.T) {
+		objects := snapshotObjects(t)[:1]
+		objects[0].Data[policyDataKey] = `{"version":1,"roles":{"empty":[]},"bindings":[{"kind":"User","name":"alice","role":"empty","scope":"allNamespaces"}]}`
+		snapshot := cachedSnapshot(t, snapshotClient(t, interceptor.Funcs{}, objects...), auth.ClusterCredential{ImpersonateUser: "alice"})
+		if got, err := snapshot.HasNamespaceAccess(currentNamespace()); got || err != nil {
+			t.Fatalf("HasNamespaceAccess with empty role = %v, %v, want false, nil", got, err)
+		}
+	})
+	t.Run("validation", testNamespaceAccessValidation)
+}
+
+func testNamespaceAccessValidation(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"nil namespace", "missing name", "missing UID", "unknown namespace", "UID mismatch", "membership name mismatch", "nil snapshot", "policy invalidated", "namespaces invalidated", "policy superseded", "namespaces superseded"} {
+		t.Run(name, func(t *testing.T) {
+			snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice"})
+			namespace := currentNamespace()
+			switch name {
+			case "nil namespace":
+				namespace = nil
+			case "missing name":
+				namespace.Name = ""
+			case "missing UID":
+				namespace.UID = ""
+			case "unknown namespace":
+				namespace.Name = "missing"
+			case "UID mismatch":
+				namespace.UID = "replacement"
+			case "membership name mismatch":
+				record := snapshot.generation.records.memberships[namespace.UID]
+				record.Namespace.Name = "wrong"
+				snapshot.generation.records.memberships[namespace.UID] = record
+			case "nil snapshot":
+				snapshot = nil
+			case "policy invalidated":
+				snapshot.store.Invalidate()
+			case "namespaces invalidated":
+				snapshot.store.InvalidateNamespaces()
+			case "policy superseded":
+				replacement := *snapshot.generation
+				snapshot.store.generation = &replacement
+			case "namespaces superseded":
+				replacement := *snapshot.namespaces
+				snapshot.store.namespaces = &replacement
+			}
+			if got, err := snapshot.HasNamespaceAccess(namespace); got || err == nil {
+				t.Fatalf("HasNamespaceAccess(%s) = %v, %v, want false and error", name, got, err)
+			}
+		})
+	}
+	t.Run("later permission error overrides earlier grant", func(t *testing.T) {
+		snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice"})
+		enforcer := snapshot.generation.evaluators.namespaces[currentNamespace().UID]
+		enforcer.GetModel()["m"]["m"].Value = "actionCheck(r_act)"
+		enforcer.AddFunction("actionCheck", func(args ...any) (any, error) {
+			if args[0] == ActionGet {
+				return true, nil
+			}
+			return false, errors.New("private diagnostic")
+		})
+		got, err := snapshot.HasNamespaceAccess(currentNamespace())
+		if got || err == nil || err.Error() != "authorization policy evaluation failed" {
+			t.Fatalf("HasNamespaceAccess = %v, %v, want false and sanitized error", got, err)
+		}
+	})
+	t.Run("later subject error overrides earlier grant", func(t *testing.T) {
+		snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"editors"}})
+		enforcer := snapshot.generation.evaluators.namespaces[currentNamespace().UID]
+		enforcer.GetModel()["m"]["m"].Value = "subjectCheck(r_sub)"
+		enforcer.AddFunction("subjectCheck", func(args ...any) (any, error) {
+			if args[0] == policyIdentifier("User", "alice") {
+				return true, nil
+			}
+			return false, errors.New("private diagnostic")
+		})
+		got, err := snapshot.HasNamespaceAccess(currentNamespace())
+		if got || err == nil || err.Error() != "authorization policy evaluation failed" {
+			t.Fatalf("HasNamespaceAccess = %v, %v, want false and sanitized error", got, err)
+		}
+	})
+}

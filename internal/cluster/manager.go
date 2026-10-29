@@ -179,7 +179,7 @@ func (m *defaultClusterManager) ClientFor(cluster *ClusterClient, cred auth.Clus
 	return client.New(reqCfg, client.Options{Scheme: cluster.Scheme})
 }
 
-// ServiceClientFor reuses one client and its transport/discovery state per target.
+// ServiceClientFor reuses one service-credential client per target.
 // The base configuration remains unchanged for legacy caller-scoped clients.
 func (m *defaultClusterManager) ServiceClientFor(cluster *ClusterClient) (client.WithWatch, error) {
 	cluster.serviceMu.Lock()
