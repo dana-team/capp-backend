@@ -8,12 +8,17 @@ package configmaps
 import (
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/authorization"
+	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -55,6 +60,67 @@ func (h *Handler) listAll(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
+
+	value, exists := c.Get(string(middleware.AuthorizationKey))
+	if !exists {
+		c.JSON(http.StatusOK, convertToResponseList(configMapList.Items))
+		return
+	}
+	state, ok := value.(*middleware.AuthorizationState)
+	if !ok || state == nil {
+		middleware.RespondAuthorization(c, authorization.ErrPolicyUnavailable)
+		return
+	}
+	clusterName := c.Param("cluster")
+	target := state.Targets[clusterName]
+	value, _ = c.Get(string(middleware.ClusterMetaKey))
+	meta, ok := value.(cluster.ClusterMeta)
+	if target == nil || target.Snapshot == nil || !ok {
+		middleware.RespondAuthorization(c, authorization.ErrPolicyUnavailable)
+		return
+	}
+	// Validate both collections even when no item needs a namespace check.
+	validate := func() error {
+		if _, err := target.Snapshot.CheckAllNamespaces(authorization.ResourceConfigMaps, authorization.ActionList); err != nil {
+			return err
+		}
+		_, err := target.Snapshot.NamespaceResourceVersion()
+		return err
+	}
+	if err := validate(); err != nil {
+		middleware.RespondAuthorization(c, err)
+		return
+	}
+	items := configMapList.Items[:0]
+	for _, item := range configMapList.Items {
+		if item.Namespace == target.Config.PolicyNamespace || slices.Contains(target.Config.ProtectedNamespaces, item.Namespace) ||
+			(len(meta.AllowedNamespaces) > 0 && !slices.Contains(meta.AllowedNamespaces, item.Namespace)) {
+			continue
+		}
+		namespace, err := target.Snapshot.Namespace(item.Namespace)
+		if k8serrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			middleware.RespondAuthorization(c, err)
+			return
+		}
+		allowed, err := target.Snapshot.CheckNamespace(namespace, authorization.ResourceConfigMaps, authorization.ActionList)
+		state.RecordDecision(clusterName, item.Namespace, authorization.ResourceConfigMaps, authorization.ActionList, allowed, err)
+		if err != nil {
+			middleware.RespondAuthorization(c, err)
+			return
+		}
+		if allowed {
+			items = append(items, item)
+		}
+	}
+	if err := validate(); err != nil {
+		middleware.RespondAuthorization(c, err)
+		return
+	}
+	configMapList.Items = items
+
 	c.JSON(http.StatusOK, convertToResponseList(configMapList.Items))
 }
 
