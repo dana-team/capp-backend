@@ -20,6 +20,39 @@ var (
 	ErrMembershipConflict = errors.New("membership changed; reload and retry")
 )
 
+// DirectUsers returns a sorted defensive copy of direct API-managed users.
+// Callers must first authorize visibility. The supplied identity must match the
+// captured namespace collection, and both captured generations must remain usable.
+// Missing membership returns an empty, non-nil slice; no Kubernetes reads occur.
+func (s *Snapshot) DirectUsers(namespace *corev1.Namespace) ([]string, error) {
+	if namespace == nil || namespace.Name == "" || namespace.UID == "" {
+		return nil, errors.New("membership requires current namespace metadata")
+	}
+	if s == nil || s.store == nil || s.generation == nil || s.generation.records == nil {
+		return nil, ErrPolicyUnavailable
+	}
+	if err := s.store.validate(s.generation, s.namespaces, true); err != nil {
+		return nil, err
+	}
+	cached, err := s.Namespace(namespace.Name)
+	if err != nil {
+		return nil, err
+	}
+	if cached.UID != namespace.UID {
+		return nil, ErrPolicyUnavailable
+	}
+	membership, exists := s.generation.records.memberships[cached.UID]
+	if exists && membership.Namespace.Name != cached.Name {
+		return nil, errors.New("membership identity does not match current namespace")
+	}
+	users := append([]string{}, membership.Users...)
+	slices.Sort(users)
+	if err := s.store.validate(s.generation, s.namespaces, true); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // ReplaceUsers replaces direct capp-user members, preserving operator bindings.
 // Nil leaves membership unchanged; an empty slice clears it.
 // Call after authorization and setup, using current namespace metadata.

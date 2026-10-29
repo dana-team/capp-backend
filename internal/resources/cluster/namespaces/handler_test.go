@@ -2,15 +2,25 @@ package namespaces
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -18,7 +28,10 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func managedNamespace(name string) *corev1.Namespace {
@@ -643,4 +656,137 @@ func TestDelete(t *testing.T) {
 
 		assert.Equal(t, http.StatusForbidden, w.Code)
 	})
+}
+
+func TestGet(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		actions   []string
+		namespace string
+		uid       string
+		status    int
+		canEdit   bool
+		invalid   bool
+	}{
+		{name: "visible with both edit permissions", actions: []string{"get", "update", "replace"}, status: http.StatusOK, canEdit: true},
+		{name: "update alone cannot edit users", actions: []string{"get", "update"}, status: http.StatusOK},
+		{name: "replace alone cannot edit quota", actions: []string{"get", "replace"}, status: http.StatusOK},
+		{name: "denied before quota", actions: []string{"update", "replace"}, status: http.StatusForbidden},
+		{name: "protected before details", actions: []string{"get"}, namespace: "policies", status: http.StatusForbidden},
+		{name: "configured exclusion", actions: []string{"get"}, namespace: "excluded", status: http.StatusForbidden},
+		{name: "cached miss", actions: []string{"get"}, namespace: "missing", status: http.StatusNotFound},
+		{name: "replacement does not inherit users", actions: []string{"get"}, uid: "replacement", status: http.StatusOK},
+		{name: "invalidated generation", actions: []string{"get"}, invalid: true, status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ns := managedNamespace("team")
+				ns.UID = "original"
+				if tc.uid != "" {
+					ns.UID = types.UID(tc.uid)
+				}
+				rules := make([]map[string]any, 0, len(tc.actions))
+				for _, action := range tc.actions {
+					resource := "namespaces"
+					if action == "replace" {
+						resource = "roles/capp-user"
+					}
+					rules = append(rules, map[string]any{"resource": resource, "actions": []string{action}})
+				}
+				payload, err := json.Marshal(map[string]any{
+					"version": 1, "roles": map[string]any{"capp-user": rules},
+					"bindings": []map[string]string{{"kind": "Group", "name": "readers", "role": "capp-user", "scope": "allNamespaces"}},
+				})
+				require.NoError(t, err)
+				policy := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "capp-policy", Namespace: "policies", Labels: map[string]string{consts.CappAPIGroup + "/authorization": "true"}}, Data: map[string]string{"policy.json": string(payload)}}
+				membership := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+					Name: "capp-members-original", Namespace: "policies", Labels: policy.Labels,
+					OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Namespace", Name: "team", UID: "original"}},
+				}, Data: map[string]string{"policy.json": `{"version":1,"namespace":{"name":"team","uid":"original"},"users":["zoe","alice"],"bindings":[{"kind":"User","name":"operator","role":"capp-user"}]}`}}
+				base := testutil.FakeClient(t, ns, policy, membership, existingResourceQuota("team", "2", "4Gi"))
+				warm, quotaReads := false, 0
+				watchClient, ok := base.(client.WithWatch)
+				require.True(t, ok)
+				target := interceptor.NewClient(watchClient, interceptor.Funcs{
+					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if warm && tc.invalid {
+							return errors.New("offline")
+						}
+						if warm {
+							t.Fatalf("unexpected request LIST %T", list)
+						}
+						if err := c.List(ctx, list, opts...); err != nil {
+							return err
+						}
+						list.SetResourceVersion("1")
+						return nil
+					},
+					Watch: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) (watch.Interface, error) {
+						return watch.NewRaceFreeFake(), nil
+					},
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*corev1.ResourceQuota); !ok {
+							t.Fatalf("unexpected GET %T", obj)
+						}
+						quotaReads++
+						return c.Get(ctx, key, obj, opts...)
+					},
+					Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+						return errors.New("unexpected write or SSAR")
+					},
+				})
+				cfg := &config.Config{Authorization: config.AuthorizationConfig{Mode: config.AuthorizationModeApplication}, Clusters: []config.ClusterConfig{{Name: "prod", Authorization: config.ClusterAuthorizationConfig{PolicyNamespace: "policies"}}}}
+				store, err := authorization.NewStore(target, cfg.Clusters[0].Authorization, zap.NewNop())
+				require.NoError(t, err)
+				defer store.Stop()
+				require.NoError(t, store.Start(t.Context()))
+				synctest.Wait()
+				time.Sleep(time.Second)
+				synctest.Wait()
+				warm = true
+				if tc.namespace == "missing" {
+					// A live namespace absent from the captured collection is still a miss.
+					require.NoError(t, base.Create(t.Context(), managedNamespace("missing")))
+				}
+				if tc.invalid {
+					store.Invalidate()
+				}
+				mgr := &testutil.MockClusterManager{
+					GetFn:                func(string) (*cluster.ClusterClient, error) { return &cluster.ClusterClient{}, nil },
+					ServiceClientForFn:   func(*cluster.ClusterClient) (client.WithWatch, error) { return target, nil },
+					IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, name string) bool { return name != "excluded" },
+				}
+				router := gin.New()
+				router.Use(func(c *gin.Context) {
+					c.Set(string(middleware.CredentialKey), auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"readers"}})
+				})
+				router.Use(middleware.Authorization(cfg, mgr, map[string]*authorization.Store{"prod": store}))
+				router.GET("/api/v1/clusters/:cluster/namespaces/:namespace", New(zap.NewNop()).get)
+				name := tc.namespace
+				if name == "" {
+					name = "team"
+				}
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/clusters/prod/namespaces/"+name, nil))
+				require.Equal(t, tc.status, response.Code, response.Body.String())
+				if tc.status != http.StatusOK {
+					require.Zero(t, quotaReads)
+					return
+				}
+				require.Equal(t, 1, quotaReads)
+				var item NamespaceItem
+				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &item))
+				assert.Equal(t, tc.canEdit, item.CanEdit)
+				assert.Equal(t, "team", item.Name)
+				require.NotNil(t, item.Quota)
+				assert.Equal(t, "2", item.Quota.CPU)
+				require.NotNil(t, item.Users)
+				want := []string{"alice", "zoe"}
+				if tc.uid != "" {
+					want = []string{}
+				}
+				assert.Equal(t, want, *item.Users)
+			})
+		})
+	}
 }

@@ -191,6 +191,15 @@ func listK8sNamespaces(
 
 // get handles GET /api/v1/clusters/:cluster/namespaces/:namespace.
 func (h *Handler) get(c *gin.Context) {
+	if value, exists := c.Get(string(middleware.AuthorizationKey)); exists {
+		state, ok := value.(*middleware.AuthorizationState)
+		if !ok || state == nil {
+			middleware.RespondAuthorization(c, utils.ErrContextMissing("AuthorizationKey"))
+			return
+		}
+		h.getAuthorized(c, state)
+		return
+	}
 	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
