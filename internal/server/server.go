@@ -9,6 +9,7 @@ import (
 	"time"
 
 	cappapi "github.com/dana-team/capp-backend/api"
+	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
@@ -195,12 +196,6 @@ func getCluster(mgr cluster.ClusterManager) gin.HandlerFunc {
 				return
 			}
 		}
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": gin.H{
-				"code":    "CLUSTER_NOT_FOUND",
-				"message": fmt.Sprintf("cluster %q is not configured", name),
-				"status":  http.StatusNotFound,
-			},
-		})
+		apierrors.Respond(c, apierrors.NewClusterNotFound(name))
 	}
 }

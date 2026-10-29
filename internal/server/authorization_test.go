@@ -158,7 +158,7 @@ func TestGetCluster(t *testing.T) {
 		assert.Contains(t, response.Body.String(), `"reason":"POLICY_DENIED"`)
 		response = f.serve(f.state(snapshot), "unknown")
 		assert.Equal(t, http.StatusNotFound, response.Code)
-		assert.Contains(t, response.Body.String(), `"code":"CLUSTER_NOT_FOUND"`)
+		assert.JSONEq(t, `{"error":{"code":"CLUSTER_NOT_FOUND","message":"cluster \"unknown\" is not configured","status":404}}`, response.Body.String())
 		// Without prepared application authorization, preserve legacy discovery.
 		response = f.serve(nil, "prod")
 		require.Equal(t, http.StatusOK, response.Code)

@@ -69,6 +69,12 @@ const (
 	invalidMembership  = "INVALID_MEMBERSHIP"
 )
 
+const (
+	outcomeAllowed     = "allowed"
+	outcomeDenied      = "denied"
+	outcomeUnavailable = "unavailable"
+)
+
 var errProtectedNamespace = errors.New("namespace is protected")
 
 // Authorization enforces application policy after authentication and cluster
@@ -137,16 +143,16 @@ func Authorization(cfg *config.Config, mgr cluster.ClusterManager, stores map[st
 func (s *AuthorizationState) RecordDecision(clusterName, namespace, resource, action string, allowed bool, err error) {
 	decision := AuthorizationDecision{
 		Cluster: clusterName, Namespace: namespace, Resource: resource, Action: action,
-		Outcome: "allowed",
+		Outcome: outcomeAllowed,
 	}
 	if target := s.Targets[clusterName]; target != nil && target.Snapshot != nil {
 		decision.PolicyVersion = target.Snapshot.ResourceVersion()
 	}
 	if err != nil {
-		decision.Outcome = "unavailable"
+		decision.Outcome = outcomeUnavailable
 		decision.Reason = policyUnavailable
 	} else if !allowed {
-		decision.Outcome = "denied"
+		decision.Outcome = outcomeDenied
 		decision.Reason = policyDenied
 	}
 	s.Decisions = append(s.Decisions, decision)
@@ -269,7 +275,7 @@ func respondAuthorizationReason(c *gin.Context, reason, clusterName, namespace s
 	last := &state.Decisions[len(state.Decisions)-1]
 	last.Reason = reason
 	if apiErr.Status >= http.StatusInternalServerError {
-		last.Outcome = "unavailable"
+		last.Outcome = outcomeUnavailable
 	}
 }
 

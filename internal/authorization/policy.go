@@ -24,6 +24,7 @@ const (
 	maxPolicyRecordBytes = 512 * 1024
 	clusterScope         = "cluster"
 	allNamespacesScope   = "allNamespaces"
+	namespaceScopePrefix = "ns/"
 )
 
 // Actions recognized by the application permission validator. Valid actions vary by resource.
@@ -282,22 +283,25 @@ func validateBinding(grant binding, roles map[string][]permission) error {
 }
 
 func knownPermission(resource, action string) bool {
-	switch resource {
-	case ResourceClusters:
-		return action == ActionGet
-	case ResourceNamespaces:
-		return slices.Contains([]string{ActionGet, ActionCreate, ActionUpdate, ActionDelete}, action)
-	case ResourceCapps:
-		return slices.Contains([]string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete, ActionSync, ActionUnsync, ActionMigrate}, action)
-	case ResourceSecrets, ResourceConfigMaps:
-		return slices.Contains([]string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}, action)
-	case ResourceCappRevisions:
-		return slices.Contains([]string{ActionList, ActionGet}, action)
-	case ResourceBenchmarks:
-		return slices.Contains([]string{ActionGet, ActionCreate}, action)
-	case ResourceCappUserRole:
-		return slices.Contains([]string{ActionGrant, ActionReplace}, action)
-	default:
-		return false
+	for _, permission := range permissionInventory() {
+		if permission.Resource == resource {
+			return slices.Contains(permission.Actions, action)
+		}
+	}
+	return false
+}
+
+// permissionInventory defines the supported resource/action pairs for validation
+// and discovery. Namespace discovery excludes cluster-only operations.
+func permissionInventory() []permission {
+	return []permission{
+		{Resource: ResourceClusters, Actions: []string{ActionGet}},
+		{Resource: ResourceNamespaces, Actions: []string{ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceCapps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete, ActionSync, ActionUnsync, ActionMigrate}},
+		{Resource: ResourceSecrets, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceConfigMaps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceCappRevisions, Actions: []string{ActionList, ActionGet}},
+		{Resource: ResourceBenchmarks, Actions: []string{ActionGet, ActionCreate}},
+		{Resource: ResourceCappUserRole, Actions: []string{ActionGrant, ActionReplace}},
 	}
 }

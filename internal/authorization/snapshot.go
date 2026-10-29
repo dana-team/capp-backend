@@ -56,7 +56,7 @@ func (s *Snapshot) Namespace(name string) (*corev1.Namespace, error) {
 		return nil, err
 	}
 	if namespace == nil {
-		return nil, k8serrors.NewNotFound(corev1.Resource("namespaces"), name)
+		return nil, k8serrors.NewNotFound(corev1.Resource(ResourceNamespaces), name)
 	}
 	return namespace, nil
 }
@@ -116,25 +116,22 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 	if membership, ok := s.generation.records.memberships[namespace.UID]; ok && membership.Namespace.Name != namespace.Name {
 		return false, errors.New("membership identity does not match current namespace")
 	}
-	return s.check("ns/"+string(namespace.UID), resource, action)
+	return s.check(namespaceScopePrefix+string(namespace.UID), resource, action)
 }
 
 // HasNamespaceAccess reports whether the caller has any permission applicable to
 // the supplied namespace instance. It checks every permission so an evaluation
 // error cannot be hidden by an earlier grant.
 func (s *Snapshot) HasNamespaceAccess(namespace *corev1.Namespace) (bool, error) {
-	permissions := []permission{
-		{Resource: ResourceNamespaces, Actions: []string{ActionGet, ActionUpdate, ActionDelete}},
-		{Resource: ResourceCapps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete, ActionSync, ActionUnsync, ActionMigrate}},
-		{Resource: ResourceSecrets, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
-		{Resource: ResourceConfigMaps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
-		{Resource: ResourceCappRevisions, Actions: []string{ActionList, ActionGet}},
-		{Resource: ResourceBenchmarks, Actions: []string{ActionGet, ActionCreate}},
-		{Resource: ResourceCappUserRole, Actions: []string{ActionGrant, ActionReplace}},
-	}
 	allowed := false
-	for _, permission := range permissions {
+	for _, permission := range permissionInventory() {
+		if permission.Resource == ResourceClusters {
+			continue
+		}
 		for _, action := range permission.Actions {
+			if permission.Resource == ResourceNamespaces && action == ActionCreate {
+				continue
+			}
 			granted, err := s.CheckNamespace(namespace, permission.Resource, action)
 			if err != nil {
 				return false, err
@@ -176,7 +173,7 @@ func (s *Snapshot) evaluate(domain, resource, action string) (bool, error) {
 		enforcer = s.generation.evaluators.cluster
 	case allNamespacesScope:
 	default:
-		if scoped, ok := s.generation.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, "ns/"))]; ok {
+		if scoped, ok := s.generation.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, namespaceScopePrefix))]; ok {
 			enforcer = scoped
 		}
 	}
@@ -277,7 +274,7 @@ func compilePolicy(records *policyRecords) (*casbin.SyncedEnforcer, error) {
 		addBinding(grant.binding, grant.Scope)
 	}
 	for uid, membership := range records.memberships {
-		domain := "ns/" + string(uid)
+		domain := namespaceScopePrefix + string(uid)
 		for _, user := range membership.Users {
 			addBinding(binding{Kind: rbacv1.UserKind, Name: user, Role: memberRole}, domain)
 		}
