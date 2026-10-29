@@ -10,6 +10,9 @@
 //  6. Auth       — validates the Authorization header, attaches ClusterCredential
 //  7. Cluster    — resolves :cluster path param, builds scoped K8s client
 //
+// Authorization, when enabled, follows Auth and Cluster on resource routes
+// and Auth on cluster discovery routes. It prepares policy snapshots before handlers.
+//
 // Context keys are defined in keys.go so every middleware and handler can
 // reference them without importing the specific middleware package.
 package middleware
@@ -22,6 +25,11 @@ const (
 	// attached by the auth middleware. Handlers must not access credentials
 	// directly — they should use the K8s client placed at K8sClientKey.
 	CredentialKey contextKey = "credential"
+
+	// AuthorizationKey holds *AuthorizationState for application-policy checks.
+	// Its request-local snapshots capture shared cache generations and are reused
+	// with decision metadata by body/aggregate handlers.
+	AuthorizationKey contextKey = "authorization"
 
 	// K8sClientKey is the gin.Context key for the controller-runtime
 	// client.Client attached by the cluster middleware. This is the scoped
