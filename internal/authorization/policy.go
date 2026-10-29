@@ -66,7 +66,7 @@ type policyRecords struct {
 }
 
 // parsePolicyRecords validates a complete set of labeled records, independent of LIST order.
-// Matching memberships to live Namespace UIDs is the snapshot loader's responsibility.
+// Snapshot checks match memberships against captured namespace identities.
 func parsePolicyRecords(records []corev1.ConfigMap, policyNamespace string) (*policyRecords, error) {
 	result := &policyRecords{memberships: make(map[types.UID]membershipPolicy)}
 	seen := make(map[string]bool, len(records))

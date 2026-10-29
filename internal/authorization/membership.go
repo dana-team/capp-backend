@@ -21,9 +21,10 @@ var (
 )
 
 // DirectUsers returns a sorted defensive copy of direct API-managed users.
+// It performs no Kubernetes reads; missing membership returns a non-nil empty slice.
+//
 // Callers must first authorize visibility. The supplied identity must match the
 // captured namespace collection, and both captured generations must remain usable.
-// Missing membership returns an empty, non-nil slice; no Kubernetes reads occur.
 func (s *Snapshot) DirectUsers(namespace *corev1.Namespace) ([]string, error) {
 	if namespace == nil || namespace.Name == "" || namespace.UID == "" {
 		return nil, errors.New("membership requires current namespace metadata")
@@ -54,19 +55,22 @@ func (s *Snapshot) DirectUsers(namespace *corev1.Namespace) ([]string, error) {
 }
 
 // ReplaceUsers replaces direct capp-user members, preserving operator bindings.
-// Nil leaves membership unchanged; an empty slice clears it.
-// Call after authorization and setup, using current namespace metadata.
-// Writes use the snapshot's store client and policy namespace.
-// Returns ErrInvalidMembership or ErrMembershipConflict as applicable.
-// Returns the sorted persisted direct users, or nil when users is nil (no write).
-// Successful writes and conflicts invalidate the local store without waiting for
-// reload. Writes are not retried, and captured records are never modified.
+// It returns sorted persisted users. Nil users leaves membership unchanged and
+// returns nil; an empty slice clears membership.
+//
+// Call after authorization and namespace/quota setup, using current namespace
+// metadata. Invalid users or oversized payloads return ErrInvalidMembership;
+// concurrent membership changes return ErrMembershipConflict without retrying.
+//
+// Successful writes and conflicts invalidate the local store without waiting
+// for reload. Captured records remain unchanged.
 func (s *Snapshot) ReplaceUsers(ctx context.Context, namespace *corev1.Namespace, users []string) ([]string, error) {
 	return s.writeUsers(ctx, namespace, users, false)
 }
 
 // AddUsers adds direct capp-user members without duplicates; nil leaves membership
-// unchanged. It has the same caller prerequisites and error contract as ReplaceUsers.
+// unchanged. It shares ReplaceUsers' prerequisites, results, errors and invalidation
+// behavior, but an empty slice preserves existing users.
 func (s *Snapshot) AddUsers(ctx context.Context, namespace *corev1.Namespace, users []string) ([]string, error) {
 	return s.writeUsers(ctx, namespace, users, true)
 }

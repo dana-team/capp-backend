@@ -20,9 +20,10 @@ import (
 )
 
 // AuthorizationState contains request-local policy and sanitized decision metadata.
-// Handlers must finish body-dependent checks and aggregate filtering before accessing
-// dependent resources or writing a response. Use snapshots sequentially, and reuse
-// Targets when source and destination refer to the same cluster.
+// Its mutable fields are not safe for concurrent use; snapshot checks are.
+//
+// Handlers must finish authorization and filtering before accessing dependent
+// resources or writing a response. Reuse Targets for operations on the same cluster.
 type AuthorizationState struct {
 	Username  string
 	Mode      string
@@ -73,9 +74,9 @@ var errProtectedNamespace = errors.New("namespace is protected")
 
 // Authorization enforces application policy after authentication and cluster
 // resolution. It leaves legacy modes unchanged and must also wrap cluster discovery.
-// Configuration must be validated before serving and remain immutable. Stores are
-// supplied per target and started/stopped by the server lifecycle owner. The store
-// registry is copied on construction; requests never start or refresh a store.
+//
+// Configuration must be validated and remain immutable. The server owns each
+// target store's lifecycle; requests never start or refresh stores.
 func Authorization(cfg *config.Config, mgr cluster.ClusterManager, stores map[string]*authorization.Store) gin.HandlerFunc {
 	stores = maps.Clone(stores)
 	routes := authorizationRoutes()
@@ -153,8 +154,9 @@ func (s *AuthorizationState) RecordDecision(clusterName, namespace, resource, ac
 }
 
 // RespondAuthorization aborts with a sanitized authorization error. A nil error
-// means no grant; protected namespaces and membership errors retain their contracts. Other
-// errors mean unavailable policy. Business and authentication errors use Respond.
+// means no grant; protected namespaces and membership errors retain their contracts.
+// Other errors mean unavailable policy. Use apierrors.Respond for business and
+// authentication errors.
 func RespondAuthorization(c *gin.Context, err error) {
 	reason := policyUnavailable
 	switch {

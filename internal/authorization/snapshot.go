@@ -22,8 +22,7 @@ import (
 var policyModel string
 
 // Snapshot holds one target's policy and one verified caller's identity for a request.
-// Checks are safe to use concurrently. Caller subjects stay request-local while
-// immutable policy evaluators can be shared by snapshots for the same target.
+// Checks are safe to use concurrently; the caller's identity stays request-local.
 type Snapshot struct {
 	store            *Store
 	generation       *policyGeneration
@@ -150,7 +149,6 @@ func (s *Snapshot) evaluate(domain, resource, action string) (bool, error) {
 	case clusterScope:
 		enforcer = s.generation.evaluators.cluster
 	case allNamespacesScope:
-		// Only explicit global grants can satisfy this scope.
 	default:
 		if scoped, ok := s.generation.evaluators.namespaces[types.UID(strings.TrimPrefix(domain, "ns/"))]; ok {
 			enforcer = scoped
