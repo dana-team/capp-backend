@@ -790,3 +790,224 @@ func TestGet(t *testing.T) {
 		})
 	}
 }
+
+func TestList(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		count        int
+		username     string
+		invalidate   string
+		quotaFailure bool
+	}{
+		{name: "filtered discovery", count: 2, username: "alice"},
+		{name: "read cost stays bounded", count: 30, username: "alice"},
+		{name: "no visibility grants", count: 2, username: "outsider"},
+		{name: "create permission without namespace visibility", count: 2, username: "creator"},
+		{name: "no managed namespaces", username: "alice"},
+		{name: "policy unavailable even for empty results", username: "alice", invalidate: "policy"},
+		{name: "namespace collection unavailable even for empty results", username: "alice", invalidate: "namespaces"},
+		{name: "quota failure preserves authorized metadata", count: 2, username: "alice", quotaFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newNamespaceListFixture(t, tc.count)
+				f.quotaFailure = tc.quotaFailure
+				snapshot, err := f.store.Snapshot(auth.ClusterCredential{ImpersonateUser: tc.username})
+				require.NoError(t, err)
+				switch tc.invalidate {
+				case "policy":
+					f.store.Invalidate()
+				case "namespaces":
+					f.store.InvalidateNamespaces()
+				}
+				response := f.serve(snapshot)
+				if tc.invalidate != "" {
+					require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+					require.Contains(t, response.Body.String(), `"reason":"POLICY_UNAVAILABLE"`)
+					require.Zero(t, f.quotaLists)
+					return
+				}
+				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				var result NamespaceListResponse
+				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+				wantCount := 0
+				if tc.username == "alice" {
+					wantCount = tc.count
+				}
+				require.NotNil(t, result.Items)
+				require.Len(t, result.Items, wantCount)
+				assert.Equal(t, wantCount, result.Total)
+				assert.Equal(t, tc.username == "creator", result.CanCreate)
+				wantQuotaLists := 0
+				if wantCount > 0 {
+					wantQuotaLists = 1
+				}
+				assert.Equal(t, wantQuotaLists, f.quotaLists)
+				for i, item := range result.Items {
+					assert.Equal(t, fmt.Sprintf("team-%02d", i), item.Name)
+					assert.Equal(t, string(corev1.NamespaceActive), item.Status)
+					require.NotNil(t, item.Users)
+					assert.Equal(t, []string{"alice"}, *item.Users)
+					assert.Equal(t, i == 0, item.CanEdit)
+					if tc.quotaFailure {
+						assert.Nil(t, item.Quota)
+					} else {
+						require.NotNil(t, item.Quota)
+						assert.Equal(t, "3", item.Quota.CPU)
+						assert.Equal(t, "8Gi", item.Quota.Memory)
+					}
+				}
+			})
+		})
+	}
+
+	t.Run("recreated namespace uses old identity only until convergence", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newNamespaceListFixture(t, 1)
+			credential := auth.ClusterCredential{ImpersonateUser: "alice"}
+			captured, err := f.store.Snapshot(credential)
+			require.NoError(t, err)
+			var namespace corev1.Namespace
+			require.NoError(t, f.client.Get(t.Context(), client.ObjectKey{Name: "team-00"}, &namespace))
+			require.NoError(t, f.client.Delete(t.Context(), &namespace))
+			namespace.UID = "replacement"
+			namespace.ResourceVersion = ""
+			require.NoError(t, f.client.Create(t.Context(), &namespace))
+			before := f.serve(captured)
+			require.Equal(t, http.StatusOK, before.Code)
+			var result NamespaceListResponse
+			require.NoError(t, json.Unmarshal(before.Body.Bytes(), &result))
+			require.Len(t, result.Items, 1)
+			require.Equal(t, []string{"alice"}, *result.Items[0].Users)
+
+			f.namespaceWatch.Modify(&namespace)
+			synctest.Wait()
+			current, err := f.store.Snapshot(credential)
+			require.NoError(t, err)
+			cached, err := current.Namespace(namespace.Name)
+			require.NoError(t, err)
+			require.Equal(t, namespace.UID, cached.UID)
+			after := f.serve(current)
+			require.Equal(t, http.StatusOK, after.Code)
+			require.NoError(t, json.Unmarshal(after.Body.Bytes(), &result))
+			require.Empty(t, result.Items)
+			require.Zero(t, result.Total)
+			retired := f.serve(captured)
+			require.Equal(t, http.StatusServiceUnavailable, retired.Code)
+			require.Contains(t, retired.Body.String(), `"reason":"POLICY_UNAVAILABLE"`)
+		})
+	})
+}
+
+type namespaceListFixture struct {
+	store          *authorization.Store
+	client         client.Client
+	target         client.WithWatch
+	config         config.ClusterAuthorizationConfig
+	meta           cluster.ClusterMeta
+	namespaceWatch *watch.RaceFreeFakeWatcher
+	request        context.Context
+	quotaLists     int
+	quotaFailure   bool
+}
+
+func newNamespaceListFixture(t *testing.T, count int) *namespaceListFixture {
+	t.Helper()
+	f := &namespaceListFixture{
+		request: t.Context(),
+		config:  config.ClusterAuthorizationConfig{PolicyNamespace: "policies", ProtectedNamespaces: []string{"protected"}},
+		meta:    cluster.ClusterMeta{Name: "prod", AllowedNamespaces: []string{"policies", "protected", "unmanaged", "denied"}},
+	}
+	policy := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: "capp-policy", Namespace: "policies", Labels: map[string]string{consts.CappAPIGroup + "/authorization": "true"},
+	}, Data: map[string]string{"policy.json": `{"version":1,"roles":{"capp-user":[{"resource":"namespaces","actions":["get"]}],"editor":[{"resource":"namespaces","actions":["update"]},{"resource":"roles/capp-user","actions":["replace"]}],"creator":[{"resource":"namespaces","actions":["create"]}]},"bindings":[{"kind":"User","name":"creator","role":"creator","scope":"cluster"}]}`}}
+	objects := []client.Object{policy}
+	names := make([]string, 0, 5+count)
+	names = append(names, "policies", "protected", "excluded", "unmanaged", "denied")
+	for i := range count {
+		name := fmt.Sprintf("team-%02d", i)
+		names = append(names, name)
+		f.meta.AllowedNamespaces = append(f.meta.AllowedNamespaces, name)
+	}
+	for _, name := range names {
+		namespace := managedNamespace(name)
+		namespace.UID = types.UID("uid-" + name)
+		if name == "unmanaged" {
+			namespace.Labels = nil
+		}
+		objects = append(objects, namespace, existingResourceQuota(name, "3", "8Gi"))
+		if name == "denied" {
+			continue
+		}
+		bindings := []map[string]string{}
+		if name == "team-00" {
+			bindings = append(bindings, map[string]string{"kind": "User", "name": "alice", "role": "editor"})
+		}
+		payload, err := json.Marshal(map[string]any{
+			"version": 1, "namespace": map[string]string{"name": name, "uid": string(namespace.UID)}, "users": []string{"alice"}, "bindings": bindings,
+		})
+		require.NoError(t, err)
+		objects = append(objects, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+			Name: "capp-members-" + string(namespace.UID), Namespace: "policies", Labels: policy.Labels,
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Namespace", Name: name, UID: namespace.UID}},
+		}, Data: map[string]string{"policy.json": string(payload)}})
+	}
+	f.client = testutil.FakeClient(t, objects...)
+	base, ok := f.client.(client.WithWatch)
+	require.True(t, ok)
+	f.target = interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.ResourceQuotaList); ok {
+				f.quotaLists++
+				if f.quotaFailure {
+					return errors.New("quota unavailable")
+				}
+			} else if ctx == f.request {
+				t.Fatalf("request performed authorization read: %T", list)
+			}
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			list.SetResourceVersion("1")
+			return nil
+		},
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			t.Fatal("unexpected request GET")
+			return nil
+		},
+		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+			t.Fatal("unexpected request write or SSAR")
+			return nil
+		},
+		Watch: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) (watch.Interface, error) {
+			stream := watch.NewRaceFreeFake()
+			if _, ok := list.(*corev1.NamespaceList); ok {
+				f.namespaceWatch = stream
+			}
+			return stream, nil
+		},
+	})
+	var err error
+	f.store, err = authorization.NewStore(f.target, f.config, zap.NewNop())
+	require.NoError(t, err)
+	t.Cleanup(f.store.Stop)
+	require.NoError(t, f.store.Start(t.Context()))
+	synctest.Wait()
+	time.Sleep(time.Second)
+	synctest.Wait()
+	return f
+}
+
+func (f *namespaceListFixture) serve(snapshot *authorization.Snapshot) *httptest.ResponseRecorder {
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(middleware.ClusterMetaKey), f.meta)
+		c.Set(string(middleware.AuthorizationKey), &middleware.AuthorizationState{Targets: map[string]*middleware.AuthorizationTarget{
+			"prod": {Snapshot: snapshot, Client: f.target, Config: f.config},
+		}})
+	})
+	router.GET("/api/v1/clusters/:cluster/namespaces", New(zap.NewNop()).list)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/clusters/prod/namespaces", nil).WithContext(f.request))
+	return response
+}
