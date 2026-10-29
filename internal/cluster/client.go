@@ -6,6 +6,8 @@
 // retrieve per-request scoped clients via ClusterManager.ClientFor, which
 // copies the base rest.Config and injects the caller's bearer token so that
 // Kubernetes RBAC is enforced at the individual user level in passthrough mode.
+// Backend operations can instead reuse a service-credential client through
+// ClusterManager.ServiceClientFor without applying caller credentials.
 //
 // A background goroutine (StartHealthChecks) polls each cluster's /version
 // endpoint on a configurable interval and marks clusters healthy or unhealthy.
@@ -15,10 +17,12 @@ package cluster
 import (
 	"errors"
 	"net/http"
+	"sync"
 	"sync/atomic"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ── Sentinel errors ───────────────────────────────────────────────────────────
@@ -69,9 +73,8 @@ type ClusterMeta struct {
 // ClusterClient wraps the base Kubernetes rest.Config and scheme for a single
 // cluster. It is built once at startup and stored in the ClusterManager.
 //
-// It does NOT hold a ready-to-use client.Client because the client must carry
-// the per-request bearer token (in passthrough mode). Use ClusterManager.ClientFor
-// to obtain a scoped client for a specific request.
+// ServiceClientFor lazily creates a reusable service-credential client, while
+// ClientFor creates separate clients for requests carrying caller credentials.
 type ClusterClient struct {
 	// Meta holds display and health metadata. The Healthy field in Meta is
 	// only accurate in snapshots returned by List(). For live health status,
@@ -85,6 +88,10 @@ type ClusterClient struct {
 	// healthClient is a reusable HTTP client for the /version health probe.
 	// Created once at startup from RestConfig to avoid leaking transports.
 	healthClient *http.Client
+
+	// serviceMu protects lazy construction; failed attempts can be retried.
+	serviceMu     sync.Mutex
+	serviceClient client.WithWatch
 
 	// RestConfig is the base configuration for this cluster. It contains the
 	// API server URL, CA certificate, and (for service-account / inline mode)

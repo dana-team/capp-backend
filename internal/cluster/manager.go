@@ -35,6 +35,11 @@ type ClusterManager interface {
 	// in practice only happens for malformed rest.Config values.
 	ClientFor(cluster *ClusterClient, cred auth.ClusterCredential) (client.Client, error)
 
+	// ServiceClientFor returns the target's reusable service-credential client,
+	// including watch support. It never applies caller tokens or impersonation.
+	// Construction is lazy and safe for concurrent calls; failures can be retried.
+	ServiceClientFor(cluster *ClusterClient) (client.WithWatch, error)
+
 	// IsNamespaceAllowed returns true if the given namespace is accessible on
 	// this cluster. Always returns true when AllowedNamespaces is empty.
 	IsNamespaceAllowed(cluster *ClusterClient, namespace string) bool
@@ -172,6 +177,25 @@ func (m *defaultClusterManager) ClientFor(cluster *ClusterClient, cred auth.Clus
 	}
 
 	return client.New(reqCfg, client.Options{Scheme: cluster.Scheme})
+}
+
+// ServiceClientFor reuses one client and its transport/discovery state per target.
+// The base configuration remains unchanged for legacy caller-scoped clients.
+func (m *defaultClusterManager) ServiceClientFor(cluster *ClusterClient) (client.WithWatch, error) {
+	cluster.serviceMu.Lock()
+	defer cluster.serviceMu.Unlock()
+	if cluster.serviceClient != nil {
+		return cluster.serviceClient, nil
+	}
+
+	serviceCfg := rest.CopyConfig(cluster.RestConfig)
+	serviceCfg.Impersonate = rest.ImpersonationConfig{}
+	serviceClient, err := client.NewWithWatch(serviceCfg, client.Options{Scheme: cluster.Scheme})
+	if err != nil {
+		return nil, fmt.Errorf("cluster %q: creating service client: %w", cluster.Meta.Name, err)
+	}
+	cluster.serviceClient = serviceClient
+	return serviceClient, nil
 }
 
 // IsNamespaceAllowed returns true if namespace is in the allowed list,
