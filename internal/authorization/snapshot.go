@@ -119,6 +119,32 @@ func (s *Snapshot) CheckNamespace(namespace *corev1.Namespace, resource, action 
 	return s.check("ns/"+string(namespace.UID), resource, action)
 }
 
+// HasNamespaceAccess reports whether the caller has any permission applicable to
+// the supplied namespace instance. It checks every permission so an evaluation
+// error cannot be hidden by an earlier grant.
+func (s *Snapshot) HasNamespaceAccess(namespace *corev1.Namespace) (bool, error) {
+	permissions := []permission{
+		{Resource: ResourceNamespaces, Actions: []string{ActionGet, ActionUpdate, ActionDelete}},
+		{Resource: ResourceCapps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete, ActionSync, ActionUnsync, ActionMigrate}},
+		{Resource: ResourceSecrets, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceConfigMaps, Actions: []string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}},
+		{Resource: ResourceCappRevisions, Actions: []string{ActionList, ActionGet}},
+		{Resource: ResourceBenchmarks, Actions: []string{ActionGet, ActionCreate}},
+		{Resource: ResourceCappUserRole, Actions: []string{ActionGrant, ActionReplace}},
+	}
+	allowed := false
+	for _, permission := range permissions {
+		for _, action := range permission.Actions {
+			granted, err := s.CheckNamespace(namespace, permission.Resource, action)
+			if err != nil {
+				return false, err
+			}
+			allowed = allowed || granted
+		}
+	}
+	return allowed, nil
+}
+
 func (s *Snapshot) validateNamespaces() error {
 	if s == nil || s.store == nil {
 		return ErrPolicyUnavailable

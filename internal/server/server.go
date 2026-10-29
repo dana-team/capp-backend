@@ -159,7 +159,22 @@ func cappSizes(sizes config.CappSizes) gin.HandlerFunc {
 // listClusters returns metadata for all configured clusters.
 func listClusters(mgr cluster.ClusterManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"items": mgr.List()})
+		items := mgr.List()
+		if _, exists := c.Get(string(middleware.AuthorizationKey)); exists {
+			visible := make([]cluster.ClusterMeta, 0, len(items))
+			for _, meta := range items {
+				allowed, err := clusterVisible(c, meta)
+				if err != nil {
+					middleware.RespondAuthorization(c, err)
+					return
+				}
+				if allowed {
+					visible = append(visible, meta)
+				}
+			}
+			items = visible
+		}
+		c.JSON(http.StatusOK, gin.H{"items": items})
 	}
 }
 
@@ -169,6 +184,13 @@ func getCluster(mgr cluster.ClusterManager) gin.HandlerFunc {
 		name := c.Param("cluster")
 		for _, m := range mgr.List() {
 			if m.Name == name {
+				if _, exists := c.Get(string(middleware.AuthorizationKey)); exists {
+					allowed, err := clusterVisible(c, m)
+					if err != nil || !allowed {
+						middleware.RespondAuthorization(c, err)
+						return
+					}
+				}
 				c.JSON(http.StatusOK, m)
 				return
 			}
