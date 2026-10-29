@@ -102,7 +102,7 @@ func (h *Handler) list(c *gin.Context) {
 		return
 	}
 
-	labelSelector := labels.SelectorFromSet(labels.Set{consts.ManagedNameSpaceLabelKey: managedNamespaceLabelValue})
+	labelSelector := labels.SelectorFromSet(labels.Set{consts.ManagedNameSpaceLabelKey: consts.ManagedNameSpaceLabelValue})
 	listOpts := &client.ListOptions{LabelSelector: labelSelector}
 
 	quotaByNS := listQuotaInfoMap(c.Request.Context(), adminClient, h.logger)
@@ -553,7 +553,7 @@ func createNamespace(ctx context.Context, adminClient client.Client, request Cre
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   request.Name,
-			Labels: map[string]string{consts.ManagedNameSpaceLabelKey: "true"},
+			Labels: map[string]string{consts.ManagedNameSpaceLabelKey: consts.ManagedNameSpaceLabelValue},
 		},
 	}
 

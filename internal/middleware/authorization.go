@@ -12,7 +12,6 @@ import (
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -282,55 +281,56 @@ func authorizationRoutes() map[authorizationRoute][]routePermission {
 	const namespaces = target + "/namespaces"
 	const namespace = namespaces + "/:namespace"
 	const capp = namespace + "/capps/:name"
-	const (
-		get               = "get"
-		create            = "create"
-		update            = "update"
-		revisions         = "capprevisions"
-		namespaceResource = "namespaces"
-		list              = "list"
-	)
+
 	routes := map[authorizationRoute][]routePermission{
 		{method: http.MethodGet, path: clusters}:                      nil,
 		{method: http.MethodGet, path: target}:                        nil,
 		{method: http.MethodGet, path: namespaces}:                    nil,
-		{method: http.MethodPost, path: namespaces}:                   {{resource: namespaceResource, action: create}},
-		{method: http.MethodGet, path: namespace}:                     {{resource: namespaceResource, action: get}},
-		{method: http.MethodPut, path: namespace}:                     {{resource: namespaceResource, action: update}},
-		{method: http.MethodPatch, path: namespace}:                   {{resource: "roles/capp-user", action: "grant"}},
-		{method: http.MethodDelete, path: namespace}:                  {{resource: namespaceResource, action: "delete"}},
-		{method: http.MethodGet, path: capp + "/revisions"}:           {{resource: revisions, action: list}},
-		{method: http.MethodGet, path: capp + "/revisions/:revision"}: {{resource: revisions, action: get}},
+		{method: http.MethodPost, path: namespaces}:                   {{resource: authorization.ResourceNamespaces, action: authorization.ActionCreate}},
+		{method: http.MethodGet, path: namespace}:                     {{resource: authorization.ResourceNamespaces, action: authorization.ActionGet}},
+		{method: http.MethodPut, path: namespace}:                     {{resource: authorization.ResourceNamespaces, action: authorization.ActionUpdate}},
+		{method: http.MethodPatch, path: namespace}:                   {{resource: authorization.ResourceCappUserRole, action: authorization.ActionGrant}},
+		{method: http.MethodDelete, path: namespace}:                  {{resource: authorization.ResourceNamespaces, action: authorization.ActionDelete}},
+		{method: http.MethodGet, path: capp + "/revisions"}:           {{resource: authorization.ResourceCappRevisions, action: authorization.ActionList}},
+		{method: http.MethodGet, path: capp + "/revisions/:revision"}: {{resource: authorization.ResourceCappRevisions, action: authorization.ActionGet}},
 		{method: http.MethodPost, path: capp + "/revisions/:revision/rollback"}: {
-			{resource: revisions, action: get}, {resource: consts.CappResource, action: get}, {resource: consts.CappResource, action: update},
+			{resource: authorization.ResourceCappRevisions, action: authorization.ActionGet},
+			{resource: authorization.ResourceCapps, action: authorization.ActionGet},
+			{resource: authorization.ResourceCapps, action: authorization.ActionUpdate},
 		},
 		{method: http.MethodPost, path: capp + "/sync"}: {
-			{resource: consts.CappResource, action: get}, {resource: consts.CappResource, action: "sync"},
+			{resource: authorization.ResourceCapps, action: authorization.ActionGet},
+			{resource: authorization.ResourceCapps, action: authorization.ActionSync},
 		},
 		{method: http.MethodDelete, path: capp + "/sync"}: {
-			{resource: consts.CappResource, action: get}, {resource: consts.CappResource, action: "unsync"},
+			{resource: authorization.ResourceCapps, action: authorization.ActionGet},
+			{resource: authorization.ResourceCapps, action: authorization.ActionUnsync},
 		},
 		{method: http.MethodGet, path: capp + "/benchmark"}: {
-			{resource: "benchmarks", action: get}, {resource: consts.CappResource, action: get},
+			{resource: authorization.ResourceBenchmarks, action: authorization.ActionGet},
+			{resource: authorization.ResourceCapps, action: authorization.ActionGet},
 		},
 		{method: http.MethodPost, path: capp + "/benchmark"}: {
-			{resource: "benchmarks", action: create}, {resource: consts.CappResource, action: get},
+			{resource: authorization.ResourceBenchmarks, action: authorization.ActionCreate},
+			{resource: authorization.ResourceCapps, action: authorization.ActionGet},
 		},
 		{method: http.MethodPost, path: capp + "/migrate"}: {
-			{resource: consts.CappResource, action: "migrate"}, {resource: consts.CappResource, action: get},
-			{resource: "secrets", action: list}, {resource: "configmaps", action: list},
+			{resource: authorization.ResourceCapps, action: authorization.ActionMigrate},
+			{resource: authorization.ResourceCapps, action: authorization.ActionGet},
+			{resource: authorization.ResourceSecrets, action: authorization.ActionList},
+			{resource: authorization.ResourceConfigMaps, action: authorization.ActionList},
 		},
 	}
-	for _, resource := range []string{consts.CappResource, "secrets", "configmaps"} {
+	for _, resource := range []string{authorization.ResourceCapps, authorization.ResourceSecrets, authorization.ResourceConfigMaps} {
 		collection := namespace + "/" + resource
 		routes[authorizationRoute{method: http.MethodGet, path: target + "/" + resource}] = nil
-		routes[authorizationRoute{method: http.MethodGet, path: collection}] = []routePermission{{resource: resource, action: list}}
-		routes[authorizationRoute{method: http.MethodPost, path: collection}] = []routePermission{{resource: resource, action: create}}
-		routes[authorizationRoute{method: http.MethodGet, path: collection + "/:name"}] = []routePermission{{resource: resource, action: get}}
-		routes[authorizationRoute{method: http.MethodPut, path: collection + "/:name"}] = []routePermission{{resource: resource, action: update}}
-		routes[authorizationRoute{method: http.MethodDelete, path: collection + "/:name"}] = []routePermission{{resource: resource, action: "delete"}}
-		if resource != consts.CappResource {
-			routes[authorizationRoute{method: http.MethodGet, path: collection + "/names"}] = []routePermission{{resource: resource, action: list}}
+		routes[authorizationRoute{method: http.MethodGet, path: collection}] = []routePermission{{resource: resource, action: authorization.ActionList}}
+		routes[authorizationRoute{method: http.MethodPost, path: collection}] = []routePermission{{resource: resource, action: authorization.ActionCreate}}
+		routes[authorizationRoute{method: http.MethodGet, path: collection + "/:name"}] = []routePermission{{resource: resource, action: authorization.ActionGet}}
+		routes[authorizationRoute{method: http.MethodPut, path: collection + "/:name"}] = []routePermission{{resource: resource, action: authorization.ActionUpdate}}
+		routes[authorizationRoute{method: http.MethodDelete, path: collection + "/:name"}] = []routePermission{{resource: resource, action: authorization.ActionDelete}}
+		if resource != authorization.ResourceCapps {
+			routes[authorizationRoute{method: http.MethodGet, path: collection + "/names"}] = []routePermission{{resource: resource, action: authorization.ActionList}}
 		}
 	}
 	return routes

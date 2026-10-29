@@ -15,8 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const managedNamespaceLabelValue = "true"
-
 func (h *Handler) listAuthorized(c *gin.Context, state *middleware.AuthorizationState) {
 	clusterName := c.Param("cluster")
 	target := state.Targets[clusterName]
@@ -26,7 +24,7 @@ func (h *Handler) listAuthorized(c *gin.Context, state *middleware.Authorization
 		middleware.RespondAuthorization(c, authorization.ErrPolicyUnavailable)
 		return
 	}
-	canCreate, err := target.Snapshot.CheckCluster("namespaces", "create")
+	canCreate, err := target.Snapshot.CheckCluster(authorization.ResourceNamespaces, authorization.ActionCreate)
 	if err != nil {
 		middleware.RespondAuthorization(c, err)
 		return
@@ -39,13 +37,13 @@ func (h *Handler) listAuthorized(c *gin.Context, state *middleware.Authorization
 	items := make([]NamespaceItem, 0, len(namespaces))
 	for i := range namespaces {
 		namespace := &namespaces[i]
-		if namespace.Labels[consts.ManagedNameSpaceLabelKey] != managedNamespaceLabelValue ||
+		if namespace.Labels[consts.ManagedNameSpaceLabelKey] != consts.ManagedNameSpaceLabelValue ||
 			namespace.Name == target.Config.PolicyNamespace || slices.Contains(target.Config.ProtectedNamespaces, namespace.Name) ||
 			(len(meta.AllowedNamespaces) > 0 && !slices.Contains(meta.AllowedNamespaces, namespace.Name)) {
 			continue
 		}
-		allowed, err := target.Snapshot.CheckNamespace(namespace, "namespaces", "get")
-		state.RecordDecision(clusterName, namespace.Name, "namespaces", "get", allowed, err)
+		allowed, err := target.Snapshot.CheckNamespace(namespace, authorization.ResourceNamespaces, authorization.ActionGet)
+		state.RecordDecision(clusterName, namespace.Name, authorization.ResourceNamespaces, authorization.ActionGet, allowed, err)
 		if err != nil {
 			middleware.RespondAuthorization(c, err)
 			return
@@ -101,11 +99,11 @@ func authorizedNamespaceItem(snapshot *authorization.Snapshot, namespace *corev1
 	if err != nil {
 		return NamespaceItem{}, err
 	}
-	update, err := snapshot.CheckNamespace(namespace, "namespaces", "update")
+	update, err := snapshot.CheckNamespace(namespace, authorization.ResourceNamespaces, authorization.ActionUpdate)
 	if err != nil {
 		return NamespaceItem{}, err
 	}
-	replace, err := snapshot.CheckNamespace(namespace, "roles/capp-user", "replace")
+	replace, err := snapshot.CheckNamespace(namespace, authorization.ResourceCappUserRole, authorization.ActionReplace)
 	if err != nil {
 		return NamespaceItem{}, err
 	}

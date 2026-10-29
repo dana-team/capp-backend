@@ -26,6 +26,32 @@ const (
 	allNamespacesScope   = "allNamespaces"
 )
 
+// Actions recognized by the application permission validator. Valid actions vary by resource.
+const (
+	ActionGet     = "get"
+	ActionList    = "list"
+	ActionCreate  = "create"
+	ActionUpdate  = "update"
+	ActionDelete  = "delete"
+	ActionSync    = "sync"
+	ActionUnsync  = "unsync"
+	ActionMigrate = "migrate"
+	ActionGrant   = "grant"
+	ActionReplace = "replace"
+)
+
+// Resources recognized by the application permission validator.
+const (
+	ResourceClusters      = "clusters"
+	ResourceNamespaces    = "namespaces"
+	ResourceCapps         = consts.CappResource
+	ResourceSecrets       = "secrets"
+	ResourceConfigMaps    = "configmaps"
+	ResourceCappRevisions = "capprevisions"
+	ResourceBenchmarks    = "benchmarks"
+	ResourceCappUserRole  = "roles/" + memberRole
+)
+
 type permission struct {
 	Resource string   `json:"resource"`
 	Actions  []string `json:"actions"`
@@ -256,29 +282,21 @@ func validateBinding(grant binding, roles map[string][]permission) error {
 }
 
 func knownPermission(resource, action string) bool {
-	const (
-		actionGet    = "get"
-		actionList   = "list"
-		actionCreate = "create"
-		actionUpdate = "update"
-		actionDelete = "delete"
-	)
-
 	switch resource {
-	case "clusters":
-		return action == actionGet
-	case "namespaces":
-		return slices.Contains([]string{actionGet, actionCreate, actionUpdate, actionDelete}, action)
-	case consts.CappResource:
-		return slices.Contains([]string{actionList, actionGet, actionCreate, actionUpdate, actionDelete, "sync", "unsync", "migrate"}, action)
-	case "secrets", "configmaps":
-		return slices.Contains([]string{actionList, actionGet, actionCreate, actionUpdate, actionDelete}, action)
-	case "capprevisions":
-		return slices.Contains([]string{actionList, actionGet}, action)
-	case "benchmarks":
-		return slices.Contains([]string{actionGet, actionCreate}, action)
-	case "roles/" + memberRole:
-		return slices.Contains([]string{"grant", "replace"}, action)
+	case ResourceClusters:
+		return action == ActionGet
+	case ResourceNamespaces:
+		return slices.Contains([]string{ActionGet, ActionCreate, ActionUpdate, ActionDelete}, action)
+	case ResourceCapps:
+		return slices.Contains([]string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete, ActionSync, ActionUnsync, ActionMigrate}, action)
+	case ResourceSecrets, ResourceConfigMaps:
+		return slices.Contains([]string{ActionList, ActionGet, ActionCreate, ActionUpdate, ActionDelete}, action)
+	case ResourceCappRevisions:
+		return slices.Contains([]string{ActionList, ActionGet}, action)
+	case ResourceBenchmarks:
+		return slices.Contains([]string{ActionGet, ActionCreate}, action)
+	case ResourceCappUserRole:
+		return slices.Contains([]string{ActionGrant, ActionReplace}, action)
 	default:
 		return false
 	}
