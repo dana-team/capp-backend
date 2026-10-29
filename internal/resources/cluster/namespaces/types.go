@@ -34,12 +34,14 @@ type NamespaceItem struct {
 	// Nil when no ResourceQuota exists for the namespace.
 	Quota *QuotaInfo `json:"quota,omitempty"`
 
-	// Users is the list of users with access to the namespace.
-	// Nil when no RoleBinding exists for the namespace.
+	// Users contains sorted direct API-managed users in application authorization
+	// mode, excluding operator bindings and expanded groups. Legacy mode uses
+	// RoleBinding users and may omit the field when no binding exists.
 	Users *[]string `json:"users,omitempty"`
 
-	// CanEdit is true when the authenticated user has admin-level permission
-	// to modify the namespace's quota and full user list (via PUT).
+	// CanEdit hints whether the caller can modify the quota and full user list.
+	// Application authorization requires namespace update and user replacement
+	// permissions. Mutations authorize independently of this hint.
 	CanEdit bool `json:"canEdit"`
 }
 

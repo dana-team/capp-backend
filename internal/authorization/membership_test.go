@@ -402,3 +402,111 @@ func readMembership(t *testing.T, target client.Client) *corev1.ConfigMap {
 	}
 	return &record
 }
+
+func TestSnapshotDirectUsers(t *testing.T) {
+	for _, name := range []string{
+		"sorted defensive copy", "absent membership", "empty membership", "replacement UID",
+		"missing name", "missing UID", "nil namespace", "nil snapshot", "wrong UID", "wrong name",
+		"record name mismatch", "invalidated policy", "invalidated namespaces",
+		"superseded policy", "superseded namespaces", "read and watch failure", "stopped store",
+	} {
+		t.Run(name, func(t *testing.T) {
+			snapshot := defaultSnapshot(t, auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"team-editors"}})
+			namespace := currentNamespace()
+			membership := snapshot.generation.records.memberships[namespace.UID]
+			membership.Users = []string{"zoe", "alice"}
+			snapshot.generation.records.memberships[namespace.UID] = membership
+			want := []string{"alice", "zoe"}
+			wantError := true
+			switch name {
+			case "sorted defensive copy":
+				wantError = false
+			case "absent membership":
+				delete(snapshot.generation.records.memberships, namespace.UID)
+				want, wantError = []string{}, false
+			case "empty membership":
+				membership.Users = nil
+				snapshot.generation.records.memberships[namespace.UID] = membership
+				want, wantError = []string{}, false
+			case "replacement UID":
+				namespace.UID = "replacement"
+				snapshot.namespaces.byName[namespace.Name] = namespace.DeepCopy()
+				want, wantError = []string{}, false
+			case "missing name":
+				namespace.Name = ""
+			case "missing UID":
+				namespace.UID = ""
+			case "nil namespace":
+				namespace = nil
+			case "nil snapshot":
+				snapshot = nil
+			case "wrong UID":
+				namespace.UID = "other"
+			case "wrong name":
+				namespace.Name = "other"
+			case "record name mismatch":
+				membership.Namespace.Name = "other"
+				snapshot.generation.records.memberships[namespace.UID] = membership
+			case "invalidated policy":
+				snapshot.store.Invalidate()
+			case "invalidated namespaces":
+				snapshot.store.InvalidateNamespaces()
+			case "superseded policy":
+				generation := *snapshot.generation
+				snapshot.store.generation = &generation
+			case "superseded namespaces":
+				generation := *snapshot.namespaces
+				snapshot.store.namespaces = &generation
+			case "read and watch failure":
+				snapshot.store.policy.observing = false
+				snapshot.store.namespaceState.observing = false
+				snapshot.store.target = interceptor.NewClient(snapshot.store.target, interceptor.Funcs{
+					List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+						return errors.New("offline")
+					},
+				})
+				if err := snapshot.store.reload(t.Context()); err == nil {
+					t.Fatal("expected failed policy read")
+				}
+				if err := snapshot.store.reloadNamespaces(t.Context()); err == nil {
+					t.Fatal("expected failed namespace read")
+				}
+				wantError = false
+			case "stopped store":
+				snapshot.store.Stop()
+			}
+			if snapshot != nil {
+				snapshot.store.target = interceptor.NewClient(snapshot.store.target, interceptor.Funcs{
+					Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+						t.Fatal("unexpected GET")
+						return nil
+					},
+					List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+						t.Fatal("unexpected LIST")
+						return nil
+					},
+				})
+			}
+			users, err := snapshot.DirectUsers(namespace)
+			if (err != nil) != wantError {
+				t.Fatalf("DirectUsers error = %v, want error %v", err, wantError)
+			}
+			if wantError {
+				return
+			}
+			if diff := cmp.Diff(want, users); diff != "" {
+				t.Fatalf("users (-want +got): %s", diff)
+			}
+			if len(users) > 0 {
+				users[0] = "changed"
+				again, err := snapshot.DirectUsers(namespace)
+				if err != nil || !slices.Equal(again, want) {
+					t.Fatalf("defensive copy = %v, %v", again, err)
+				}
+				if !slices.Equal(snapshot.generation.records.memberships[namespace.UID].Users, []string{"zoe", "alice"}) {
+					t.Fatal("accessor sorted stored users")
+				}
+			}
+		})
+	}
+}

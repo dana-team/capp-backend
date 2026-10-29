@@ -26,8 +26,9 @@ import (
 // ErrPolicyUnavailable means the captured policy cannot authorize a new decision.
 var ErrPolicyUnavailable = errors.New("authorization policy is unavailable")
 
-// Store owns a target's watch-driven policy and namespace generations. Read failures
-// preserve valid data; invalidation retires the affected collection and shutdown retires both.
+// Store owns a target's watch-driven policy and namespace generations.
+// Read failures preserve valid data. Invalidation retires the affected collection;
+// shutdown retires both.
 type Store struct {
 	target    client.WithWatch
 	namespace string
@@ -74,9 +75,10 @@ type recordIdentity struct {
 	version string
 }
 
-// NewStore prepares a policy store without starting background work. The target
-// must be a direct reusable service-account client, not an informer-backed client.
-// The logger should identify the target cluster.
+// NewStore prepares a policy store without starting background work.
+//
+// The target must be a direct reusable service-account client, not an informer-backed
+// client. The logger should identify the target cluster.
 func NewStore(target client.WithWatch, cfg config.ClusterAuthorizationConfig, logger *zap.Logger) (*Store, error) {
 	if target == nil || cfg.PolicyNamespace == "" || logger == nil {
 		return nil, errors.New("policy store requires a client, policy namespace and logger")
@@ -151,8 +153,10 @@ func (s *Store) InvalidateNamespaces() {
 }
 
 // Snapshot captures policy, available namespace metadata and verified subjects
-// without reading Kubernetes or compiling evaluators. Changed publication or
-// invalidation retires dependent checks; policy-only checks need no namespace data.
+// without reading Kubernetes or compiling evaluators.
+//
+// A changed generation or invalidation retires dependent checks. Policy-only
+// checks need no namespace data.
 func (s *Store) Snapshot(credential auth.ClusterCredential) (*Snapshot, error) {
 	subjects, err := verifiedSubjects(credential)
 	if err != nil {

@@ -20,20 +20,57 @@ var (
 	ErrMembershipConflict = errors.New("membership changed; reload and retry")
 )
 
+// DirectUsers returns a sorted defensive copy of direct API-managed users.
+// It performs no Kubernetes reads; missing membership returns a non-nil empty slice.
+//
+// Callers must first authorize visibility. The supplied identity must match the
+// captured namespace collection, and both captured generations must remain usable.
+func (s *Snapshot) DirectUsers(namespace *corev1.Namespace) ([]string, error) {
+	if namespace == nil || namespace.Name == "" || namespace.UID == "" {
+		return nil, errors.New("membership requires current namespace metadata")
+	}
+	if s == nil || s.store == nil || s.generation == nil || s.generation.records == nil {
+		return nil, ErrPolicyUnavailable
+	}
+	if err := s.store.validate(s.generation, s.namespaces, true); err != nil {
+		return nil, err
+	}
+	cached, err := s.Namespace(namespace.Name)
+	if err != nil {
+		return nil, err
+	}
+	if cached.UID != namespace.UID {
+		return nil, ErrPolicyUnavailable
+	}
+	membership, exists := s.generation.records.memberships[cached.UID]
+	if exists && membership.Namespace.Name != cached.Name {
+		return nil, errors.New("membership identity does not match current namespace")
+	}
+	users := append([]string{}, membership.Users...)
+	slices.Sort(users)
+	if err := s.store.validate(s.generation, s.namespaces, true); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // ReplaceUsers replaces direct capp-user members, preserving operator bindings.
-// Nil leaves membership unchanged; an empty slice clears it.
-// Call after authorization and setup, using current namespace metadata.
-// Writes use the snapshot's store client and policy namespace.
-// Returns ErrInvalidMembership or ErrMembershipConflict as applicable.
-// Returns the sorted persisted direct users, or nil when users is nil (no write).
-// Successful writes and conflicts invalidate the local store without waiting for
-// reload. Writes are not retried, and captured records are never modified.
+// It returns sorted persisted users. Nil users leaves membership unchanged and
+// returns nil; an empty slice clears membership.
+//
+// Call after authorization and namespace/quota setup, using current namespace
+// metadata. Invalid users or oversized payloads return ErrInvalidMembership;
+// concurrent membership changes return ErrMembershipConflict without retrying.
+//
+// Successful writes and conflicts invalidate the local store without waiting
+// for reload. Captured records remain unchanged.
 func (s *Snapshot) ReplaceUsers(ctx context.Context, namespace *corev1.Namespace, users []string) ([]string, error) {
 	return s.writeUsers(ctx, namespace, users, false)
 }
 
 // AddUsers adds direct capp-user members without duplicates; nil leaves membership
-// unchanged. It has the same caller prerequisites and error contract as ReplaceUsers.
+// unchanged. It shares ReplaceUsers' prerequisites, results, errors and invalidation
+// behavior, but an empty slice preserves existing users.
 func (s *Snapshot) AddUsers(ctx context.Context, namespace *corev1.Namespace, users []string) ([]string, error) {
 	return s.writeUsers(ctx, namespace, users, true)
 }
