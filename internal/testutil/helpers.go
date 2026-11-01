@@ -302,6 +302,7 @@ type MockClusterManager struct {
 	GetFn                func(name string) (*cluster.ClusterClient, error)
 	ListFn               func() []cluster.ClusterMeta
 	ClientForFn          func(cc *cluster.ClusterClient, cred auth.ClusterCredential) (client.Client, error)
+	ServiceClientForFn   func(cc *cluster.ClusterClient) (client.WithWatch, error)
 	IsNamespaceAllowedFn func(cc *cluster.ClusterClient, namespace string) bool
 	StartHealthChecksFn  func(ctx context.Context, intervalSeconds int)
 	IsAnyHealthyFn       func() bool
@@ -324,6 +325,14 @@ func (m *MockClusterManager) List() []cluster.ClusterMeta {
 func (m *MockClusterManager) ClientFor(cc *cluster.ClusterClient, cred auth.ClusterCredential) (client.Client, error) {
 	if m.ClientForFn != nil {
 		return m.ClientForFn(cc, cred)
+	}
+	return nil, nil
+}
+
+// ServiceClientFor returns the configured service client for the target.
+func (m *MockClusterManager) ServiceClientFor(cc *cluster.ClusterClient) (client.WithWatch, error) {
+	if m.ServiceClientForFn != nil {
+		return m.ServiceClientForFn(cc)
 	}
 	return nil, nil
 }

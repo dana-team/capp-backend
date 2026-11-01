@@ -8,6 +8,7 @@ on:
     paths:
       - "cmd/server/**"
       - "internal/auth/**"
+      - "internal/authorization/**"
       - "internal/apierrors/**"
       - "internal/cluster/**"
       - "internal/config/**"
@@ -27,6 +28,7 @@ on:
     paths:
       - "cmd/server/**"
       - "internal/auth/**"
+      - "internal/authorization/**"
       - "internal/apierrors/**"
       - "internal/cluster/**"
       - "internal/config/**"

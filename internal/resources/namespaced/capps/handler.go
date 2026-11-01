@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
@@ -80,6 +82,66 @@ func (h *Handler) listAll(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
+
+	value, exists := c.Get(string(middleware.AuthorizationKey))
+	if !exists {
+		h.respondList(c, cappList)
+		return
+	}
+	state, ok := value.(*middleware.AuthorizationState)
+	if !ok || state == nil {
+		middleware.RespondAuthorization(c, authorization.ErrPolicyUnavailable)
+		return
+	}
+	clusterName := c.Param("cluster")
+	target := state.Targets[clusterName]
+	value, _ = c.Get(string(middleware.ClusterMetaKey))
+	meta, ok := value.(cluster.ClusterMeta)
+	if target == nil || target.Snapshot == nil || !ok {
+		middleware.RespondAuthorization(c, authorization.ErrPolicyUnavailable)
+		return
+	}
+	// Validate both collections even when no item needs a namespace check.
+	validate := func() error {
+		if _, err := target.Snapshot.CheckAllNamespaces(authorization.ResourceCapps, authorization.ActionList); err != nil {
+			return err
+		}
+		_, err := target.Snapshot.NamespaceResourceVersion()
+		return err
+	}
+	if err := validate(); err != nil {
+		middleware.RespondAuthorization(c, err)
+		return
+	}
+	items := cappList.Items[:0]
+	for _, item := range cappList.Items {
+		if item.Namespace == target.Config.PolicyNamespace || slices.Contains(target.Config.ProtectedNamespaces, item.Namespace) ||
+			(len(meta.AllowedNamespaces) > 0 && !slices.Contains(meta.AllowedNamespaces, item.Namespace)) {
+			continue
+		}
+		namespace, err := target.Snapshot.Namespace(item.Namespace)
+		if k8serrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			middleware.RespondAuthorization(c, err)
+			return
+		}
+		allowed, err := target.Snapshot.CheckNamespace(namespace, authorization.ResourceCapps, authorization.ActionList)
+		state.RecordDecision(clusterName, item.Namespace, authorization.ResourceCapps, authorization.ActionList, allowed, err)
+		if err != nil {
+			middleware.RespondAuthorization(c, err)
+			return
+		}
+		if allowed {
+			items = append(items, item)
+		}
+	}
+	if err := validate(); err != nil {
+		middleware.RespondAuthorization(c, err)
+		return
+	}
+	cappList.Items = items
 
 	h.respondList(c, cappList)
 }

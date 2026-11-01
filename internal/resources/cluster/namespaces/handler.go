@@ -69,11 +69,21 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 
 // list handles GET /api/v1/clusters/:cluster/namespaces.
 //
-// On OpenShift the Projects API is used with the user-scoped client, which
+// Application authorization filters captured namespace metadata by policy.
+// In legacy mode, OpenShift uses the Projects API with the user-scoped client, which
 // returns only projects the user has access to. On vanilla Kubernetes the admin
 // client lists all CAPP-labeled namespaces and a SelfSubjectAccessReview filters
 // to those where the user can create Capps.
 func (h *Handler) list(c *gin.Context) {
+	if value, exists := c.Get(string(middleware.AuthorizationKey)); exists {
+		state, ok := value.(*middleware.AuthorizationState)
+		if !ok || state == nil {
+			middleware.RespondAuthorization(c, utils.ErrContextMissing("AuthorizationKey"))
+			return
+		}
+		h.listAuthorized(c, state)
+		return
+	}
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
@@ -92,7 +102,7 @@ func (h *Handler) list(c *gin.Context) {
 		return
 	}
 
-	labelSelector := labels.SelectorFromSet(labels.Set{consts.ManagedNameSpaceLabelKey: "true"})
+	labelSelector := labels.SelectorFromSet(labels.Set{consts.ManagedNameSpaceLabelKey: consts.ManagedNameSpaceLabelValue})
 	listOpts := &client.ListOptions{LabelSelector: labelSelector}
 
 	quotaByNS := listQuotaInfoMap(c.Request.Context(), adminClient, h.logger)
@@ -191,6 +201,15 @@ func listK8sNamespaces(
 
 // get handles GET /api/v1/clusters/:cluster/namespaces/:namespace.
 func (h *Handler) get(c *gin.Context) {
+	if value, exists := c.Get(string(middleware.AuthorizationKey)); exists {
+		state, ok := value.(*middleware.AuthorizationState)
+		if !ok || state == nil {
+			middleware.RespondAuthorization(c, utils.ErrContextMissing("AuthorizationKey"))
+			return
+		}
+		h.getAuthorized(c, state)
+		return
+	}
 	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
@@ -534,7 +553,7 @@ func createNamespace(ctx context.Context, adminClient client.Client, request Cre
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   request.Name,
-			Labels: map[string]string{consts.ManagedNameSpaceLabelKey: "true"},
+			Labels: map[string]string{consts.ManagedNameSpaceLabelKey: consts.ManagedNameSpaceLabelValue},
 		},
 	}
 
