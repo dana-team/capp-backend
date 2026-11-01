@@ -20,9 +20,9 @@ require (
 	golang.org/x/term v0.47.0
 	golang.org/x/time v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
-	k8s.io/api v0.37.1
-	k8s.io/apimachinery v0.37.1
-	k8s.io/client-go v0.37.1
+	k8s.io/api v0.37.2
+	k8s.io/apimachinery v0.37.2
+	k8s.io/client-go v0.37.2
 	knative.dev/pkg v0.0.0-20260727151759-521cb33b33dd
 	knative.dev/serving v0.50.0
 	sigs.k8s.io/controller-runtime v0.25.2
