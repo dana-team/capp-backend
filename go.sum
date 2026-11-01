@@ -68,8 +68,8 @@ github.com/crossplane/upjet/v2 v2.4.1-0.20260911065406-6d9f367b87f4 h1:BzLnZwTJ/
 github.com/crossplane/upjet/v2 v2.4.1-0.20260911065406-6d9f367b87f4/go.mod h1:r0gb9iK2JVXDODj/y0474UIhwbgUodP23jWEtP+Nk10=
 github.com/cyphar/filepath-securejoin v0.6.1 h1:5CeZ1jPXEiYt3+Z6zqprSAgSWiggmpVyciv8syjIpVE=
 github.com/cyphar/filepath-securejoin v0.6.1/go.mod h1:A8hd4EnAeyujCJRrICiOWqjS1AX0a9kM5XL+NwKoYSc=
-github.com/dana-team/container-app-operator v0.11.0 h1:JUUHLcBDlJGKLLh1s0p9IIrvoEaBdAbIPFMbw1S2MOc=
-github.com/dana-team/container-app-operator v0.11.0/go.mod h1:V1PMfYwp2SugvCZDBH0MBWa3cf9g+2larXBKTc+rXzw=
+github.com/dana-team/container-app-operator v0.11.1 h1:KEtU+jYIIH70qyPYxe6y+I5sRR8nAd0buk94hp/X5Fg=
+github.com/dana-team/container-app-operator v0.11.1/go.mod h1:V1PMfYwp2SugvCZDBH0MBWa3cf9g+2larXBKTc+rXzw=
 github.com/dana-team/nfspvc-operator v0.5.3 h1:4dWgZcdMaH/Q0QU17UUPl7WxPuKRm+hCLT/Zw41XzAw=
 github.com/dana-team/nfspvc-operator v0.5.3/go.mod h1:7didJ95ifvG/sc2DPIOb96ba5OplN4R45C+Sp/Hnaeo=
 github.com/dana-team/provider-dns-v2 v1.0.4 h1:1j6iH305c/KRnPFwgM+ARiUdmm6Jw1r8/rsf8J7rujU=
