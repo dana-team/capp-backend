@@ -2,12 +2,14 @@ package cluster
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 
 	"github.com/dana-team/capp-backend/internal/config"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const userAgent = "capp-backend/1.0"
@@ -98,4 +100,21 @@ func BuildClusterClient(cfg config.ClusterConfig, scheme *runtime.Scheme) (*Clus
 		RestConfig: restCfg,
 		Scheme:     scheme,
 	}, nil
+}
+
+// NewExecutionClient builds a reusable client using a deployment-managed SA token
+// file. Deployment owns token provisioning and rotation; client-go reloads the file.
+// Only connection settings and the scheme come from cluster, never system authentication.
+// The caller must check user assignments before each operation.
+func NewExecutionClient(cluster *ClusterClient, tokenFile string) (client.Client, error) {
+	if cluster == nil || cluster.RestConfig == nil || cluster.Scheme == nil || tokenFile == "" {
+		return nil, errors.New("execution client requires cluster configuration, scheme, and token file")
+	}
+	cfg := rest.AnonymousClientConfig(cluster.RestConfig)
+	cfg.BearerTokenFile = tokenFile
+	execution, err := client.New(cfg, client.Options{Scheme: cluster.Scheme})
+	if err != nil {
+		return nil, fmt.Errorf("building execution client: %w", err)
+	}
+	return execution, nil
 }

@@ -2,8 +2,13 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/auth"
@@ -12,9 +17,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // alwaysOKServer returns a test server that responds 200 to all requests.
@@ -317,6 +326,89 @@ func TestBuildClusterClient_GitOpsPath(t *testing.T) {
 	}
 }
 
+func TestNewExecutionClient(t *testing.T) {
+	var status, operations atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer execution-token" {
+			t.Error("request did not use the deployment-supplied execution token")
+		}
+		for key := range r.Header {
+			if strings.HasPrefix(key, "Impersonate-") {
+				t.Error("system impersonation leaked")
+			}
+		}
+		w.Header().Set("Content-Type", runtime.ContentTypeJSON)
+		var body any
+		switch r.URL.Path {
+		case "/api":
+			body = metav1.APIVersions{Versions: []string{"v1"}}
+		case "/apis":
+			body = metav1.APIGroupList{}
+		case "/api/v1":
+			body = metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "configmaps", Kind: "ConfigMap", Namespaced: true}}}
+		case "/api/v1/namespaces/team/configmaps/item":
+			operations.Add(1)
+			if code := status.Load(); code != 0 {
+				w.WriteHeader(int(code))
+				body = metav1.Status{Status: metav1.StatusFailure, Code: int32(code)}
+			} else {
+				body = corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: metav1.ObjectMeta{Name: "item", Namespace: "team"}}
+			}
+		default:
+			t.Errorf("unexpected API request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	cfg := &rest.Config{
+		Host: server.URL, BearerToken: "system-token", BearerTokenFile: "/nonexistent/system-token",
+		Username: "system-user", Password: "system-password",
+		TLSClientConfig: rest.TLSClientConfig{CertFile: "/nonexistent/cert", KeyFile: "/nonexistent/key", CertData: []byte("invalid-cert"), KeyData: []byte("invalid-key")},
+		AuthProvider:    &clientcmdapi.AuthProviderConfig{Name: "invalid"},
+		ExecProvider:    &clientcmdapi.ExecConfig{Command: "/nonexistent/exec"},
+		Impersonate:     rest.ImpersonationConfig{UserName: "caller", UID: "uid", Groups: []string{"admins"}, Extra: map[string][]string{"key": {"value"}}},
+		Transport:       forbiddenExecutionTransport{t: t},
+		WrapTransport: func(http.RoundTripper) http.RoundTripper {
+			t.Error("system wrapper reused")
+			return forbiddenExecutionTransport{t: t}
+		},
+	}
+	cluster := &ClusterClient{RestConfig: cfg, Scheme: scheme}
+	tokenFile := filepath.Join(t.TempDir(), "execution-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("execution-token"), 0600))
+	execution, err := NewExecutionClient(cluster, tokenFile)
+	require.NoError(t, err)
+	key := types.NamespacedName{Namespace: "team", Name: "item"}
+	require.NoError(t, execution.Get(t.Context(), key, &corev1.ConfigMap{}))
+	status.Store(http.StatusUnauthorized)
+	require.True(t, apierrors.IsUnauthorized(execution.Delete(t.Context(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}})))
+	status.Store(http.StatusForbidden)
+	require.True(t, apierrors.IsForbidden(execution.Get(t.Context(), key, &corev1.ConfigMap{})))
+	require.EqualValues(t, 3, operations.Load(), "authentication and permission failures must not replay operations")
+	require.Equal(t, "system-token", cfg.BearerToken)
+	require.Equal(t, "/nonexistent/system-token", cfg.BearerTokenFile)
+
+	missingFile := filepath.Join(t.TempDir(), "missing")
+	_, err = NewExecutionClient(cluster, missingFile)
+	require.ErrorContains(t, err, "failed to read token file")
+	require.ErrorContains(t, err, missingFile)
+}
+
+func TestNewExecutionClientInvalidConfiguration(t *testing.T) {
+	for _, cluster := range []*ClusterClient{nil, {}, {RestConfig: &rest.Config{}}} {
+		_, err := NewExecutionClient(cluster, "/token")
+		require.Error(t, err)
+	}
+	_, err := NewExecutionClient(&ClusterClient{RestConfig: &rest.Config{}, Scheme: runtime.NewScheme()}, "")
+	require.Error(t, err)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func mustBuildRestConfig(t *testing.T, cfg config.ClusterConfig) *rest.Config {
@@ -324,4 +416,11 @@ func mustBuildRestConfig(t *testing.T, cfg config.ClusterConfig) *rest.Config {
 	rc, err := BuildRestConfig(cfg)
 	require.NoError(t, err)
 	return rc
+}
+
+type forbiddenExecutionTransport struct{ t *testing.T }
+
+func (f forbiddenExecutionTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	f.t.Error("system transport reused")
+	return nil, os.ErrPermission
 }
