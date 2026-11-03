@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	maxPolicyBytes = 512 * 1024
-	cappUserRole   = "capp-user"
+	maxPolicyBytes       = 512 * 1024
+	cappUserRole         = "capp-user"
+	assignmentNamePrefix = "capp-assignment-"
 )
 
 var assignmentLabel = cappv1alpha1.GroupVersion.Group + "/authorization"
@@ -61,7 +62,7 @@ func ParseAssignment(cm *corev1.ConfigMap, policyNamespace string, protectedName
 	if policy.Version != 1 || policy.Bindings == nil {
 		return nil, errors.New("assignment requires version 1 and a bindings array")
 	}
-	if len(validation.ValidateNamespaceName(policy.Namespace, false)) != 0 || cm.Name != "capp-assignment-"+policy.Namespace {
+	if len(validation.ValidateNamespaceName(policy.Namespace, false)) != 0 || cm.Name != assignmentNamePrefix+policy.Namespace {
 		return nil, errors.New("assignment name must match a valid target namespace")
 	}
 	if policy.Namespace == policyNamespace || slices.Contains(protectedNamespaces, policy.Namespace) {
