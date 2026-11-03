@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	policyDataKey        = "policy.json"
 	maxPolicyBytes       = 512 * 1024
 	cappUserRole         = "capp-user"
 	assignmentNamePrefix = "capp-assignment-"
@@ -40,10 +41,10 @@ func ParseAssignment(cm *corev1.ConfigMap, policyNamespace string, protectedName
 	if len(validation.ValidateNamespaceName(policyNamespace, false)) != 0 {
 		return nil, errors.New("invalid policy namespace")
 	}
-	if cm == nil || cm.Namespace != policyNamespace || cm.Labels[assignmentLabel] != "sa-rbac" {
+	if cm == nil || cm.Namespace != policyNamespace || cm.Labels[assignmentLabel] != saRBAC {
 		return nil, errors.New("assignment must be selected in the policy namespace")
 	}
-	payload, ok := cm.Data["policy.json"]
+	payload, ok := cm.Data[policyDataKey]
 	if !ok || len(cm.Data) != 1 || len(cm.BinaryData) != 0 {
 		return nil, errors.New("assignment must contain only policy.json data")
 	}

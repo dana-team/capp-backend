@@ -32,7 +32,7 @@ func TestStoreLookup(t *testing.T) {
 		{"ready", func(*corev1.ConfigMap, *corev1.Namespace, *rbacv1.RoleBinding) {
 		}, Ready},
 		{"invalid policy", func(cm *corev1.ConfigMap, _ *corev1.Namespace, _ *rbacv1.RoleBinding) {
-			cm.Data["policy.json"] = "{"
+			cm.Data[policyDataKey] = "{"
 		}, PolicyInvalid},
 		{"withdrawn label", func(cm *corev1.ConfigMap, _ *corev1.Namespace, _ *rbacv1.RoleBinding) {
 			cm.Labels = nil
@@ -87,7 +87,7 @@ func TestStoreEligible(t *testing.T) {
 	require.True(t, complete)
 	require.Empty(t, got)
 	cm = cm.DeepCopy()
-	cm.Data["policy.json"] = fmt.Sprintf(`{"version":1,"namespace":%q,"bindings":[{"kind":"User","name":"bob","role":"capp-user"}]}`, ns.Name)
+	cm.Data[policyDataKey] = fmt.Sprintf(`{"version":1,"namespace":%q,"bindings":[{"kind":"User","name":"bob","role":"capp-user"}]}`, ns.Name)
 	require.NoError(t, s.informers[policies].GetIndexer().Update(cm))
 	s.changed(policies, cm)
 	got, _ = s.Eligible("alice", []string{"developers"})
@@ -275,7 +275,7 @@ func TestStoreIsolation(t *testing.T) {
 	for i := range 30 {
 		changed := cm.DeepCopy()
 		changed.ResourceVersion = fmt.Sprint(i)
-		changed.Data["policy.json"] = "{"
+		changed.Data[policyDataKey] = "{"
 		require.NoError(t, s.informers[policies].GetIndexer().Update(changed))
 		s.changed(policies, changed)
 	}

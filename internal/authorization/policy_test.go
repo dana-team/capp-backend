@@ -86,11 +86,11 @@ func TestParseAssignmentMetadata(t *testing.T) {
 		{"binary data", func(cm *corev1.ConfigMap) { cm.BinaryData = map[string][]byte{"extra": {}} }},
 		{"policy namespace target", func(cm *corev1.ConfigMap) {
 			cm.Name = "capp-assignment-capp-system"
-			cm.Data["policy.json"] = strings.Replace(validPolicy, "team-a", "capp-system", 1)
+			cm.Data[policyDataKey] = strings.Replace(validPolicy, "team-a", "capp-system", 1)
 		}},
 		{"protected target", func(cm *corev1.ConfigMap) {
 			cm.Name = "capp-assignment-kube-system"
-			cm.Data["policy.json"] = strings.Replace(validPolicy, "team-a", "kube-system", 1)
+			cm.Data[policyDataKey] = strings.Replace(validPolicy, "team-a", "kube-system", 1)
 		}},
 	}
 	for _, tt := range tests {
@@ -162,5 +162,5 @@ func TestAssignmentMatches(t *testing.T) {
 }
 
 func assignmentConfigMap(payload string) *corev1.ConfigMap {
-	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "capp-assignment-team-a", Namespace: "capp-system", Labels: map[string]string{assignmentLabel: "sa-rbac"}}, Data: map[string]string{"policy.json": payload}}
+	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "capp-assignment-team-a", Namespace: "capp-system", Labels: map[string]string{assignmentLabel: saRBAC}}, Data: map[string]string{policyDataKey: payload}}
 }
