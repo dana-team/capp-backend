@@ -170,6 +170,35 @@ func TestLoad_InvalidFile(t *testing.T) {
 
 // ── Validate tests ───────────────────────────────────────────────────────────
 
+func TestValidateMetrics(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		enabled   bool
+		path      string
+		wantError string
+	}{
+		{name: "disabled with empty path"},
+		{name: "disabled with unused invalid path", path: "/api/v1/clusters/prod"},
+		{name: "enabled with empty path", enabled: true, wantError: "required"},
+		{name: "API route overlap", enabled: true, path: "/api/v1/clusters/prod", wantError: "reserved /api"},
+		{name: "noncanonical path", enabled: true, path: "/monitor/../metrics", wantError: "canonical"},
+		{name: "custom path", enabled: true, path: "/monitor/metrics"},
+		{name: "similar prefix outside API", enabled: true, path: "/api-metrics"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Metrics = MetricsConfig{Enabled: tc.enabled, Path: tc.path}
+			err := Validate(cfg)
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, "config: metrics.path:")
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidate_Happy(t *testing.T) {
 	assert.NoError(t, Validate(passthroughConfig()))
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,6 +41,12 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 	errs = append(errs, validateBenchmarks(&cfg.Resources.Benchmarks)...)
 
+	if cfg.Metrics.Enabled {
+		if err := ValidateMetricsPath(cfg.Metrics.Path); err != nil {
+			errs = append(errs, fmt.Errorf("config: metrics.path: %w", err))
+		}
+	}
+
 	if cfg.GitOps.Enabled {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
 	}
@@ -59,6 +66,29 @@ func Validate(cfg *Config) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// ValidateMetricsPath requires a nonempty, absolute, literal, canonical path
+// outside the reserved /api subtree. Callers decide whether metrics are enabled.
+func ValidateMetricsPath(metricsPath string) error {
+	if metricsPath == "" {
+		return errors.New("metrics path is required when metrics are enabled")
+	}
+	if !strings.HasPrefix(metricsPath, "/") || strings.ContainsAny(metricsPath, ":*?#") {
+		return errors.New("metrics path must be an absolute literal path")
+	}
+	// Gin cleans registered paths but preserves a single trailing slash.
+	canonicalPath := path.Clean(metricsPath)
+	if strings.HasSuffix(metricsPath, "/") && canonicalPath != "/" {
+		canonicalPath += "/"
+	}
+	if metricsPath != canonicalPath {
+		return fmt.Errorf("metrics path must be canonical: use %q", canonicalPath)
+	}
+	if metricsPath == "/api" || strings.HasPrefix(metricsPath, "/api/") {
+		return errors.New("metrics path must not use the reserved /api subtree")
+	}
+	return nil
 }
 
 // validateClusters checks that at least one cluster is defined, that every
