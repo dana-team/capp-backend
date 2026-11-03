@@ -88,6 +88,11 @@ jobs:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m --skip-dirs=internal/cli,internal/mcpserver
 
+      - name: Set up envtest
+        run: |
+          envtest_assets=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 use -p path 1.35.0)
+          echo "KUBEBUILDER_ASSETS=$envtest_assets" >> "$GITHUB_ENV"
+
       - name: Unit tests (with race detector)
         run: |
           go test -v -race -coverprofile=coverage.out \

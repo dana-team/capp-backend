@@ -51,15 +51,16 @@ type ObservationHealth struct {
 // Store observes one cluster and publishes detached, indexed namespace state.
 // Construct a separate Store per cluster and replica. Run owns all workers.
 type Store struct {
-	mu           sync.RWMutex
-	options      StoreOptions
-	informers    [collectionCount]cache.SharedIndexInformer
-	syncedChecks []cache.InformerSynced
-	started      bool
-	synced       bool
-	degraded     [collectionCount]bool
-	states       map[string]NamespaceState
-	identities   map[identity]map[string]struct{}
+	mu            sync.RWMutex
+	options       StoreOptions
+	informers     [collectionCount]cache.SharedIndexInformer
+	syncedChecks  []cache.InformerSynced
+	started       bool
+	hasReconciler bool
+	synced        bool
+	degraded      [collectionCount]bool
+	states        map[string]NamespaceState
+	identities    map[identity]map[string]struct{}
 }
 
 type identity struct{ kind, name string }
@@ -209,15 +210,19 @@ func (s *Store) Eligible(username string, groups, allowedRoles []string) ([]Name
 
 func (s *Store) handleWatchError(ctx context.Context, collection int, err error) {
 	s.setDegraded(collection, true)
-	reason := "unavailable"
+	klog.FromContext(ctx).Error(nil, "authorization observation failed", "collection", collectionNames[collection], "reason", authorizationErrorReason(err))
+}
+
+// Use bounded categories because upstream messages may contain identities or policy data.
+func authorizationErrorReason(err error) string {
 	switch {
 	case apierrors.IsForbidden(err):
-		reason = "forbidden"
+		return "forbidden"
 	case apierrors.IsUnauthorized(err):
-		reason = "unauthorized"
+		return "unauthorized"
+	default:
+		return "unavailable"
 	}
-	// Upstream messages can contain identities or response bodies.
-	klog.FromContext(ctx).Error(nil, "authorization observation failed", "collection", collectionNames[collection], "reason", reason)
 }
 
 func (s *Store) setDegraded(collection int, degraded bool) {
