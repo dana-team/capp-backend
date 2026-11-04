@@ -69,7 +69,7 @@ func (CappRevisionToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "rollback_capp",
-		Description: "Roll a Capp back to a previous revision. This overwrites the live Capp's spec, labels and annotations with that revision's values; the operator then records the result as a new revision. If Git sync is enabled, the rolled-back state is also committed to git.",
+		Description: "Roll a Capp back to a previous revision. This overwrites the live Capp's spec, labels and annotations with that revision's values; the operator then records the result as a new revision. Rolling back to a revision with no rollout strategy removes the current one, which can move live traffic (see capp_rollout_strategy_remove). If Git sync is enabled, the rolled-back state is also committed to git.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappRollbackInput) (*mcp.CallToolResult, capps.CappResponse, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
