@@ -22,28 +22,34 @@ import (
 // handler is invoked.
 func Auth(mgr auth.AuthManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// The cluster name may or may not be in the path at this point.
-		// Auth is applied globally so we extract it optimistically.
-		clusterName := c.Param("cluster")
-
-		cred, err := mgr.Authenticate(c.Request.Context(), clusterName, c.Request)
-		if err != nil {
-			switch {
-			case errors.Is(err, auth.ErrUnauthenticated):
-				apierrors.Respond(c, apierrors.NewUnauthorized(auth.ErrUnauthenticated.Error()))
-			case errors.Is(err, auth.ErrTokenExpired):
-				apierrors.Respond(c, apierrors.NewUnauthorized(auth.ErrTokenExpired.Error()))
-			case errors.Is(err, auth.ErrDirectoryUnavailable):
-				apierrors.Respond(c, &apierrors.APIError{
-					Code: apierrors.CodeInternal, Message: auth.ErrDirectoryUnavailable.Error(), Status: http.StatusServiceUnavailable,
-				})
-			default:
-				apierrors.Respond(c, apierrors.NewInternal(err))
-			}
+		if _, ok := authenticate(c, mgr); !ok {
 			return
 		}
-
-		c.Set(string(CredentialKey), cred)
 		c.Next()
 	}
+}
+
+func authenticate(c *gin.Context, mgr auth.AuthManager) (auth.ClusterCredential, bool) {
+	// Cluster-list routes omit the :cluster parameter.
+	clusterName := c.Param("cluster")
+
+	cred, err := mgr.Authenticate(c.Request.Context(), clusterName, c.Request)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrUnauthenticated):
+			apierrors.Respond(c, apierrors.NewUnauthorized(auth.ErrUnauthenticated.Error()))
+		case errors.Is(err, auth.ErrTokenExpired):
+			apierrors.Respond(c, apierrors.NewUnauthorized(auth.ErrTokenExpired.Error()))
+		case errors.Is(err, auth.ErrDirectoryUnavailable):
+			apierrors.Respond(c, &apierrors.APIError{
+				Code: apierrors.CodeInternal, Message: auth.ErrDirectoryUnavailable.Error(), Status: http.StatusServiceUnavailable,
+			})
+		default:
+			apierrors.Respond(c, apierrors.NewInternal(err))
+		}
+		return auth.ClusterCredential{}, false
+	}
+
+	c.Set(string(CredentialKey), cred)
+	return cred, true
 }

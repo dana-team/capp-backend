@@ -11,9 +11,13 @@ import (
 )
 
 // ExtractClient retrieves the scoped K8s client from the Gin context.
+// Backend-policy requests must carry a matching operation/target decision.
 // It responds with an internal error and returns nil if the client is absent
 // (which indicates a middleware configuration error).
 func ExtractClient(c *gin.Context) client.Client {
+	if !middleware.RequireExecution(c) {
+		return nil
+	}
 	val, exists := c.Get(string(middleware.K8sClientKey))
 	if !exists {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))

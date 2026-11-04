@@ -9,8 +9,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// SystemClients holds reusable clients for policy observation and namespace UID association.
-// These clients carry system authority and must not be installed on user requests.
+// SystemClients holds reusable clients using the backend's cluster credential.
+// Before handling user requests for namespaced resources, authorize access
+// and wrap the resource client with namespace scoping.
 type SystemClients struct {
 	Kubernetes kubernetes.Interface
 	Resources  client.Client
