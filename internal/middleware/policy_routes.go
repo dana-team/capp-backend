@@ -15,12 +15,13 @@ type PolicyCategory string
 
 // Policy categories separate public endpoints and the different target scopes.
 const (
-	PolicyPublic    PolicyCategory = "public"
-	PolicyDiscovery PolicyCategory = "discovery"
-	PolicyNamespace PolicyCategory = "namespace"
-	PolicyAggregate PolicyCategory = "aggregate"
-	PolicyMigration PolicyCategory = "migration"
-	PolicyDenied    PolicyCategory = "denied"
+	PolicyPublic         PolicyCategory = "public"
+	PolicyDiscovery      PolicyCategory = "discovery"
+	PolicyNamespace      PolicyCategory = "namespace"
+	PolicyAggregate      PolicyCategory = "aggregate"
+	PolicyMigration      PolicyCategory = "migration"
+	PolicyDenied         PolicyCategory = "denied"
+	PolicyAdministration PolicyCategory = "administration"
 )
 
 // PolicyRule declares the roles accepted by one API operation.
@@ -28,6 +29,11 @@ type PolicyRule struct {
 	Category     PolicyCategory
 	AllowedRoles []string
 }
+
+const (
+	namespaceCollectionPath = "/api/v1/clusters/:cluster/namespaces"
+	namespacePolicyPath     = namespaceCollectionPath + "/:namespace"
+)
 
 type policyRoute struct{ method, path string }
 
@@ -42,7 +48,6 @@ type PolicyRoutes struct {
 // another rule.
 func NewPolicyRoutes(metricsPath string) (*PolicyRoutes, error) {
 	const clusterPath = "/api/v1/clusters/:cluster"
-	const namespacePath = clusterPath + "/namespaces/:namespace"
 	read := PolicyRule{Category: PolicyNamespace, AllowedRoles: []string{authorization.RoleViewer, authorization.RoleEditor}}
 	write := PolicyRule{Category: PolicyNamespace, AllowedRoles: []string{authorization.RoleEditor}}
 	routes := &PolicyRoutes{rules: make(map[policyRoute]PolicyRule)}
@@ -58,18 +63,18 @@ func NewPolicyRoutes(metricsPath string) (*PolicyRoutes, error) {
 	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/openshift/callback"} {
 		declarations = append(declarations, declaration{method: http.MethodPost, path: path, rule: PolicyRule{Category: PolicyPublic}})
 	}
-	for _, path := range []string{"/api/v1/clusters", clusterPath, clusterPath + "/namespaces"} {
+	for _, path := range []string{"/api/v1/clusters", clusterPath, namespaceCollectionPath} {
 		declarations = append(declarations, declaration{method: http.MethodGet, path: path, rule: PolicyRule{Category: PolicyDiscovery, AllowedRoles: read.AllowedRoles}})
 	}
 	declarations = append(declarations,
-		declaration{method: http.MethodGet, path: namespacePath, rule: read},
-		declaration{method: http.MethodPost, path: clusterPath + "/namespaces", rule: PolicyRule{Category: PolicyDenied}},
+		declaration{method: http.MethodGet, path: namespacePolicyPath, rule: read},
+		declaration{method: http.MethodPost, path: namespaceCollectionPath, rule: PolicyRule{Category: PolicyAdministration}},
 	)
 	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
-		declarations = append(declarations, declaration{method: method, path: namespacePath, rule: PolicyRule{Category: PolicyDenied}})
+		declarations = append(declarations, declaration{method: method, path: namespacePolicyPath, rule: PolicyRule{Category: PolicyAdministration}})
 	}
 	for _, resource := range []string{"capps", "configmaps", "secrets"} {
-		path := namespacePath + "/" + resource
+		path := namespacePolicyPath + "/" + resource
 		declarations = append(declarations,
 			declaration{method: http.MethodGet, path: clusterPath + "/" + resource, rule: PolicyRule{Category: PolicyAggregate, AllowedRoles: read.AllowedRoles}},
 			declaration{method: http.MethodGet, path: path, rule: read},
@@ -82,7 +87,7 @@ func NewPolicyRoutes(metricsPath string) (*PolicyRoutes, error) {
 			declarations = append(declarations, declaration{method: http.MethodGet, path: path + "/names", rule: read})
 		}
 	}
-	cappPath := namespacePath + "/capps/:name"
+	cappPath := namespacePolicyPath + "/capps/:name"
 	declarations = append(declarations,
 		declaration{method: http.MethodGet, path: cappPath + "/revisions", rule: read},
 		declaration{method: http.MethodGet, path: cappPath + "/revisions/:revision", rule: read},
