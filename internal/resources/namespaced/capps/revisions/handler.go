@@ -188,6 +188,9 @@ func applyTemplate(live *cappv1alpha1.Capp, tmpl cappv1alpha1.CappTemplate) *cap
 	updated.Spec = *tmpl.Spec.DeepCopy()
 	updated.Labels = maps.Clone(tmpl.Labels)
 	updated.Annotations = maps.Clone(tmpl.Annotations)
+	// The operator records every annotation in the revision, including an action
+	// that was pending at the time. Restoring it would replay that action.
+	delete(updated.Annotations, k8s.AnnotationRollout)
 
 	delete(updated.Labels, k8s.LabelBackupToGit)
 	if v, ok := live.Labels[k8s.LabelBackupToGit]; ok {
