@@ -318,7 +318,7 @@ func (s *Store) observe(namespace string) (NamespaceState, bool) {
 	if ns.Labels[consts.ManagedNameSpaceLabelKey] != consts.ManagedLabelValue {
 		return state.condition(NamespaceUnmanaged), true
 	}
-	associated := cm.Annotations[namespaceUIDAnnotation]
+	associated := cm.Annotations[NamespaceUIDAnnotation]
 	if associated != "" && associated != string(ns.UID) {
 		return state.condition(NamespaceUIDMismatch), true
 	}

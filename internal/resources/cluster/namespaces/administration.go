@@ -1,0 +1,280 @@
+package namespaces
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"maps"
+	"net/http"
+	"slices"
+
+	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/authorization"
+	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/validation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	strictjson "sigs.k8s.io/json"
+)
+
+// Administration owns privileged namespace policy storage for one cluster.
+// Its client must use the system identity and must never be installed on requests.
+type Administration struct {
+	client                        client.Client
+	policyNamespace               string
+	protectedNamespaces           []string
+	restrictedBindingNamePrefixes []string
+}
+
+// NewAdministration prepares namespace administration without storage I/O.
+func NewAdministration(systemClient client.Client, policyNamespace string, protectedNamespaces, restrictedBindingNamePrefixes []string) (*Administration, error) {
+	if systemClient == nil || len(validation.ValidateNamespaceName(policyNamespace, false)) != 0 {
+		return nil, errors.New("administration requires a client and valid policy namespace")
+	}
+	if err := authorization.ValidateBindingNamePrefixes(restrictedBindingNamePrefixes); err != nil {
+		return nil, err
+	}
+	return &Administration{
+		client: systemClient, policyNamespace: policyNamespace,
+		protectedNamespaces:           slices.Clone(protectedNamespaces),
+		restrictedBindingNamePrefixes: slices.Clone(restrictedBindingNamePrefixes),
+	}, nil
+}
+
+// NewWithAdministration injects cluster-specific policy storage into the existing
+// namespace handlers. The global policy chain must authorize every operation.
+func NewWithAdministration(logger *zap.Logger, targets map[string]*Administration) *Handler {
+	return &Handler{logger: logger, administration: maps.Clone(targets)}
+}
+
+func (h *Handler) updateMembership(c *gin.Context) {
+	operator, _, allowed := middleware.RequireNamespaceAccess(c)
+	if !allowed {
+		return
+	}
+	if !operator {
+		apierrors.Respond(c, apierrors.NewForbidden("operation is not permitted"))
+		return
+	}
+	var policy *corev1.ConfigMap
+	outcome := "failed"
+	defer func() {
+		value, _ := c.Get(string(middleware.CredentialKey))
+		cred, _ := value.(auth.ClusterCredential)
+		caller := cred.ImpersonateUser
+		uid, revision := "", ""
+		if policy != nil {
+			uid, revision = string(policy.UID), policy.ResourceVersion
+		}
+		h.logger.Info("namespace membership mutation", zap.String("caller", caller),
+			zap.String("method", c.Request.Method), zap.String("route", c.FullPath()),
+			zap.String("cluster", c.Param("cluster")), zap.String("namespace", c.Param("namespace")),
+			zap.String("outcome", outcome), zap.String("policyUID", uid), zap.String("policyVersion", revision))
+	}()
+	admin := h.administration[c.Param("cluster")]
+	if admin == nil {
+		apierrors.Respond(c, administrationError(authorization.ErrUnavailable))
+		return
+	}
+	req, err := decodeMembership(c)
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	proposal, err := admin.prepareMembership(c.Request.Context(), c.Param("namespace"), req, c.Request.Method == http.MethodPatch)
+	if proposal != nil {
+		policy = proposal.policy
+	}
+	if err != nil {
+		apierrors.Respond(c, administrationError(err))
+		return
+	}
+	if err := admin.saveMembership(c.Request.Context(), proposal); err != nil {
+		apierrors.Respond(c, administrationError(err))
+		return
+	}
+	policy = proposal.policy
+	outcome = "saved"
+	// Membership mutations retain the namespace response envelope.
+	c.JSON(http.StatusOK, NamespaceItem{Name: proposal.namespace.Name, Status: string(proposal.namespace.Status.Phase), CanEdit: true})
+}
+
+func decodeMembership(c *gin.Context) (UpdateNamespaceRequest, error) {
+	var req UpdateNamespaceRequest
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, authorization.MaxPolicyBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return req, &apierrors.APIError{Code: apierrors.CodeBadRequest, Status: http.StatusRequestEntityTooLarge, Message: "request exceeds 512 KiB"}
+		}
+		return req, apierrors.NewBadRequest("cannot read request")
+	}
+	strictErrors, err := strictjson.UnmarshalStrict(body, &req)
+	if err != nil || len(strictErrors) != 0 {
+		return req, apierrors.NewBadRequest("invalid namespace membership request")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return req, apierrors.NewBadRequest("request must be an object")
+	}
+	users, hasUsers := fields["users"]
+	bindings, hasBindings := fields["bindings"]
+	if (hasUsers && hasBindings) || (hasUsers && string(users) == "null") || (hasBindings && string(bindings) == "null") {
+		return req, apierrors.NewBadRequest("supply either users or bindings as an array")
+	}
+	if _, quota := fields["quota"]; quota && c.Request.Method == http.MethodPatch {
+		return req, apierrors.NewBadRequest("PATCH cannot change quota")
+	}
+	return req, nil
+}
+
+// membershipProposal separates validation and fresh reads from persistence so
+// namespace quota changes can be validated first and saved before membership.
+type membershipProposal struct {
+	namespace     *corev1.Namespace
+	policy        *corev1.ConfigMap
+	create, write bool
+}
+
+func (a *Administration) prepareMembership(ctx context.Context, namespace string, req UpdateNamespaceRequest, additive bool) (*membershipProposal, error) {
+	// Validate the supplied set even when PATCH would deduplicate against storage.
+	bindings, err := membershipBindings(req.Users, req.Bindings)
+	if err != nil {
+		return nil, err
+	}
+	template, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: namespace, Bindings: bindings}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	if err != nil {
+		return nil, apierrors.NewBadRequest("invalid namespace membership")
+	}
+	ns := &corev1.Namespace{}
+	if err := a.client.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
+		return nil, err
+	}
+	if ns.Labels[consts.ManagedNameSpaceLabelKey] != consts.ManagedLabelValue || ns.DeletionTimestamp != nil || ns.UID == "" {
+		return nil, apierrors.NewConflict("namespace must be managed and nonterminating")
+	}
+	p := &membershipProposal{namespace: ns, policy: template}
+	current := &corev1.ConfigMap{}
+	err = a.client.Get(ctx, client.ObjectKeyFromObject(template), current)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return p, err
+	}
+	p.create = k8serrors.IsNotFound(err)
+	if !p.create {
+		p.policy = current
+	}
+	if req.PolicyResourceVersion != nil && (p.create || *req.PolicyResourceVersion != current.ResourceVersion) {
+		return p, apierrors.NewConflict("policy revision has changed")
+	}
+	if p.create && additive {
+		return p, apierrors.NewNotFound("policy", namespace)
+	}
+	if !p.create {
+		if err := a.checkPolicyOwnershipAndIdentity(current, template, ns); err != nil {
+			return p, err
+		}
+	}
+	if req.Users == nil && req.Bindings == nil && !additive {
+		return p, nil
+	}
+	if !p.create && (additive || req.Users != nil) {
+		existing, err := authorization.ParseAssignment(current, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+		if err != nil {
+			return p, apierrors.NewConflict("invalid policy requires full bindings replacement")
+		}
+		bindings = mergeMembership(existing.Bindings(), bindings, additive)
+		if additive && slices.Equal(bindings, existing.Bindings()) {
+			return p, nil
+		}
+	}
+	proposed, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: namespace, Bindings: bindings}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	if err != nil {
+		return p, apierrors.NewBadRequest("invalid proposed policy or policy exceeds 512 KiB")
+	}
+	p.policy.Data, p.policy.BinaryData = proposed.Data, nil
+	p.write = true
+	return p, nil
+}
+
+func membershipBindings(users *[]string, bindings *[]authorization.Binding) ([]authorization.Binding, error) {
+	if users != nil && bindings != nil {
+		return nil, apierrors.NewBadRequest("supply either users or bindings")
+	}
+	if bindings != nil {
+		return *bindings, nil
+	}
+	result := []authorization.Binding{}
+	if users != nil {
+		for _, user := range *users {
+			result = append(result, authorization.Binding{Kind: rbacv1.UserKind, Name: user, Role: authorization.RoleEditor})
+		}
+	}
+	return result, nil
+}
+
+func (a *Administration) checkPolicyOwnershipAndIdentity(current, template *corev1.ConfigMap, ns *corev1.Namespace) error {
+	for key, value := range template.Labels {
+		if current.Labels[key] != value {
+			return apierrors.NewConflict("canonical policy is not owned by backend policy")
+		}
+	}
+	if current.DeletionTimestamp != nil || current.UID == "" || current.ResourceVersion == "" {
+		return apierrors.NewConflict("policy identity is unavailable or terminating")
+	}
+	associated := current.Annotations[authorization.NamespaceUIDAnnotation]
+	if associated != "" && associated != string(ns.UID) {
+		return apierrors.NewConflict("policy belongs to another namespace instance; manual recovery required")
+	}
+	return nil
+}
+
+func mergeMembership(existing, supplied []authorization.Binding, additive bool) []authorization.Binding {
+	result := make([]authorization.Binding, 0, len(existing)+len(supplied))
+	for _, binding := range existing {
+		if additive || binding.Kind != rbacv1.UserKind || binding.Role != authorization.RoleEditor {
+			result = append(result, binding)
+		}
+	}
+	for _, binding := range supplied {
+		if !slices.Contains(result, binding) {
+			result = append(result, binding)
+		}
+	}
+	return result
+}
+
+func (a *Administration) saveMembership(ctx context.Context, p *membershipProposal) error {
+	if !p.write {
+		return nil
+	}
+	if p.create {
+		return a.client.Create(ctx, p.policy)
+	}
+	// Update carries both the UID and resourceVersion from the fresh read. No
+	// retry can silently merge a concurrent operator edit or worker association.
+	return a.client.Update(ctx, p.policy)
+}
+
+func administrationError(err error) error {
+	var apiErr *apierrors.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+	switch {
+	case k8serrors.IsNotFound(err):
+		return &apierrors.APIError{Code: apierrors.CodeNotFound, Status: http.StatusNotFound, Message: "namespace or policy not found"}
+	case k8serrors.IsConflict(err), k8serrors.IsAlreadyExists(err):
+		return apierrors.NewConflict("namespace policy changed; read current state before retrying")
+	case errors.Is(err, authorization.ErrUnavailable), k8serrors.IsForbidden(err), k8serrors.IsUnauthorized(err), k8serrors.IsServiceUnavailable(err), k8serrors.IsTimeout(err), k8serrors.IsServerTimeout(err):
+		return &apierrors.APIError{Code: apierrors.CodeInternal, Status: http.StatusServiceUnavailable, Message: "namespace administration is unavailable"}
+	default:
+		return &apierrors.APIError{Code: apierrors.CodeInternal, Status: http.StatusInternalServerError, Message: "namespace administration failed"}
+	}
+}

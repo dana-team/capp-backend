@@ -77,7 +77,7 @@ func TestReconcilerReconcile(t *testing.T) {
 		{"withdrawn", func(cm *corev1.ConfigMap, _ *corev1.Namespace) { cm.Labels = nil }},
 		{"replacement", func(cm *corev1.ConfigMap, _ *corev1.Namespace) { cm.UID = "replacement" }},
 		{"already associated", func(cm *corev1.ConfigMap, _ *corev1.Namespace) {
-			cm.Annotations = map[string]string{namespaceUIDAnnotation: "another-namespace"}
+			cm.Annotations = map[string]string{NamespaceUIDAnnotation: "another-namespace"}
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,7 +129,7 @@ func TestReconcilerReconcile(t *testing.T) {
 			require.NoError(t, json.Unmarshal(patch.GetPatch(), &body))
 			require.Equal(t, map[string]any{"metadata": map[string]any{
 				"uid": string(cm.UID), "resourceVersion": cm.ResourceVersion,
-				"annotations": map[string]any{namespaceUIDAnnotation: string(ns.UID)},
+				"annotations": map[string]any{NamespaceUIDAnnotation: string(ns.UID)},
 			}}, body)
 			return true, nil, conflict
 		})
@@ -223,7 +223,7 @@ func TestReconcilerRun(t *testing.T) {
 		waitReady(ns.Name)
 		persisted, err := client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
 		require.NoError(t, err)
-		require.Equal(t, map[string]string{"operator": "preserve", namespaceUIDAnnotation: string(ns.UID)}, persisted.Annotations)
+		require.Equal(t, map[string]string{"operator": "preserve", NamespaceUIDAnnotation: string(ns.UID)}, persisted.Annotations)
 		require.Equal(t, cm.Data, persisted.Data)
 		require.Equal(t, cm.Labels, persisted.Labels)
 		require.Equal(t, cm.Immutable, persisted.Immutable)
@@ -249,7 +249,7 @@ func TestReconcilerRun(t *testing.T) {
 		}, reconcileTimeout, pollInterval)
 		persisted, err := client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
 		require.NoError(t, err)
-		require.Equal(t, string(ns.UID), persisted.Annotations[namespaceUIDAnnotation])
+		require.Equal(t, string(ns.UID), persisted.Annotations[NamespaceUIDAnnotation])
 		require.NotEqual(t, ns.UID, replacement.UID)
 		require.NoError(t, client.CoreV1().ConfigMaps(cm.Namespace).Delete(t.Context(), cm.Name, metav1.DeleteOptions{}))
 		cm.UID, cm.ResourceVersion = "", ""
@@ -261,14 +261,14 @@ func TestReconcilerRun(t *testing.T) {
 		waitReady(ns.Name)
 		persisted, err = client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
 		require.NoError(t, err)
-		require.Equal(t, string(replacement.UID), persisted.Annotations[namespaceUIDAnnotation])
+		require.Equal(t, string(replacement.UID), persisted.Annotations[NamespaceUIDAnnotation])
 	})
 	// Restart both replicas against the persisted association.
 	stopFirst()
 	stopSecond()
 	t.Run("restart retains persisted associations", func(t *testing.T) {
 		cm, ns := create("restart")
-		cm.Annotations[namespaceUIDAnnotation] = string(ns.UID)
+		cm.Annotations[NamespaceUIDAnnotation] = string(ns.UID)
 		cm, err = client.CoreV1().ConfigMaps(cm.Namespace).Update(t.Context(), cm, metav1.UpdateOptions{})
 		require.NoError(t, err)
 		first, _ = start()
@@ -395,7 +395,7 @@ func TestReconcilerRunFailureDiagnostics(t *testing.T) {
 			}
 			require.Eventually(t, func() bool {
 				policy, err := client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
-				return err == nil && policy.Annotations[namespaceUIDAnnotation] == string(ns.UID)
+				return err == nil && policy.Annotations[NamespaceUIDAnnotation] == string(ns.UID)
 			}, time.Second, time.Millisecond)
 			logsMu.Lock()
 			defer logsMu.Unlock()
