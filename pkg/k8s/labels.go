@@ -9,6 +9,11 @@ const LabelBackupToGit = "rcs.dana.io/backup-to-git"
 // name of the Capp the revision belongs to.
 const LabelCappName = "rcs.dana.io/cappName"
 
+// AnnotationRollout requests a rollout action from the operator, as
+// promote:<revision>, abort:<revision> or retry:<revision>. The operator
+// removes it once processed. Its own constant is in an internal package.
+const AnnotationRollout = "rcs.dana.io/rollout"
+
 // HasBackupLabel reports whether the given label map contains the
 // backup-to-git marker.
 func HasBackupLabel(labels map[string]string) bool {
