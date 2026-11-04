@@ -72,6 +72,36 @@ type RouteSpec struct {
 
 	// RouteTimeoutSeconds is the maximum request duration. Optional.
 	RouteTimeoutSeconds *int64 `json:"routeTimeoutSeconds,omitempty"`
+
+	// RolloutStrategy configures a staged rollout of new revisions. Optional.
+	// Unlike other fields, omitting it on update keeps the current strategy,
+	// because removing a strategy mid-rollout moves live traffic. Removal has
+	// its own endpoint.
+	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+}
+
+// RolloutStage is a single traffic stage of a staged rollout. The operator's
+// webhook enforces ordering and which stages must set a duration.
+type RolloutStage struct {
+	// Percent is the candidate revision's share of traffic. A pointer because
+	// 0 is valid (blue-green) while a missing value is not.
+	Percent *int64 `json:"percent" binding:"required,min=0,max=100"`
+
+	// Duration is the minimum time to hold the stage, e.g. "5m". Must be unset
+	// on the last stage.
+	Duration string `json:"duration,omitempty"`
+}
+
+// RolloutStrategy defines a staged rollout of a new Capp revision.
+type RolloutStrategy struct {
+	Stages []RolloutStage `json:"stages" binding:"required,min=1,dive"`
+
+	// AutoRollback returns traffic to the stable revision when the candidate fails.
+	AutoRollback bool `json:"autoRollback,omitempty"`
+
+	// ProgressDeadline is how long the candidate may take to first become
+	// ready, e.g. "10m". The operator defaults it to 10m.
+	ProgressDeadline string `json:"progressDeadline,omitempty"`
 }
 
 // LogSpec configures log shipping for a Capp.
@@ -244,6 +274,28 @@ type StateStatusResponse struct {
 	LastChange string `json:"lastChange,omitempty"`
 }
 
+// RevisionTrafficResponse is the traffic share routed to a single revision.
+type RevisionTrafficResponse struct {
+	RevisionName string `json:"revisionName"`
+	Percent      int64  `json:"percent"`
+	Tag          string `json:"tag"`
+}
+
+// RolloutStatusResponse is the observed state of a Capp's staged rollout.
+type RolloutStatusResponse struct {
+	StableRevision     string                    `json:"stableRevision,omitempty"`
+	CandidateRevision  string                    `json:"candidateRevision,omitempty"`
+	PinnedRevision     string                    `json:"pinnedRevision,omitempty"`
+	Phase              string                    `json:"phase,omitempty"`
+	StageIndex         int32                     `json:"stageIndex"`
+	HeldPercent        *int64                    `json:"heldPercent,omitempty"`
+	StageStartTime     string                    `json:"stageStartTime,omitempty"`
+	CandidateSince     string                    `json:"candidateSince,omitempty"`
+	CandidateReadyOnce bool                      `json:"candidateReadyOnce,omitempty"`
+	Traffic            []RevisionTrafficResponse `json:"traffic,omitempty"`
+	Message            string                    `json:"message,omitempty"`
+}
+
 // CappStatusResponse is the status sub-object in a CappResponse.
 // It exposes a flattened view of the condition tree that the frontend's
 // Conditions table renders.
@@ -251,6 +303,9 @@ type CappStatusResponse struct {
 	Conditions     []ConditionResponse    `json:"conditions"`
 	EventingStatus EventingStatusResponse `json:"eventingStatus,omitempty"`
 	StateStatus    StateStatusResponse    `json:"stateStatus"`
+
+	// Rollout is the state of the staged rollout. Nil when the operator reports none.
+	Rollout *RolloutStatusResponse `json:"rollout,omitempty"`
 }
 
 // BareCappResponse contains the basic info of a Capp, without the status

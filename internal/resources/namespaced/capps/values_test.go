@@ -159,3 +159,20 @@ func TestGenerateValues_NoContainers(t *testing.T) {
 	assert.Equal(t, "disabled", vals.Spec.State)
 	assert.Empty(t, vals.Spec.ConfigurationSpec.Template.Spec.Containers)
 }
+
+func TestGenerateValues_IncludesRolloutStrategy(t *testing.T) {
+	capp := &cappv1alpha1.Capp{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: "default"},
+		Spec: cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{
+			RolloutStrategy: &cappv1alpha1.RolloutStrategy{
+				Stages: []cappv1alpha1.RolloutStage{{Percent: 10}},
+			},
+		}},
+	}
+
+	out, err := GenerateValues(capp)
+
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "rolloutStrategy")
+	assert.Contains(t, string(out), "percent: 10")
+}

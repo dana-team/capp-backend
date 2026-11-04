@@ -249,6 +249,43 @@ func TestUpdate_PreservesMetadata(t *testing.T) {
 	assert.Equal(t, capp.Finalizers, updated.Finalizers)
 }
 
+func TestUpdate_OmittedStrategyIsPreserved(t *testing.T) {
+	capp := makeCapp("app1", "ns1")
+	capp.Spec.RouteSpec.RolloutStrategy = &cappv1alpha1.RolloutStrategy{
+		Stages: []cappv1alpha1.RolloutStage{{Percent: 50}},
+	}
+	k8sClient := testutil.FakeClient(t, capp)
+	e := testutil.NewEngineHelper(t, k8sClient, New(false, nil, nil, makeSizes()))
+
+	w := e.PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	updated, err := getCapp(t, k8sClient)
+	require.NoError(t, err)
+	assert.Equal(t, capp.Spec.RouteSpec.RolloutStrategy, updated.Spec.RouteSpec.RolloutStrategy)
+}
+
+func TestCreate_RolloutStage_PercentValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		stages string
+		want   int
+	}{
+		{"zero percent is blue-green", `[{"percent":0}]`, http.StatusCreated},
+		{"missing percent", `[{"duration":"5m"},{"percent":100}]`, http.StatusBadRequest},
+		{"above 100", `[{"percent":101}]`, http.StatusBadRequest},
+		{"negative", `[{"percent":-1}]`, http.StatusBadRequest},
+		{"no stages", `[]`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"name":"app1","image":"nginx","routeSpec":{"rolloutStrategy":{"stages":` + tt.stages + `}}}`
+			w := engine(t).Post("/namespaces/ns1/capps", bytes.NewBufferString(body))
+			assert.Equal(t, tt.want, w.Code, w.Body.String())
+		})
+	}
+}
+
 func TestUpdate_GitSyncEnabled_SyncsNewValues(t *testing.T) {
 	meta := cluster.ClusterMeta{Name: "test"}
 	mock := &mockGitOpsSyncer{}
