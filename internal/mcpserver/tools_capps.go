@@ -8,9 +8,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// CappToolSet exposes full CRUD plus sync and migrate for the Capp custom
+// CappToolSet exposes full CRUD plus sync, migrate and rollout actions for the Capp custom
 // resource, mirroring the backend's own capps.Handler routes.
 type CappToolSet struct{}
+
+// cappUpdateDescription is the capp_update tool description.
+const cappUpdateDescription = "Replace an existing Capp's spec. This is a full replacement of everything capp_get returns as editable fields, not a partial patch — fields you omit are cleared, not left as-is. The exception is routeSpec.rolloutStrategy: omitting it keeps the current strategy; use capp_rollout_strategy_remove to remove one. Call capp_get first and send back the full desired state. If Git sync is enabled, the change is also committed to git."
 
 func (CappToolSet) Name() string { return "capps" }
 
@@ -61,6 +64,19 @@ type cappMigrateInput struct {
 	Namespace string `json:"namespace" jsonschema:"the source namespace containing the capp"`
 	Name      string `json:"name" jsonschema:"the capp name to migrate"`
 	capps.MigrateRequest
+}
+
+type cappRolloutInput struct {
+	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
+	Namespace string `json:"namespace" jsonschema:"the namespace containing the capp"`
+	Name      string `json:"name" jsonschema:"the capp name whose rollout to act on"`
+	capps.RolloutActionRequest
+}
+
+type cappRolloutStrategyRemoveInput struct {
+	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
+	Namespace string `json:"namespace" jsonschema:"the namespace containing the capp"`
+	Name      string `json:"name" jsonschema:"the capp name whose rollout strategy to remove"`
 }
 
 func (CappToolSet) Register(s *mcp.Server, be *Backend) {
@@ -117,7 +133,7 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "capp_update",
-		Description: "Replace an existing Capp's spec. This is a full replacement of everything capp_get returns as editable fields, not a partial patch — fields you omit are cleared, not left as-is. Call capp_get first and send back the full desired state. If Git sync is enabled, the change is also committed to git.",
+		Description: cappUpdateDescription,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappUpdateInput) (*mcp.CallToolResult, capps.CappResponse, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -190,6 +206,38 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 		var out capps.MigrateResponse
 		if err := c.Post(ctx, path, in.MigrateRequest, &out); err != nil {
 			return nil, capps.MigrateResponse{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "capp_rollout",
+		Description: "Act on a Capp's staged rollout. action is one of promote (send the candidate 100% of traffic), abort (return all traffic to the stable revision) or retry (restart a Failed, RolledBack or Aborted rollout, or one held by a strategy change). revision must be the current status.rollout.candidateRevision from capp_get. The operator applies the action asynchronously, so check status.rollout with capp_get for the result. An action the status shows cannot apply returns a conflict. A promote of a candidate that is not Ready is accepted, then rejected only by a Warning event on the Capp.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappRolloutInput) (*mcp.CallToolResult, capps.CappResponse, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, capps.CappResponse{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/rollout", in.Cluster, in.Namespace, in.Name)
+		var out capps.CappResponse
+		if err := c.Post(ctx, path, in.RolloutActionRequest, &out); err != nil {
+			return nil, capps.CappResponse{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "capp_rollout_strategy_remove",
+		Description: "Remove a Capp's rollout strategy. This moves live traffic: a Ready candidate that is rolling out is promoted to 100%, otherwise traffic is pinned to the stable revision until a newer revision is Ready. To stop a rollout and keep the strategy, use capp_rollout with action abort. If Git sync is enabled, the change is also committed to git.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappRolloutStrategyRemoveInput) (*mcp.CallToolResult, capps.CappResponse, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, capps.CappResponse{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/rollout/strategy", in.Cluster, in.Namespace, in.Name)
+		var out capps.CappResponse
+		if err := c.Delete(ctx, path, &out); err != nil {
+			return nil, capps.CappResponse{}, err
 		}
 		return nil, out, nil
 	})
