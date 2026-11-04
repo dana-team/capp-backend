@@ -52,9 +52,10 @@ type resourceQuota struct {
 }
 
 type CreateNamespaceRequest struct {
-	Name  string         `json:"name" binding:"required"`
-	Users *[]string      `json:"users,omitempty"`
-	Quota *resourceQuota `json:"quota,omitempty"`
+	Bindings *[]authorization.Binding `json:"bindings,omitempty"`
+	Name     string                   `json:"name" binding:"required"`
+	Users    *[]string                `json:"users,omitempty"`
+	Quota    *resourceQuota           `json:"quota,omitempty"`
 }
 
 type UpdateNamespaceRequest struct {
