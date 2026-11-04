@@ -494,7 +494,7 @@ func policyStore(t *testing.T, change func(*corev1.ConfigMap, *corev1.Namespace)
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: "capp-assignment-team-a", Namespace: "capp-system", UID: "policy-uid", ResourceVersion: "1",
 		Labels:      map[string]string{"rcs.dana.io/authorization": "backend-policy"},
-		Annotations: map[string]string{"rcs.dana.io/namespace-uid": "namespace-uid"},
+		Annotations: map[string]string{authorization.NamespaceUIDAnnotation: "namespace-uid"},
 	}, Data: map[string]string{"policy.json": `{"version":1,"namespace":"team-a","bindings":[{"kind":"User","name":"alice","role":"viewer"},{"kind":"User","name":"editor","role":"editor"},{"kind":"Group","name":"developers","role":"editor"}]}`}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", UID: "namespace-uid", Labels: map[string]string{consts.ManagedNameSpaceLabelKey: consts.ManagedLabelValue}}}
 	if change != nil {

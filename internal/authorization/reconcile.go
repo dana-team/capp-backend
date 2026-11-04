@@ -136,7 +136,7 @@ func (r *Reconciler) reconcile(ctx context.Context, namespace string) error {
 		return nil
 	}
 
-	if cm.Annotations[namespaceUIDAnnotation] != "" {
+	if cm.Annotations[NamespaceUIDAnnotation] != "" {
 		return nil
 	}
 	return r.associateNamespace(ctx, cm, ns)
@@ -150,7 +150,7 @@ func (r *Reconciler) associateNamespace(ctx context.Context, cm *corev1.ConfigMa
 			UID:             cm.UID,
 			ResourceVersion: cm.ResourceVersion,
 			Annotations: map[string]string{
-				namespaceUIDAnnotation: string(ns.UID),
+				NamespaceUIDAnnotation: string(ns.UID),
 			},
 		},
 	}

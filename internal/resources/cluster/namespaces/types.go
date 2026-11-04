@@ -1,5 +1,7 @@
 package namespaces
 
+import "github.com/dana-team/capp-backend/internal/authorization"
+
 // NamespaceListResponse is the response envelope for the list endpoint.
 type NamespaceListResponse struct {
 	Items     []NamespaceItem `json:"items"`
@@ -56,10 +58,14 @@ type CreateNamespaceRequest struct {
 }
 
 type UpdateNamespaceRequest struct {
-	Users *[]string      `json:"users,omitempty"`
-	Quota *resourceQuota `json:"quota,omitempty"`
+	Bindings              *[]authorization.Binding `json:"bindings,omitempty"`
+	PolicyResourceVersion *string                  `json:"policyResourceVersion,omitempty"`
+	Users                 *[]string                `json:"users,omitempty"`
+	Quota                 *resourceQuota           `json:"quota,omitempty"`
 }
 
 type PatchNamespaceRequest struct {
-	Users *[]string `json:"users,omitempty"`
+	Bindings              *[]authorization.Binding `json:"bindings,omitempty"`
+	PolicyResourceVersion *string                  `json:"policyResourceVersion,omitempty"`
+	Users                 *[]string                `json:"users,omitempty"`
 }

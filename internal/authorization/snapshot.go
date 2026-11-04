@@ -3,7 +3,7 @@ package authorization
 import (
 	"slices"
 
-	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -22,7 +22,8 @@ const (
 	AssociationPending   Reason = "AssociationPending"
 )
 
-var namespaceUIDAnnotation = cappv1alpha1.GroupVersion.Group + "/namespace-uid"
+// NamespaceUIDAnnotation binds a policy to one namespace instance.
+const NamespaceUIDAnnotation = consts.CappAPIGroup + "/namespace-uid"
 
 // NamespaceState is a detached observation; callers may modify it safely.
 // Assignment matching and readiness are separate so callers can order denials.

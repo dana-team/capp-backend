@@ -382,7 +382,7 @@ func readyObjects(namespace string) (*corev1.ConfigMap, *corev1.Namespace) {
 	cm := assignmentConfigMap(fmt.Sprintf(`{"version":1,"namespace":%q,"bindings":[{"kind":"User","name":"alice","role":"viewer"},{"kind":"Group","name":"developers","role":"editor"}]}`, namespace))
 	cm.Name = assignmentNamePrefix + namespace
 	cm.UID = types.UID(namespace + "-policy")
-	cm.Annotations = map[string]string{namespaceUIDAnnotation: string(ns.UID)}
+	cm.Annotations = map[string]string{NamespaceUIDAnnotation: string(ns.UID)}
 
 	return cm, ns
 }
