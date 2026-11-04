@@ -17,6 +17,7 @@ func fullCappRequest() CappRequest {
 	timeout := int64(30)
 	min, max, delay := int32(1), int32(5), int32(60)
 	consumers := int32(2)
+	canary, full := int64(10), int64(100)
 	return CappRequest{
 		Name:          "roundtrip-app",
 		State:         "enabled",
@@ -37,8 +38,18 @@ func fullCappRequest() CappRequest {
 			{Name: "FROM_SECRET", ValueFrom: &EnvVarSource{SecretKeyRef: &KeySelector{Name: "s1", Key: "k1"}}},
 			{Name: "FROM_CM", ValueFrom: &EnvVarSource{ConfigMapKeyRef: &KeySelector{Name: "cm1", Key: "k2"}}},
 		},
-		VolumeMounts:     []VolumeMount{{Name: "data", MountPath: "/data"}},
-		RouteSpec:        &RouteSpec{Hostname: "app.example.com", TLSEnabled: true, RouteTimeoutSeconds: &timeout},
+		VolumeMounts: []VolumeMount{{Name: "data", MountPath: "/data"}},
+		RouteSpec: &RouteSpec{
+			Hostname:            "app.example.com",
+			TLSEnabled:          true,
+			RouteTimeoutSeconds: &timeout,
+			// Durations use the form FromK8s emits so they compare equal after the round trip.
+			RolloutStrategy: &RolloutStrategy{
+				Stages:           []RolloutStage{{Percent: &canary, Duration: "5m0s"}, {Percent: &full}},
+				AutoRollback:     true,
+				ProgressDeadline: "10m0s",
+			},
+		},
 		LogSpec:          &LogSpec{Type: "elastic", Host: "es.example.com", Target: "logs", User: "admin", PasswordSecret: "pw", PasswordKey: "password"},
 		NFSVolumes:       []NFSVolume{{Name: "nfs1", Server: "nfs.local", Path: "/export", Capacity: "10Gi"}},
 		SecretVolumes:    []SecretVolume{{Name: "sec-vol", SecretName: "my-secret", MountPath: "/secrets"}},
@@ -95,6 +106,8 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.RouteSpec.Hostname, capp.Spec.RouteSpec.Hostname, "RouteSpec.Hostname not written by ToK8s")
 		assert.Equal(t, req.RouteSpec.TLSEnabled, capp.Spec.RouteSpec.TlsEnabled, "RouteSpec.TLSEnabled not written by ToK8s")
 		assert.Equal(t, req.RouteSpec.RouteTimeoutSeconds, capp.Spec.RouteSpec.RouteTimeoutSeconds, "RouteSpec.RouteTimeoutSeconds not written by ToK8s")
+		require.NotNil(t, capp.Spec.RouteSpec.RolloutStrategy, "RouteSpec.RolloutStrategy not written by ToK8s")
+		assert.Len(t, capp.Spec.RouteSpec.RolloutStrategy.Stages, 2, "RolloutStrategy.Stages not written by ToK8s")
 		assert.Equal(t, req.LogSpec.Type, string(capp.Spec.LogSpec.Type), "LogSpec.Type not written by ToK8s")
 		assert.Equal(t, req.LogSpec.Host, capp.Spec.LogSpec.Host, "LogSpec.Host not written by ToK8s")
 		assert.Equal(t, req.LogSpec.Target, capp.Spec.LogSpec.Target, "LogSpec.Target not written by ToK8s")
@@ -124,6 +137,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.RouteSpec.Hostname, resp.RouteSpec.Hostname, "RouteSpec.Hostname not read by FromK8s")
 		assert.Equal(t, req.RouteSpec.TLSEnabled, resp.RouteSpec.TLSEnabled, "RouteSpec.TLSEnabled not read by FromK8s")
 		assert.Equal(t, req.RouteSpec.RouteTimeoutSeconds, resp.RouteSpec.RouteTimeoutSeconds, "RouteSpec.RouteTimeoutSeconds not read by FromK8s")
+		assert.Equal(t, req.RouteSpec.RolloutStrategy, resp.RouteSpec.RolloutStrategy, "RouteSpec.RolloutStrategy not read by FromK8s")
 		assert.Equal(t, req.LogSpec.Type, resp.LogSpec.Type, "LogSpec.Type not read by FromK8s")
 		assert.Equal(t, req.LogSpec.Host, resp.LogSpec.Host, "LogSpec.Host not read by FromK8s")
 		assert.Equal(t, req.LogSpec.Target, resp.LogSpec.Target, "LogSpec.Target not read by FromK8s")
@@ -187,7 +201,39 @@ func TestCappSpecFieldsHandled(t *testing.T) {
 				"Hostname":            "",
 				"TlsEnabled":          "",
 				"RouteTimeoutSeconds": "",
-				"RolloutStrategy":     "not exposed in the API yet",
+				"RolloutStrategy":     "",
+			},
+		},
+		{
+			name: "RolloutStrategy",
+			typ:  reflect.TypeOf(cappv1alpha1.RolloutStrategy{}),
+			handled: map[string]string{
+				"Stages": "", "AutoRollback": "", "ProgressDeadline": "",
+			},
+		},
+		{
+			name: "RolloutStage",
+			typ:  reflect.TypeOf(cappv1alpha1.RolloutStage{}),
+			handled: map[string]string{
+				"Percent": "", "Duration": "",
+			},
+		},
+		{
+			name: "RolloutStatus",
+			typ:  reflect.TypeOf(cappv1alpha1.RolloutStatus{}),
+			handled: map[string]string{
+				"StableRevision": "", "CandidateRevision": "", "PinnedRevision": "", "Phase": "", "StageIndex": "",
+				"HeldPercent": "", "StageStartTime": "", "CandidateSince": "", "CandidateReadyOnce": "", "Traffic": "",
+				"Message":                "",
+				"PromotionFallback":      "internal operator state, not exposed in API",
+				"CandidateSinceFallback": "internal operator state, not exposed in API",
+			},
+		},
+		{
+			name: "RevisionTraffic",
+			typ:  reflect.TypeOf(cappv1alpha1.RevisionTraffic{}),
+			handled: map[string]string{
+				"RevisionName": "", "Percent": "", "Tag": "",
 			},
 		},
 		{

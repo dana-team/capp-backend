@@ -6,6 +6,7 @@ package capps
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/dana-team/capp-backend/internal/config"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -146,6 +147,9 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets = pullSecrets
 
 	// Route spec.
+	// An omitted strategy is kept: removing one mid-rollout promotes or pins the
+	// candidate, so it must not happen as a side effect of an unrelated update.
+	rolloutStrategy := capp.Spec.RouteSpec.RolloutStrategy
 	capp.Spec.RouteSpec = cappv1alpha1.RouteSpec{}
 	if req.RouteSpec != nil {
 		capp.Spec.RouteSpec = cappv1alpha1.RouteSpec{
@@ -153,7 +157,14 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 			TlsEnabled:          req.RouteSpec.TLSEnabled,
 			RouteTimeoutSeconds: req.RouteSpec.RouteTimeoutSeconds,
 		}
+		if req.RouteSpec.RolloutStrategy != nil {
+			rolloutStrategy, err = rolloutStrategyToK8s(req.RouteSpec.RolloutStrategy)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
+	capp.Spec.RouteSpec.RolloutStrategy = rolloutStrategy
 
 	// Log spec.
 	capp.Spec.LogSpec = cappv1alpha1.LogSpec{}
@@ -336,6 +347,94 @@ func eventSourcesSpecToK8s(spec *EventSourcesSpec) (cappv1alpha1.EventSourcesSpe
 	return cappv1alpha1.EventSourcesSpec{Sources: sources}, nil
 }
 
+// rolloutStrategyToK8s converts the DTO RolloutStrategy into the K8s type. Only
+// what the conversion needs is validated here; the operator's webhook owns the
+// rules on stage order and durations.
+func rolloutStrategyToK8s(strategy *RolloutStrategy) (*cappv1alpha1.RolloutStrategy, error) {
+	out := &cappv1alpha1.RolloutStrategy{
+		Stages:       make([]cappv1alpha1.RolloutStage, 0, len(strategy.Stages)),
+		AutoRollback: strategy.AutoRollback,
+	}
+	for i, stage := range strategy.Stages {
+		if stage.Percent == nil {
+			return nil, fmt.Errorf("rolloutStrategy: stage %d: percent is required", i)
+		}
+		duration, err := parseOptionalDuration(stage.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("rolloutStrategy: stage %d: invalid duration %q: %w", i, stage.Duration, err)
+		}
+		out.Stages = append(out.Stages, cappv1alpha1.RolloutStage{Percent: *stage.Percent, Duration: duration})
+	}
+	deadline, err := parseOptionalDuration(strategy.ProgressDeadline)
+	if err != nil {
+		return nil, fmt.Errorf("rolloutStrategy: invalid progressDeadline %q: %w", strategy.ProgressDeadline, err)
+	}
+	out.ProgressDeadline = deadline
+	return out, nil
+}
+
+// parseOptionalDuration parses a Go duration string. Empty means unset.
+func parseOptionalDuration(value string) (*metav1.Duration, error) {
+	if value == "" {
+		return nil, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return nil, err
+	}
+	return &metav1.Duration{Duration: d}, nil
+}
+
+// rolloutStrategyFromK8s converts a K8s RolloutStrategy into the DTO. Returns nil when unset.
+func rolloutStrategyFromK8s(strategy *cappv1alpha1.RolloutStrategy) *RolloutStrategy {
+	if strategy == nil {
+		return nil
+	}
+	out := &RolloutStrategy{
+		Stages:       make([]RolloutStage, 0, len(strategy.Stages)),
+		AutoRollback: strategy.AutoRollback,
+	}
+	for _, stage := range strategy.Stages {
+		percent := stage.Percent
+		s := RolloutStage{Percent: &percent}
+		if stage.Duration != nil {
+			s.Duration = stage.Duration.Duration.String()
+		}
+		out.Stages = append(out.Stages, s)
+	}
+	if strategy.ProgressDeadline != nil {
+		out.ProgressDeadline = strategy.ProgressDeadline.Duration.String()
+	}
+	return out
+}
+
+// rolloutStatusFromK8s converts a K8s RolloutStatus into the DTO. Returns nil when unset.
+func rolloutStatusFromK8s(status *cappv1alpha1.RolloutStatus) *RolloutStatusResponse {
+	if status == nil {
+		return nil
+	}
+	out := &RolloutStatusResponse{
+		StableRevision:     status.StableRevision,
+		CandidateRevision:  status.CandidateRevision,
+		PinnedRevision:     status.PinnedRevision,
+		Phase:              string(status.Phase),
+		StageIndex:         status.StageIndex,
+		HeldPercent:        status.HeldPercent,
+		CandidateReadyOnce: status.CandidateReadyOnce,
+		Message:            status.Message,
+	}
+	if status.StageStartTime != nil {
+		out.StageStartTime = status.StageStartTime.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	if status.CandidateSince != nil {
+		out.CandidateSince = status.CandidateSince.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	for _, t := range status.Traffic {
+		out.Traffic = append(out.Traffic, RevisionTrafficResponse{RevisionName: t.RevisionName, Percent: t.Percent, Tag: t.Tag})
+	}
+	return out
+}
+
 // sizeFromResources reverse-maps container resource limits back to a t-shirt
 // size label by comparing against the configured size definitions.
 // Returns empty string when no size matches (e.g. custom resource limits).
@@ -508,11 +607,12 @@ func BareFromK8s(meta metav1.ObjectMeta, spec cappv1alpha1.CappSpec, sizes confi
 	}
 
 	// Route spec.
-	if rs := spec.RouteSpec; rs.Hostname != "" || rs.TlsEnabled || rs.RouteTimeoutSeconds != nil {
+	if rs := spec.RouteSpec; rs.Hostname != "" || rs.TlsEnabled || rs.RouteTimeoutSeconds != nil || rs.RolloutStrategy != nil {
 		resp.RouteSpec = &RouteSpec{
 			Hostname:            rs.Hostname,
 			TLSEnabled:          rs.TlsEnabled,
 			RouteTimeoutSeconds: rs.RouteTimeoutSeconds,
+			RolloutStrategy:     rolloutStrategyFromK8s(rs.RolloutStrategy),
 		}
 	}
 
@@ -607,6 +707,7 @@ func buildStatus(capp *cappv1alpha1.Capp) CappStatusResponse {
 		Conditions:     conditions,
 		EventingStatus: eventingStatus,
 		StateStatus:    stateStatus,
+		Rollout:        rolloutStatusFromK8s(capp.Status.Rollout),
 	}
 }
 
