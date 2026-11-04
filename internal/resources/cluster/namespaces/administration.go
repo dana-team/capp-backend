@@ -10,9 +10,7 @@ import (
 	"slices"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
-	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -26,7 +24,7 @@ import (
 	strictjson "sigs.k8s.io/json"
 )
 
-// Administration owns privileged namespace policy storage for one cluster.
+// Administration manages privileged namespace, quota, and policy operations for one cluster.
 // Its client must use the system identity and must never be installed on requests.
 type Administration struct {
 	client                        client.Client
@@ -57,88 +55,78 @@ func NewWithAdministration(logger *zap.Logger, targets map[string]*Administratio
 }
 
 func (h *Handler) updateManagedNamespace(c *gin.Context) {
-	operator, _, allowed := middleware.RequireNamespaceAccess(c)
-	if !allowed {
-		return
-	}
-	if !operator {
-		apierrors.Respond(c, apierrors.NewForbidden(authorization.ErrDenied.Error()))
-		return
-	}
-	var policy *corev1.ConfigMap
-	outcome := "failed"
-	var failureReason metav1.StatusReason
-	defer func() {
-		value, _ := c.Get(string(middleware.CredentialKey))
-		cred, _ := value.(auth.ClusterCredential)
-		caller := cred.ImpersonateUser
-		uid, revision := "", ""
-		if policy != nil {
-			uid, revision = string(policy.UID), policy.ResourceVersion
-		}
-		h.logger.Info("namespace membership mutation", zap.String("caller", caller),
-			zap.String("method", c.Request.Method), zap.String("route", c.FullPath()),
-			zap.String("cluster", c.Param("cluster")), zap.String("namespace", c.Param("namespace")),
-			zap.String("outcome", outcome), zap.String("policyUID", uid), zap.String("policyVersion", revision), zap.String("failureReason", string(failureReason)))
-	}()
-	admin := h.administration[c.Param("cluster")]
+	progress := namespaceOperation{namespace: c.Param("namespace")}
+	defer func() { h.auditNamespaceOperation(c, "namespace membership mutation", &progress) }()
+	admin := h.requireAdministration(c)
 	if admin == nil {
-		apierrors.Respond(c, administrationError(authorization.ErrUnavailable))
 		return
 	}
-	req, err := decodeMembership(c)
-	if err != nil {
-		failureReason = administrationFailureReason(err)
-		apierrors.Respond(c, err)
+	var req UpdateNamespaceRequest
+	if err := decodeNamespaceRequest(c, &req); err != nil {
+		progress.respondError(c, err)
 		return
 	}
 	proposal, err := admin.prepareMembership(c.Request.Context(), c.Param("namespace"), req, c.Request.Method == http.MethodPatch)
 	if proposal != nil {
-		policy = proposal.policy
+		progress.policy = proposal.policy
 	}
 	if err != nil {
-		failureReason = administrationFailureReason(err)
-		apierrors.Respond(c, administrationError(err))
+		progress.respondError(c, err)
 		return
+	}
+	if req.Quota != nil {
+		quota, create, err := admin.prepareQuota(c.Request.Context(), proposal.namespace, *req.Quota)
+		if err != nil {
+			progress.respondError(c, err)
+			return
+		}
+		if create {
+			err = admin.client.Create(c.Request.Context(), quota)
+		} else {
+			err = admin.client.Update(c.Request.Context(), quota)
+		}
+		if err != nil {
+			progress.respondError(c, err)
+			return
+		}
+		progress.completed = append(progress.completed, stepQuotaSaved)
 	}
 	if err := admin.saveMembership(c.Request.Context(), proposal); err != nil {
-		failureReason = administrationFailureReason(err)
-		apierrors.Respond(c, administrationError(err))
+		progress.respondError(c, err)
 		return
 	}
-	policy = proposal.policy
-	outcome = "succeeded"
+	progress.policy = proposal.policy
+	progress.succeeded = true
 	// Membership mutations retain the namespace response envelope.
 	c.JSON(http.StatusOK, NamespaceItem{Name: proposal.namespace.Name, Status: string(proposal.namespace.Status.Phase), CanEdit: true})
 }
 
-func decodeMembership(c *gin.Context) (UpdateNamespaceRequest, error) {
-	var req UpdateNamespaceRequest
+func decodeNamespaceRequest(c *gin.Context, req any) error {
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, authorization.MaxPolicyBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return req, &apierrors.APIError{Code: apierrors.CodeBadRequest, Status: http.StatusRequestEntityTooLarge, Message: "request exceeds 512 KiB"}
+			return &apierrors.APIError{Code: apierrors.CodeBadRequest, Status: http.StatusRequestEntityTooLarge, Message: "request exceeds 512 KiB"}
 		}
-		return req, apierrors.NewBadRequest("cannot read request")
+		return apierrors.NewBadRequest("cannot read request")
 	}
-	strictErrors, err := strictjson.UnmarshalStrict(body, &req)
+	strictErrors, err := strictjson.UnmarshalStrict(body, req)
 	if err != nil || len(strictErrors) != 0 {
-		return req, apierrors.NewBadRequest("invalid namespace membership request")
+		return apierrors.NewBadRequest("invalid namespace membership request")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
-		return req, apierrors.NewBadRequest("request must be an object")
+		return apierrors.NewBadRequest("request must be an object")
 	}
 	users, hasUsers := fields["users"]
 	bindings, hasBindings := fields["bindings"]
 	if (hasUsers && hasBindings) || (hasUsers && string(users) == "null") || (hasBindings && string(bindings) == "null") {
-		return req, apierrors.NewBadRequest("supply either users or bindings as an array")
+		return apierrors.NewBadRequest("supply either users or bindings as an array")
 	}
 	if _, quota := fields["quota"]; quota && c.Request.Method == http.MethodPatch {
-		return req, apierrors.NewBadRequest("PATCH cannot change quota")
+		return apierrors.NewBadRequest("PATCH cannot change quota")
 	}
-	return req, nil
+	return nil
 }
 
 // membershipProposal separates validation and fresh reads from persistence so

@@ -48,6 +48,7 @@ type policyDecision struct {
 	category                          PolicyCategory
 	state                             authorization.NamespaceState
 	operator                          bool
+	namespaceAllowed                  func(string) bool
 }
 
 // BackendPolicy authenticates and prepares requests using the fixed API rules.
@@ -119,6 +120,9 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 			cc := preparePolicyCluster(c, clusterMgr)
 			if cc == nil {
 				return
+			}
+			decision.namespaceAllowed = func(namespace string) bool {
+				return clusterMgr.IsNamespaceAllowed(cc, namespace)
 			}
 		}
 
@@ -290,6 +294,17 @@ func RequireNamespaceAccess(c *gin.Context) (bool, authorization.NamespaceState,
 		return false, authorization.NamespaceState{}, false
 	}
 	return decision.operator, decision.state, true
+}
+
+// RequireNamespaceAllowed checks a body-supplied namespace against the prepared
+// cluster's configured boundary. It does not grant resource or operator authority.
+func RequireNamespaceAllowed(c *gin.Context, namespace string) bool {
+	decision, ok := requestPolicyDecision(c)
+	if !ok || decision.namespaceAllowed == nil || !decision.namespaceAllowed(namespace) {
+		respondPolicyError(c, authorization.ErrDenied)
+		return false
+	}
+	return true
 }
 
 func requestPolicyDecision(c *gin.Context) (policyDecision, bool) {

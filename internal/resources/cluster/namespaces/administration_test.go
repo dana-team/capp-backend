@@ -348,17 +348,22 @@ func invalidateMembershipPolicy(_ *corev1.Namespace, cm *corev1.ConfigMap) {
 	cm.BinaryData = map[string][]byte{"invalid": {1}}
 }
 
-func membershipRouter(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc) *gin.Engine {
+func membershipRouter(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, allowedNamespaces ...string) *gin.Engine {
 	t.Helper()
+	boundary, boundaryErr := cluster.New(nil, nil, zap.NewNop())
+	require.NoError(t, boundaryErr)
 	store, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
 	admin, err := NewAdministration(storage, "capp-system", nil, []string{"system:"})
 	require.NoError(t, err)
 	rules, err := middleware.NewPolicyRoutes("")
 	require.NoError(t, err)
-	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1"}}
+	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1", AllowedNamespaces: allowedNamespaces}}
 	cc.SetHealthy(true)
-	mgr := &testutil.MockClusterManager{GetFn: func(string) (*cluster.ClusterClient, error) { return cc, nil }}
+	mgr := &testutil.MockClusterManager{
+		GetFn:                func(string) (*cluster.ClusterClient, error) { return cc, nil },
+		IsNamespaceAllowedFn: boundary.IsNamespaceAllowed,
+	}
 	identity := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
 		return auth.ClusterCredential{ImpersonateUser: user}, nil
 	}}
@@ -368,8 +373,10 @@ func membershipRouter(t *testing.T, storage client.Client, user string, logger *
 		r.Use(before)
 	}
 	h := NewWithAdministration(logger, map[string]*Administration{"c1": admin})
-	// Mount only completed membership consumers; observation is deliberately unsynchronized.
+	// Mount completed mutation consumers; observation is deliberately unsynchronized.
 	group := r.Group("/api/v1/clusters/:cluster")
+	group.POST("/namespaces", h.create)
+	group.DELETE("/namespaces/:namespace", h.delete)
 	group.PUT("/namespaces/:namespace", h.update)
 	group.PATCH("/namespaces/:namespace", h.patch)
 	return r
@@ -377,7 +384,11 @@ func membershipRouter(t *testing.T, storage client.Client, user string, logger *
 
 func membershipRequest(r http.Handler, method, namespace, body string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(method, "/api/v1/clusters/c1/namespaces/"+namespace, strings.NewReader(body))
+	path := "/api/v1/clusters/c1/namespaces"
+	if method != http.MethodPost {
+		path += "/" + namespace
+	}
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	return w
