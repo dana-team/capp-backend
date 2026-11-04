@@ -640,6 +640,114 @@ components:
           format: int64
           description: Maximum request duration in seconds.
           example: 30
+        rolloutStrategy:
+          allOf:
+            - $ref: '#/components/schemas/RolloutStrategy'
+          description: |
+            Staged rollout of new revisions. Unlike other fields, omitting this
+            on update keeps the current strategy, because removing a strategy
+            mid-rollout moves live traffic. To remove it, use
+            `DELETE .../capps/{name}/rollout/strategy`.
+
+    RolloutStage:
+      type: object
+      required: [percent]
+      properties:
+        percent:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 100
+          description: Candidate revision's share of traffic. 0 tests the candidate on its tag URL only (blue-green).
+          example: 10
+        duration:
+          type: string
+          description: Minimum time to hold the stage. Required on every stage except the last, where it must be unset.
+          example: 5m
+
+    RolloutStrategy:
+      type: object
+      required: [stages]
+      properties:
+        stages:
+          type: array
+          minItems: 1
+          description: Ordered stages with strictly increasing percent. A final stage below 100 holds until promoted or aborted.
+          items:
+            $ref: '#/components/schemas/RolloutStage'
+        autoRollback:
+          type: boolean
+          description: Return traffic to the stable revision when the candidate fails. When false, the rollout is marked Failed.
+        progressDeadline:
+          type: string
+          description: How long the candidate may take to first become ready. The operator defaults it to 10m.
+          example: 10m
+
+    RevisionTrafficResponse:
+      type: object
+      properties:
+        revisionName:
+          type: string
+          example: my-app-00002
+        percent:
+          type: integer
+          format: int64
+          example: 10
+        tag:
+          type: string
+          example: candidate
+
+    RolloutStatusResponse:
+      type: object
+      properties:
+        stableRevision:
+          type: string
+          example: my-app-00001
+        candidateRevision:
+          type: string
+          description: Revision being rolled out. Rollout actions must name it.
+          example: my-app-00002
+        pinnedRevision:
+          type: string
+          description: Stable revision that traffic is pinned to after a strategy removal rejected the candidate.
+        phase:
+          type: string
+          enum: [Stable, Progressing, Holding, Promoting, Failed, RolledBack, Aborted]
+        stageIndex:
+          type: integer
+          format: int32
+        heldPercent:
+          type: integer
+          format: int64
+          description: Candidate's share while a strategy change holds the rollout.
+        stageStartTime:
+          type: string
+          format: date-time
+          description: When Knative confirmed the current stage's traffic split.
+        candidateSince:
+          type: string
+          format: date-time
+          description: Start of the progress deadline.
+        candidateReadyOnce:
+          type: boolean
+        traffic:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevisionTrafficResponse'
+        message:
+          type: string
+
+    RolloutActionRequest:
+      type: object
+      required: [action, revision]
+      properties:
+        action:
+          type: string
+          enum: [promote, abort, retry]
+        revision:
+          type: string
+          description: The current candidate revision (`status.rollout.candidateRevision`).
+          example: my-app-00002
 
     LogSpec:
       type: object
@@ -955,6 +1063,8 @@ components:
           $ref: '#/components/schemas/EventingStatusResponse'
         stateStatus:
           $ref: '#/components/schemas/StateStatusResponse'
+        rollout:
+          $ref: '#/components/schemas/RolloutStatusResponse'
 
     BareCappResponse:
       type: object
@@ -2837,6 +2947,116 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           description: Capp or revision not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: The Capp was modified concurrently; retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/rollout:
+    post:
+      tags: [capps]
+      summary: Promote, abort or retry a rollout
+      description: |
+        Submits an action for the operator to apply asynchronously by setting
+        the `rcs.dana.io/rollout` annotation. Check `status.rollout` for the
+        result.
+
+        Actions that the Capp's status shows cannot apply return 409. The
+        operator rejects a promote of a candidate that is not Ready only with a
+        `RolloutPromoteRejected` Warning event on the Capp, which this API does
+        not expose.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RolloutActionRequest'
+      responses:
+        "202":
+          description: Action submitted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Capp not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: No strategy or candidate, revision is not the current candidate, an action is pending, the phase does not allow the action, or the Capp was modified concurrently.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/rollout/strategy:
+    delete:
+      tags: [capps]
+      summary: Remove a Capp's rollout strategy
+      description: |
+        **This moves live traffic.** If a Ready candidate is rolling out and
+        has not been superseded, the operator promotes it to 100%. Otherwise
+        the operator pins traffic to the stable revision until a newer revision
+        is Ready. A Capp with no strategy is returned unchanged.
+
+        When the Capp is Git-synced, the new values are pushed to the GitOps
+        repository; a push failure is reported in `warnings` and does not undo
+        the removal.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Strategy removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CappResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Capp not found.
           content:
             application/json:
               schema:

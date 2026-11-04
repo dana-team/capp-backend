@@ -374,6 +374,15 @@ type CappRevisionListResponse struct {
 	Total int                    `json:"total"`
 }
 
+// ── Rollout types ─────────────────────────────────────────────────────────────
+
+// RolloutActionRequest is the body for POST .../capps/:name/rollout. Revision
+// must name the current candidate, which binds the action to one rollout.
+type RolloutActionRequest struct {
+	Action   string `json:"action"   binding:"required,oneof=promote abort retry"`
+	Revision string `json:"revision" binding:"required"`
+}
+
 // ── Migration types ───────────────────────────────────────────────────────────
 
 // MigrateRequest is the body for POST .../capps/:name/migrate.
