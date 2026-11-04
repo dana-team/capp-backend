@@ -171,6 +171,17 @@ func TestRespond_K8sAlreadyExists(t *testing.T) {
 	assert.Contains(t, e.Message, "app")
 }
 
+func TestRespond_K8sConflict(t *testing.T) {
+	gr := schema.GroupResource{Group: "rcs.dana.io", Resource: "capps"}
+	w := recordResponse(t, func(c *gin.Context) {
+		Respond(c, k8serrors.NewConflict(gr, "app", errors.New("changed")))
+	})
+	assert.Equal(t, http.StatusConflict, w.Code)
+	e := decodeError(t, w)
+	assert.Equal(t, CodeConflict, e.Code)
+	assert.NotContains(t, e.Message, "rcs.dana.io")
+}
+
 func TestRespond_K8sForbidden(t *testing.T) {
 	w := recordResponse(t, func(c *gin.Context) {
 		Respond(c, k8serrors.NewForbidden(schema.GroupResource{}, "x", fmt.Errorf("denied")))

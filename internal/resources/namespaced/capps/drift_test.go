@@ -186,8 +186,8 @@ func TestCappSpecFieldsHandled(t *testing.T) {
 			handled: map[string]string{
 				"Hostname":            "",
 				"TlsEnabled":          "",
-				"TrafficTarget":       "internal Knative routing, not exposed in API",
 				"RouteTimeoutSeconds": "",
+				"RolloutStrategy":     "not exposed in the API yet",
 			},
 		},
 		{
