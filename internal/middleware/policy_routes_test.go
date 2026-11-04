@@ -55,10 +55,10 @@ func TestPolicyRoutesLookup(t *testing.T) {
 		{http.MethodGet, policyNamespaceRoute + "/secrets", middleware.PolicyNamespace, true},
 		{http.MethodPost, policyNamespaceRoute + "/secrets", middleware.PolicyNamespace, true},
 		{http.MethodPost, policyNamespaceRoute + "/capps/:name/migrate", middleware.PolicyMigration, true},
-		{http.MethodPost, "/api/v1/clusters/:cluster/namespaces", middleware.PolicyDenied, true},
-		{http.MethodPut, policyNamespaceRoute, middleware.PolicyDenied, true},
-		{http.MethodPatch, policyNamespaceRoute, middleware.PolicyDenied, true},
-		{http.MethodDelete, policyNamespaceRoute, middleware.PolicyDenied, true},
+		{http.MethodPost, "/api/v1/clusters/:cluster/namespaces", middleware.PolicyAdministration, true},
+		{http.MethodPut, policyNamespaceRoute, middleware.PolicyAdministration, true},
+		{http.MethodPatch, policyNamespaceRoute, middleware.PolicyAdministration, true},
+		{http.MethodDelete, policyNamespaceRoute, middleware.PolicyAdministration, true},
 		{http.MethodGet, policyNamespaceRoute + "/capps/:name/benchmark", middleware.PolicyDenied, true},
 		{http.MethodPost, policyNamespaceRoute + "/capps/:name/benchmark", middleware.PolicyDenied, true},
 		{http.MethodGet, policyNamespaceRoute + "/capps/:name/metrics/query", middleware.PolicyDenied, true},
@@ -69,7 +69,7 @@ func TestPolicyRoutesLookup(t *testing.T) {
 			rule, exists := rules.Lookup(tt.method, tt.route)
 			require.Equal(t, tt.exists, exists)
 			require.Equal(t, tt.category, rule.Category)
-			if tt.category == middleware.PolicyDenied || tt.category == middleware.PolicyPublic {
+			if tt.category == middleware.PolicyDenied || tt.category == middleware.PolicyPublic || tt.category == middleware.PolicyAdministration {
 				require.Empty(t, rule.AllowedRoles)
 			}
 		})

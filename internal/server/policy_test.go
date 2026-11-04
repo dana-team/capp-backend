@@ -52,11 +52,13 @@ func TestBackendPolicy(t *testing.T) {
 		allowedNamespaces               []string
 		authErr                         error
 		unhealthy, noStore, noExecution bool
+		operator                        bool
 		status                          int
 		code, reason                    string
 	}{
 		{name: "explicitly allowed viewer", method: http.MethodGet, user: "alice", allowedNamespaces: []string{"team-a"}, status: http.StatusOK},
 		{name: "grant outside allowlist", method: http.MethodGet, user: "alice", allowedNamespaces: []string{"team-b"}, status: http.StatusForbidden, code: apierrors.CodeForbidden, reason: apierrors.ReasonPolicyDenied},
+		{name: "operator resource grant", method: http.MethodGet, user: "alice", operator: true, status: http.StatusOK},
 		{name: "viewer read", method: http.MethodGet, user: "alice", status: http.StatusOK},
 		{name: "group editor mutation", method: http.MethodDelete, user: "alice", groups: []string{"developers"}, status: http.StatusOK},
 		{name: "viewer mutation", method: http.MethodDelete, user: "alice", status: http.StatusForbidden, code: apierrors.CodeForbidden, reason: "POLICY_DENIED"},
@@ -80,6 +82,9 @@ func TestBackendPolicy(t *testing.T) {
 			cc.SetHealthy(!tt.unhealthy)
 			cc.Meta.AllowedNamespaces = tt.allowedNamespaces
 			target := middleware.PolicyTarget{Store: store, ExecutionClient: execution}
+			if tt.operator {
+				target.OperatorUsers = []string{tt.user}
+			}
 			if tt.noStore {
 				target.Store = nil
 			}
@@ -116,6 +121,12 @@ func TestBackendPolicy(t *testing.T) {
 			audits := logs.FilterMessage("authorization decision").All()
 			require.Len(t, audits, 1)
 			fields := audits[0].ContextMap()
+			require.Equal(t, tt.operator, fields["operator"])
+			if called {
+				require.Equal(t, "policy", fields["authority"])
+			} else {
+				require.Equal(t, "none", fields["authority"])
+			}
 			require.Equal(t, tt.user, fields["caller"])
 			require.Equal(t, tt.method, fields["method"])
 			require.Equal(t, "/api/v1/clusters/:cluster/namespaces/:namespace/configmaps/:name", fields["route"])
@@ -130,6 +141,107 @@ func TestBackendPolicy(t *testing.T) {
 			encodedLogs, err := json.Marshal(audits)
 			require.NoError(t, err)
 			require.NotContains(t, string(encodedLogs), "private-auth-cause")
+		})
+	}
+}
+
+func TestBackendPolicyOperators(t *testing.T) {
+	store, observations, _ := policyStore(t, nil)
+	unobserved := fake.NewClientset()
+	unsynced, err := authorization.NewStore(unobserved, authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		name, user, method, suffix, clusterName string
+		groups, operatorUsers, operatorGroups   []string
+		allowedNamespaces                       []string
+		synced                                  bool
+		status                                  int
+	}{
+		{name: "operator detail outside allowlist", user: "bob", operatorUsers: []string{"bob"}, allowedNamespaces: []string{"team-b"}, method: http.MethodGet, status: http.StatusForbidden},
+		{name: "allowed operator without observations", user: "bob", operatorUsers: []string{"bob"}, allowedNamespaces: []string{"team-a"}, method: http.MethodPut, status: http.StatusOK},
+		{name: "operator user without observations", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodPut, status: http.StatusOK},
+		{name: "operator group", user: "bob", groups: []string{"admins"}, operatorGroups: []string{"admins"}, method: http.MethodPatch, status: http.StatusOK},
+		{name: "user OR group", user: "bob", operatorUsers: []string{"other"}, groups: []string{"admins"}, operatorGroups: []string{"admins"}, method: http.MethodDelete, status: http.StatusOK},
+		{name: "create decision without body target", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodPost, status: http.StatusOK},
+		{name: "operator detail without observations", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodGet, status: http.StatusOK},
+		{name: "operator discovery without observations", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodGet, suffix: "/", status: http.StatusOK},
+		{name: "empty lists", user: "bob", method: http.MethodPut, status: http.StatusForbidden},
+		{name: "case sensitive user", user: "Bob", operatorUsers: []string{"bob"}, method: http.MethodPut, status: http.StatusForbidden},
+		{name: "case sensitive group", user: "bob", groups: []string{"Admins"}, operatorGroups: []string{"admins"}, method: http.MethodPut, status: http.StatusForbidden},
+		{name: "editor cannot invite", user: "editor", synced: true, method: http.MethodPatch, status: http.StatusForbidden},
+		{name: "operator configuration is cluster scoped", user: "bob", operatorUsers: []string{"bob"}, clusterName: "c2", method: http.MethodPut, status: http.StatusForbidden},
+		{name: "protected target", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodDelete, suffix: "/capp-system", status: http.StatusForbidden},
+		{name: "invalid target", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodPut, suffix: "/Bad_Name", status: http.StatusForbidden},
+		{name: "operator has no resource grant", user: "bob", operatorUsers: []string{"bob"}, synced: true, method: http.MethodGet, suffix: "/team-a/configmaps/item", status: http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := middleware.PolicyTarget{Store: unsynced, OperatorUsers: tt.operatorUsers, OperatorGroups: tt.operatorGroups}
+			if tt.synced {
+				target.Store = store
+			}
+			am := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
+				return auth.ClusterCredential{ImpersonateUser: tt.user, ImpersonateGroups: tt.groups}, nil
+			}}
+			mgr := policyManager(t, nil)
+			get := mgr.GetFn
+			lookups := 0
+			mgr.GetFn = func(name string) (*cluster.ClusterClient, error) {
+				lookups++
+				cc, err := get(name)
+				if cc != nil {
+					cc.Meta.AllowedNamespaces = tt.allowedNamespaces
+				}
+				return cc, err
+			}
+			core, logs := observer.New(zap.InfoLevel)
+			r := policyRouter(t, am, mgr, target, zap.New(core))
+			called := false
+			handler := func(c *gin.Context) {
+				called = true
+				operator, _, allowed := middleware.RequireNamespaceAccess(c)
+				require.True(t, allowed)
+				require.True(t, operator)
+				_, execution := c.Get(string(middleware.K8sClientKey))
+				_, admin := c.Get(string(middleware.AdminK8sClientKey))
+				require.False(t, execution)
+				require.False(t, admin)
+				c.Status(http.StatusOK)
+			}
+			const route = "/api/v1/clusters/:cluster/namespaces"
+			r.Handle(tt.method, route, handler)
+			r.Handle(tt.method, route+"/:namespace", handler)
+			r.Handle(tt.method, route+"/:namespace/configmaps/:name", handler)
+			suffix := tt.suffix
+			if suffix == "" && tt.method != http.MethodPost {
+				suffix = "/team-a"
+			}
+			suffix = strings.TrimSuffix(suffix, "/")
+			observations.ClearActions()
+			clusterName := tt.clusterName
+			if clusterName == "" {
+				clusterName = "c1"
+			}
+			w := policyRequest(r, tt.method, "/api/v1/clusters/"+clusterName+"/namespaces"+suffix, "")
+			require.Equal(t, tt.status, w.Code, w.Body.String())
+			require.Equal(t, tt.status == http.StatusOK, called)
+			require.Empty(t, observations.Actions())
+			require.Empty(t, unobserved.Actions())
+			audits := logs.FilterMessage("authorization decision").All()
+			require.Len(t, audits, 1)
+			fields := audits[0].ContextMap()
+			switch {
+			case !called:
+				require.Equal(t, "none", fields["authority"])
+			case tt.method == http.MethodGet && suffix == "":
+				require.Equal(t, "deferred", fields["authority"])
+				require.Equal(t, true, fields["operator"])
+			default:
+				require.Equal(t, "operator", fields["authority"])
+				require.Equal(t, true, fields["operator"])
+			}
+			if len(tt.operatorUsers) == 0 && len(tt.operatorGroups) == 0 {
+				require.Zero(t, lookups, "nonoperators must be denied before cluster preparation")
+			}
 		})
 	}
 }
@@ -356,6 +468,7 @@ func TestBackendPolicyTargetChanged(t *testing.T) {
 	audits := logs.FilterMessage("authorization decision").All()
 	require.Len(t, audits, 1)
 	require.Equal(t, "denied", audits[0].ContextMap()["outcome"])
+	require.Equal(t, "none", audits[0].ContextMap()["authority"])
 }
 
 func TestBackendPolicyExecutionForbidden(t *testing.T) {

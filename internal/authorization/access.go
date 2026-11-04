@@ -18,15 +18,15 @@ var (
 // Identity must be authenticated and roles must come from the server's API rule.
 // The returned state identifies the policy and namespace used for this decision.
 func (s *Store) Authorize(namespace, username string, groups, allowedRoles []string) (NamespaceState, error) {
-	if len(validation.ValidateNamespaceName(namespace, false)) != 0 || username == "" {
+	if username == "" || len(validation.ValidateNamespaceName(namespace, false)) != 0 {
 		return NamespaceState{}, ErrDenied
 	}
 	state := s.Lookup(namespace)
 	if state.Reason == CacheNotReady {
 		return state, ErrUnavailable
 	}
-	if namespace == s.options.PolicyNamespace || slices.Contains(s.options.ProtectedNamespaces, namespace) {
-		return NamespaceState{}, ErrProtectedNamespace
+	if err := s.CheckTarget(namespace); err != nil {
+		return NamespaceState{}, err
 	}
 	if !state.Allows(username, groups, allowedRoles) {
 		return state, ErrDenied
@@ -38,4 +38,16 @@ func (s *Store) Authorize(namespace, username string, groups, allowedRoles []str
 		return state, ErrDenied
 	}
 	return state, nil
+}
+
+// CheckTarget validates a namespace and its protected exclusions without requiring
+// synchronized observations. It does not grant resource or operator authority.
+func (s *Store) CheckTarget(namespace string) error {
+	if len(validation.ValidateNamespaceName(namespace, false)) != 0 {
+		return ErrDenied
+	}
+	if namespace == s.options.PolicyNamespace || slices.Contains(s.options.ProtectedNamespaces, namespace) {
+		return ErrProtectedNamespace
+	}
+	return nil
 }
