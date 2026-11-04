@@ -30,6 +30,12 @@ var tableCols = []output.Column[apitypes.CappResponse]{
 	{Header: "METRIC", Value: func(c apitypes.CappResponse) string { return c.ScaleSpec.Metric }},
 	{Header: "AGE", Value: func(c apitypes.CappResponse) string { return utils.Age(c.CreatedAt) }},
 	{Header: "UID", Value: func(c apitypes.CappResponse) string { return c.UID }, Wide: true},
+	{Header: "ROLLOUT", Value: func(c apitypes.CappResponse) string {
+		if c.Status.Rollout == nil {
+			return ""
+		}
+		return c.Status.Rollout.Phase
+	}, Wide: true},
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -110,6 +116,9 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 		routeHostname     string
 		routeTLSEnabled   bool
 		routeTimeoutSecs  int64
+		rolloutStages     []string
+		rolloutAutoRB     bool
+		rolloutDeadline   string
 	)
 
 	cmd := &cobra.Command{
@@ -184,6 +193,10 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 				req.RouteSpec = rs
 			}
 
+			if err := applyRolloutFlags(cmd, &req, rolloutStages, rolloutAutoRB, rolloutDeadline); err != nil {
+				return err
+			}
+
 			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps", cluster, ns)
 			var created apitypes.CappResponse
 			if err := h.state.Client.Post(cmd.Context(), path, req, &created); err != nil {
@@ -210,6 +223,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&routeHostname, "hostname", "", "custom DNS hostname for the Capp route")
 	cmd.Flags().BoolVar(&routeTLSEnabled, "tls-enabled", false, "enable TLS for the Capp route (requires --hostname)")
 	cmd.Flags().Int64Var(&routeTimeoutSecs, "timeout-seconds", 0, "maximum request duration for the Capp route, in seconds")
+	addRolloutFlags(cmd, &rolloutStages, &rolloutAutoRB, &rolloutDeadline)
 	parent.AddCommand(cmd)
 }
 
@@ -231,6 +245,9 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		routeHostname     string
 		routeTLSEnabled   bool
 		routeTimeoutSecs  int64
+		rolloutStages     []string
+		rolloutAutoRB     bool
+		rolloutDeadline   string
 	)
 
 	cmd := &cobra.Command{
@@ -322,6 +339,10 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				return err
 			}
 
+			if err := applyRolloutFlags(cmd, &req, rolloutStages, rolloutAutoRB, rolloutDeadline); err != nil {
+				return err
+			}
+
 			putPath := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
 			var updated apitypes.CappResponse
 			if err := h.state.Client.Put(cmd.Context(), putPath, req, &updated); err != nil {
@@ -347,6 +368,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&routeHostname, "hostname", "", "custom DNS hostname for the Capp route (immutable once set: only settable while currently unset)")
 	cmd.Flags().BoolVar(&routeTLSEnabled, "tls-enabled", false, "enable TLS for the Capp route (requires --hostname, existing or new)")
 	cmd.Flags().Int64Var(&routeTimeoutSecs, "timeout-seconds", 0, "maximum request duration for the Capp route, in seconds")
+	addRolloutFlags(cmd, &rolloutStages, &rolloutAutoRB, &rolloutDeadline)
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }

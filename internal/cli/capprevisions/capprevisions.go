@@ -96,6 +96,7 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command)   {}
 func (h *handler) RegisterSyncCommand(parent *cobra.Command)     {}
 func (h *handler) RegisterMigrateCommand(parent *cobra.Command)  {}
 func (h *handler) RegisterRollbackCommand(parent *cobra.Command) {}
+func (h *handler) RegisterRolloutCommand(parent *cobra.Command)  {}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
