@@ -342,8 +342,10 @@ func membershipRouter(t *testing.T, storage client.Client, user string, logger *
 		r.Use(before)
 	}
 	h := NewWithAdministration(logger, map[string]*Administration{"c1": admin})
-	// Mount only completed membership consumers; observation is deliberately unsynchronized.
+	// Mount completed mutation consumers; observation is deliberately unsynchronized.
 	group := r.Group("/api/v1/clusters/:cluster")
+	group.POST("/namespaces", h.create)
+	group.DELETE("/namespaces/:namespace", h.delete)
 	group.PUT("/namespaces/:namespace", h.update)
 	group.PATCH("/namespaces/:namespace", h.patch)
 	return r
@@ -351,7 +353,11 @@ func membershipRouter(t *testing.T, storage client.Client, user string, logger *
 
 func membershipRequest(r http.Handler, method, namespace, body string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(method, "/api/v1/clusters/c1/namespaces/"+namespace, strings.NewReader(body))
+	path := "/api/v1/clusters/c1/namespaces"
+	if method != http.MethodPost {
+		path += "/" + namespace
+	}
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	return w

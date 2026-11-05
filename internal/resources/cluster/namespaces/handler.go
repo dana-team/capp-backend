@@ -246,6 +246,10 @@ func (h *Handler) get(c *gin.Context) {
 // create handles POST /api/v1/clusters/:cluster/namespaces.
 
 func (h *Handler) create(c *gin.Context) {
+	if middleware.UsesBackendPolicy(c) {
+		h.createManagedNamespace(c)
+		return
+	}
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
@@ -455,6 +459,10 @@ func (h *Handler) patch(c *gin.Context) {
 // delete handles DELETE /api/v1/clusters/:cluster/namespaces/:namespace.
 // Rejects deletion when the namespace still contains Capps (409 Conflict).
 func (h *Handler) delete(c *gin.Context) {
+	if middleware.UsesBackendPolicy(c) {
+		h.deleteManagedNamespace(c)
+		return
+	}
 	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
