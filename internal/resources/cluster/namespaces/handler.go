@@ -48,7 +48,8 @@ const (
 
 // Handler implements resources.ResourceHandler for Kubernetes Namespaces.
 type Handler struct {
-	logger *zap.Logger
+	logger         *zap.Logger
+	administration map[string]*Administration
 }
 
 // New returns a ready-to-use namespace Handler.
@@ -282,6 +283,10 @@ func (h *Handler) create(c *gin.Context) {
 // update handles PUT /api/v1/clusters/:cluster/namespaces/:name.
 // This will recreate the rolebinding and resourcequota based on the request body.
 func (h *Handler) update(c *gin.Context) {
+	if middleware.UsesBackendPolicy(c) {
+		h.updateMembership(c)
+		return
+	}
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
@@ -377,6 +382,10 @@ func updateNamespaceRoleBinding(ctx context.Context, adminClient client.Client, 
 // Authorization: any user who can create Capps in the target namespace is
 // allowed to add other users (namespace-scoped access), not just cluster admins.
 func (h *Handler) patch(c *gin.Context) {
+	if middleware.UsesBackendPolicy(c) {
+		h.updateMembership(c)
+		return
+	}
 	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {

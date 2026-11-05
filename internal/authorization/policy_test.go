@@ -13,6 +13,18 @@ import (
 
 const validPolicy = `{"version":1,"namespace":"team-a","bindings":[{"kind":"User","name":"alice","role":"viewer"}]}`
 
+func TestAssignmentBindings(t *testing.T) {
+	assignment, err := ParseAssignment(assignmentConfigMap(validPolicy), "capp-system", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := assignment.Bindings()
+	bindings[0].Role = RoleEditor
+	if assignment.Allows("alice", nil, []string{RoleEditor}) {
+		t.Fatal("mutating returned bindings changed authorization")
+	}
+}
+
 func TestParseAssignment(t *testing.T) {
 	t.Run("binding error index", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -25,7 +37,7 @@ func TestParseAssignment(t *testing.T) {
 			{"duplicate", Binding{Kind: rbacv1.UserKind, Name: "zulu", Role: RoleViewer}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				policy := Policy{Version: 1, Namespace: "team-a", Bindings: []Binding{
+				policy := Policy{Version: PolicySchemaVersion, Namespace: "team-a", Bindings: []Binding{
 					{Kind: rbacv1.UserKind, Name: "zulu", Role: RoleViewer},
 					tc.binding,
 				}}
@@ -67,7 +79,7 @@ func TestParseAssignment(t *testing.T) {
 			{"empty prefix", rbacv1.UserKind, "alice", []string{""}, true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				policy := Policy{Version: 1, Namespace: "team-a", Bindings: []Binding{{Kind: tc.kind, Name: tc.identity, Role: RoleEditor}}}
+				policy := Policy{Version: PolicySchemaVersion, Namespace: "team-a", Bindings: []Binding{{Kind: tc.kind, Name: tc.identity, Role: RoleEditor}}}
 				payload, err := json.Marshal(policy)
 				if err != nil {
 					t.Fatal(err)
@@ -78,6 +90,10 @@ func TestParseAssignment(t *testing.T) {
 				}
 				if err != nil && strings.Contains(err.Error(), tc.identity) {
 					t.Fatalf("error exposes identity: %v", err)
+				}
+				_, err = policy.ConfigMap("capp-system", nil, tc.prefixes)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("ConfigMap() error = %v, want error %v", err, tc.wantErr)
 				}
 			})
 		}
@@ -118,8 +134,8 @@ func TestParseAssignment(t *testing.T) {
 		{"trailing document", validPolicy + `{}`, true},
 		{"malformed", `{`, true},
 		{"null document", `null`, true},
-		{"at payload limit", validPolicy + strings.Repeat(" ", maxPolicyBytes-len(validPolicy)), false},
-		{"over payload limit", validPolicy + strings.Repeat(" ", maxPolicyBytes-len(validPolicy)+1), true},
+		{"at payload limit", validPolicy + strings.Repeat(" ", MaxPolicyBytes-len(validPolicy)), false},
+		{"over payload limit", validPolicy + strings.Repeat(" ", MaxPolicyBytes-len(validPolicy)+1), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

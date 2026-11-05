@@ -279,3 +279,6 @@ func requestPolicyDecision(c *gin.Context) (policyDecision, bool) {
 	return decision, ok && decision.request == c.Request && decision.method == c.Request.Method &&
 		decision.route == c.FullPath() && decision.cluster == c.Param("cluster") && decision.namespace == c.Param("namespace")
 }
+
+// UsesBackendPolicy reports whether the global policy chain selected this mode.
+func UsesBackendPolicy(c *gin.Context) bool { return c.GetBool(string(backendPolicyKey)) }
