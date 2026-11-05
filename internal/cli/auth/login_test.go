@@ -234,7 +234,7 @@ func TestNewLoginCommandLDAPTokenImport(t *testing.T) {
 	ctx := savedLoginContext(t, state)
 	assert.Equal(t, "ldap", ctx.AuthMode)
 	assert.Equal(t, token, ctx.Token)
-	assert.Equal(t, expiresAt, ctx.TokenExpiresAt)
+	assert.True(t, expiresAt.Equal(ctx.TokenExpiresAt), "imported token expiry = %v, want %v", ctx.TokenExpiresAt, expiresAt)
 	assert.Empty(t, ctx.RefreshToken)
 	require.Len(t, state.Cfg.Contexts, 2)
 	assert.Equal(t, old.Contexts[1], state.Cfg.Contexts[1])
