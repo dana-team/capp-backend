@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"slices"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
@@ -37,6 +38,8 @@ const (
 type PolicyTarget struct {
 	Store           *authorization.Store
 	ExecutionClient client.Client
+	OperatorUsers   []string
+	OperatorGroups  []string
 }
 
 type policyDecision struct {
@@ -44,6 +47,7 @@ type policyDecision struct {
 	method, route, cluster, namespace string
 	category                          PolicyCategory
 	state                             authorization.NamespaceState
+	operator                          bool
 }
 
 // BackendPolicy authenticates and prepares requests using the fixed API rules.
@@ -52,6 +56,11 @@ type policyDecision struct {
 // must use their category-specific authorization before accessing resources.
 func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, routes *PolicyRoutes, targets map[string]PolicyTarget, logger *zap.Logger) gin.HandlerFunc {
 	targets = maps.Clone(targets)
+	for name, target := range targets {
+		target.OperatorUsers = slices.Clone(target.OperatorUsers)
+		target.OperatorGroups = slices.Clone(target.OperatorGroups)
+		targets[name] = target
+	}
 	return func(c *gin.Context) {
 		c.Set(string(backendPolicyKey), true)
 		delete(c.Keys, string(K8sClientKey))
@@ -72,7 +81,7 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 		}
 
 		var caller string
-		decision := policyDecision{request: c.Request, method: c.Request.Method, route: c.FullPath(), category: rule.Category}
+		decision := policyDecision{request: c.Request, method: c.Request.Method, route: c.FullPath(), category: rule.Category, cluster: c.Param("cluster"), namespace: c.Param("namespace")}
 		outcome := auditOutcomeDenied
 		defer func() {
 			if c.GetBool(string(policyDeniedKey)) {
@@ -99,6 +108,13 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 			respondPolicyError(c, authorization.ErrDenied)
 			return
 		}
+
+		target := targets[clusterName]
+		decision.operator = target.isOperator(caller, cred.ImpersonateGroups)
+		if rule.Category == PolicyAdministration && !decision.operator {
+			respondPolicyError(c, authorization.ErrDenied)
+			return
+		}
 		if clusterName != "" {
 			var err error
 			decision.cluster, err = preparePolicyCluster(c, clusterMgr)
@@ -109,6 +125,18 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 		}
 
 		switch rule.Category {
+		case PolicyAdministration:
+			decision.namespace = c.Param("namespace")
+			if target.Store == nil {
+				respondPolicyError(c, authorization.ErrUnavailable)
+				return
+			}
+			if decision.namespace != "" || c.Request.Method != http.MethodPost {
+				if err := target.Store.CheckTarget(decision.namespace); err != nil {
+					respondPolicyError(c, err)
+					return
+				}
+			}
 		case PolicyNamespace, PolicyMigration:
 			namespace := c.Param("namespace")
 			if len(validation.ValidateNamespaceName(namespace, false)) != 0 {
@@ -116,24 +144,26 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 				return
 			}
 			decision.namespace = namespace
-			target := targets[clusterName]
 			if target.Store == nil {
 				respondPolicyError(c, authorization.ErrUnavailable)
 				return
 			}
-			state, err := target.Store.Authorize(namespace, caller, cred.ImpersonateGroups, rule.AllowedRoles)
+
+			namespaceDetail := decision.method == http.MethodGet && decision.route == namespacePolicyPath
+			state, err := target.authorizeNamespace(namespace, caller, cred.ImpersonateGroups, rule.AllowedRoles, namespaceDetail && decision.operator)
 			decision.state = state
 			if err != nil {
 				respondPolicyError(c, err)
 				return
 			}
-			if rule.Category == PolicyNamespace {
+			if rule.Category == PolicyNamespace && !namespaceDetail {
 				if target.ExecutionClient == nil {
 					respondPolicyError(c, authorization.ErrUnavailable)
 					return
 				}
 				c.Set(string(K8sClientKey), target.ExecutionClient)
 			}
+
 		case PolicyDiscovery, PolicyAggregate:
 			// These categories prepare identity/target only. Their consumers must
 			// filter each namespace before exposing data or using an execution client.
@@ -153,11 +183,8 @@ func RequireExecution(c *gin.Context) bool {
 	if !c.GetBool(string(backendPolicyKey)) {
 		return true
 	}
-	value, _ := c.Get(string(policyDecisionKey))
-	decision, ok := value.(policyDecision)
-	if !ok || decision.request != c.Request || decision.method != c.Request.Method ||
-		decision.route != c.FullPath() || decision.cluster != c.Param("cluster") ||
-		decision.namespace != c.Param("namespace") || decision.category != PolicyNamespace {
+	decision, ok := requestPolicyDecision(c)
+	if !ok || decision.category != PolicyNamespace || decision.route == namespacePolicyPath {
 		respondPolicyError(c, authorization.ErrDenied)
 		return false
 	}
@@ -207,4 +234,48 @@ func auditPolicy(logger *zap.Logger, caller string, decision policyDecision, out
 		zap.String("outcome", outcome),
 		zap.String("policyUID", string(decision.state.PolicyUID)), zap.String("policyVersion", decision.state.PolicyVersion),
 	)
+}
+
+func (t PolicyTarget) authorizeNamespace(namespace, caller string, groups, roles []string, operatorRead bool) (authorization.NamespaceState, error) {
+	if operatorRead {
+		return authorization.NamespaceState{}, t.Store.CheckTarget(namespace)
+	}
+	return t.Store.Authorize(namespace, caller, groups, roles)
+}
+
+func (t PolicyTarget) isOperator(username string, groups []string) bool {
+	if username == "" {
+		return false
+	}
+	if slices.Contains(t.OperatorUsers, username) {
+		return true
+	}
+	for _, group := range groups {
+		if group != "" && slices.Contains(t.OperatorGroups, group) {
+			return true
+		}
+	}
+	return false
+}
+
+// RequireNamespaceAccess verifies the prepared namespace administration, detail,
+// or discovery decision. It returns operator authority and the read observation.
+// A missing decision never falls back to legacy authorization.
+func RequireNamespaceAccess(c *gin.Context) (bool, authorization.NamespaceState, bool) {
+	decision, ok := requestPolicyDecision(c)
+	validCategory := decision.category == PolicyAdministration ||
+		(decision.category == PolicyNamespace && decision.method == http.MethodGet && decision.route == namespacePolicyPath) ||
+		(decision.category == PolicyDiscovery && c.FullPath() == namespaceCollectionPath)
+	if !c.GetBool(string(backendPolicyKey)) || !ok || !validCategory || (decision.category == PolicyAdministration && !decision.operator) {
+		respondPolicyError(c, authorization.ErrDenied)
+		return false, authorization.NamespaceState{}, false
+	}
+	return decision.operator, decision.state, true
+}
+
+func requestPolicyDecision(c *gin.Context) (policyDecision, bool) {
+	value, _ := c.Get(string(policyDecisionKey))
+	decision, ok := value.(policyDecision)
+	return decision, ok && decision.request == c.Request && decision.method == c.Request.Method &&
+		decision.route == c.FullPath() && decision.cluster == c.Param("cluster") && decision.namespace == c.Param("namespace")
 }

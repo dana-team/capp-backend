@@ -129,6 +129,83 @@ func TestBackendPolicy(t *testing.T) {
 	}
 }
 
+func TestBackendPolicyOperators(t *testing.T) {
+	store, observations, _ := policyStore(t, nil)
+	unobserved := fake.NewClientset()
+	unsynced, err := authorization.NewStore(unobserved, authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		name, user, method, suffix, clusterName string
+		groups, operatorUsers, operatorGroups   []string
+		synced                                  bool
+		status                                  int
+	}{
+		{name: "operator user without observations", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodPut, status: http.StatusOK},
+		{name: "operator group", user: "bob", groups: []string{"admins"}, operatorGroups: []string{"admins"}, method: http.MethodPatch, status: http.StatusOK},
+		{name: "user OR group", user: "bob", operatorUsers: []string{"other"}, groups: []string{"admins"}, operatorGroups: []string{"admins"}, method: http.MethodDelete, status: http.StatusOK},
+		{name: "create decision without body target", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodPost, status: http.StatusOK},
+		{name: "operator detail without observations", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodGet, status: http.StatusOK},
+		{name: "operator discovery without observations", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodGet, suffix: "/", status: http.StatusOK},
+		{name: "empty lists", user: "bob", method: http.MethodPut, status: http.StatusForbidden},
+		{name: "case sensitive user", user: "Bob", operatorUsers: []string{"bob"}, method: http.MethodPut, status: http.StatusForbidden},
+		{name: "case sensitive group", user: "bob", groups: []string{"Admins"}, operatorGroups: []string{"admins"}, method: http.MethodPut, status: http.StatusForbidden},
+		{name: "editor cannot invite", user: "editor", synced: true, method: http.MethodPatch, status: http.StatusForbidden},
+		{name: "operator configuration is cluster scoped", user: "bob", operatorUsers: []string{"bob"}, clusterName: "c2", method: http.MethodPut, status: http.StatusForbidden},
+		{name: "protected target", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodDelete, suffix: "/capp-system", status: http.StatusForbidden},
+		{name: "invalid target", user: "bob", operatorUsers: []string{"bob"}, method: http.MethodPut, suffix: "/Bad_Name", status: http.StatusForbidden},
+		{name: "operator has no resource grant", user: "bob", operatorUsers: []string{"bob"}, synced: true, method: http.MethodGet, suffix: "/team-a/configmaps/item", status: http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := middleware.PolicyTarget{Store: unsynced, OperatorUsers: tt.operatorUsers, OperatorGroups: tt.operatorGroups}
+			if tt.synced {
+				target.Store = store
+			}
+			am := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
+				return auth.ClusterCredential{ImpersonateUser: tt.user, ImpersonateGroups: tt.groups}, nil
+			}}
+			mgr := policyManager(t, nil)
+			get := mgr.GetFn
+			lookups := 0
+			mgr.GetFn = func(name string) (*cluster.ClusterClient, error) { lookups++; return get(name) }
+			r := policyRouter(t, am, mgr, target, zap.NewNop())
+			called := false
+			handler := func(c *gin.Context) {
+				called = true
+				operator, _, allowed := middleware.RequireNamespaceAccess(c)
+				require.True(t, allowed)
+				require.True(t, operator)
+				_, execution := c.Get(string(middleware.K8sClientKey))
+				_, admin := c.Get(string(middleware.AdminK8sClientKey))
+				require.False(t, execution)
+				require.False(t, admin)
+				c.Status(http.StatusOK)
+			}
+			const route = "/api/v1/clusters/:cluster/namespaces"
+			r.Handle(tt.method, route, handler)
+			r.Handle(tt.method, route+"/:namespace", handler)
+			r.Handle(tt.method, route+"/:namespace/configmaps/:name", handler)
+			suffix := tt.suffix
+			if suffix == "" && tt.method != http.MethodPost {
+				suffix = "/team-a"
+			}
+			suffix = strings.TrimSuffix(suffix, "/")
+			observations.ClearActions()
+			clusterName := tt.clusterName
+			if clusterName == "" {
+				clusterName = "c1"
+			}
+			w := policyRequest(r, tt.method, "/api/v1/clusters/"+clusterName+"/namespaces"+suffix, "")
+			require.Equal(t, tt.status, w.Code, w.Body.String())
+			require.Equal(t, tt.status == http.StatusOK, called)
+			require.Empty(t, observations.Actions())
+			require.Empty(t, unobserved.Actions())
+			if len(tt.operatorUsers) == 0 && len(tt.operatorGroups) == 0 {
+				require.Zero(t, lookups, "nonoperators must be denied before cluster preparation")
+			}
+		})
+	}
+}
+
 func TestBackendPolicyPublicAndUnclassified(t *testing.T) {
 	for _, tt := range []struct {
 		name, method, path      string
