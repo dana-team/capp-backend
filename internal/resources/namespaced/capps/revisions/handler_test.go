@@ -250,3 +250,15 @@ func TestRollback_NotGitSynced_SkipsGit(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, 0, mock.syncCalls)
 }
+
+func TestApplyTemplate_StripsRolloutAnnotation(t *testing.T) {
+	live := &cappv1alpha1.Capp{}
+	tmpl := cappv1alpha1.CappTemplate{Annotations: map[string]string{
+		k8s.AnnotationRollout: "abort:app-00002",
+		"keep":                "me",
+	}}
+
+	updated := applyTemplate(live, tmpl)
+
+	assert.Equal(t, map[string]string{"keep": "me"}, updated.Annotations)
+}

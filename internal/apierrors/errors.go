@@ -218,6 +218,8 @@ func translateK8sError(err error) *APIError {
 		return &APIError{Code: CodeNotFound, Message: k8sSafeMessage(err, "resource not found"), Status: http.StatusNotFound, cause: err}
 	case k8serrors.IsAlreadyExists(err):
 		return &APIError{Code: CodeConflict, Message: k8sSafeMessage(err, "resource already exists"), Status: http.StatusConflict, cause: err}
+	case k8serrors.IsConflict(err):
+		return &APIError{Code: CodeConflict, Message: "the resource was modified concurrently; re-read it and try again", Status: http.StatusConflict, cause: err}
 	case k8serrors.IsForbidden(err):
 		return &APIError{Code: CodeForbidden, Message: k8sForbiddenMessage(err), Status: http.StatusForbidden, cause: err}
 	case k8serrors.IsUnauthorized(err):

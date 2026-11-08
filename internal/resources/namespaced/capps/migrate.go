@@ -6,6 +6,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
+	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,6 +26,7 @@ func prepareCapp(source *cappv1alpha1.Capp, targetNamespace, targetHostname stri
 	target := source.DeepCopy()
 	stripMetadata(target, targetNamespace)
 	target.Status = cappv1alpha1.CappStatus{}
+	delete(target.Annotations, k8s.AnnotationRollout)
 
 	if targetHostname != "" {
 		target.Spec.RouteSpec.Hostname = targetHostname

@@ -2,6 +2,7 @@ package capps
 
 import (
 	"testing"
+	"time"
 
 	"github.com/dana-team/capp-backend/internal/config"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -909,4 +910,155 @@ func TestFromK8s_StatusOnlyCappConditions(t *testing.T) {
 		Message:            "ContainerMissing: image not found",
 	}, resp.Status.Conditions[0])
 	assert.Equal(t, "ServingReady", resp.Status.Conditions[1].Type)
+}
+
+// pct returns a pointer to a stage percent, where 0 is a meaningful value.
+func pct(v int64) *int64 { return &v }
+
+func TestToK8s_RolloutStrategy(t *testing.T) {
+	req := CappRequest{Name: "app", Image: "nginx", RouteSpec: &RouteSpec{
+		RolloutStrategy: &RolloutStrategy{
+			Stages: []RolloutStage{
+				{Percent: pct(10), Duration: "5m"},
+				{Percent: pct(50), Duration: "10m"},
+				{Percent: pct(100)},
+			},
+			AutoRollback:     true,
+			ProgressDeadline: "10m",
+		},
+	}}
+
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+
+	got := capp.Spec.RouteSpec.RolloutStrategy
+	require.NotNil(t, got)
+	require.Len(t, got.Stages, 3)
+	assert.Equal(t, int64(10), got.Stages[0].Percent)
+	assert.Equal(t, 5*time.Minute, got.Stages[0].Duration.Duration)
+	assert.Equal(t, 10*time.Minute, got.Stages[1].Duration.Duration)
+	assert.Equal(t, int64(100), got.Stages[2].Percent)
+	assert.Nil(t, got.Stages[2].Duration)
+	assert.True(t, got.AutoRollback)
+	assert.Equal(t, 10*time.Minute, got.ProgressDeadline.Duration)
+}
+
+func TestToK8s_RolloutStrategy_InvalidDuration(t *testing.T) {
+	tests := []struct {
+		name     string
+		strategy RolloutStrategy
+		wantErr  string
+	}{
+		{
+			name:     "stage duration",
+			strategy: RolloutStrategy{Stages: []RolloutStage{{Percent: pct(10), Duration: "soon"}, {Percent: pct(100)}}},
+			wantErr:  "stage 0",
+		},
+		{
+			name:     "progress deadline",
+			strategy: RolloutStrategy{Stages: []RolloutStage{{Percent: pct(100)}}, ProgressDeadline: "soon"},
+			wantErr:  "progressDeadline",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := CappRequest{Name: "app", Image: "nginx", RouteSpec: &RouteSpec{RolloutStrategy: &tt.strategy}}
+			_, err := ToK8s(req, nil, "ns1", minimalSizes())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestToK8s_PreservesStrategyWhenOmitted(t *testing.T) {
+	existingStrategy := &cappv1alpha1.RolloutStrategy{
+		Stages: []cappv1alpha1.RolloutStage{{Percent: 50}},
+	}
+	existing := &cappv1alpha1.Capp{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "ns1"},
+		Spec:       cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{RolloutStrategy: existingStrategy}},
+	}
+
+	t.Run("no routeSpec", func(t *testing.T) {
+		capp, err := ToK8s(CappRequest{Name: "app", Image: "nginx"}, existing, "ns1", minimalSizes())
+		require.NoError(t, err)
+		assert.Equal(t, existingStrategy, capp.Spec.RouteSpec.RolloutStrategy)
+	})
+
+	t.Run("routeSpec without strategy", func(t *testing.T) {
+		req := CappRequest{Name: "app", Image: "nginx", RouteSpec: &RouteSpec{Hostname: "a.example.com"}}
+		capp, err := ToK8s(req, existing, "ns1", minimalSizes())
+		require.NoError(t, err)
+		assert.Equal(t, "a.example.com", capp.Spec.RouteSpec.Hostname)
+		assert.Equal(t, existingStrategy, capp.Spec.RouteSpec.RolloutStrategy)
+	})
+
+	t.Run("new strategy replaces", func(t *testing.T) {
+		req := CappRequest{Name: "app", Image: "nginx", RouteSpec: &RouteSpec{
+			RolloutStrategy: &RolloutStrategy{Stages: []RolloutStage{{Percent: pct(0)}}},
+		}}
+		capp, err := ToK8s(req, existing, "ns1", minimalSizes())
+		require.NoError(t, err)
+		require.Len(t, capp.Spec.RouteSpec.RolloutStrategy.Stages, 1)
+		assert.Equal(t, int64(0), capp.Spec.RouteSpec.RolloutStrategy.Stages[0].Percent)
+	})
+}
+
+func TestFromK8s_StrategyOnlyRouteSpec(t *testing.T) {
+	capp := &cappv1alpha1.Capp{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "ns1"},
+		Spec: cappv1alpha1.CappSpec{RouteSpec: cappv1alpha1.RouteSpec{
+			RolloutStrategy: &cappv1alpha1.RolloutStrategy{
+				Stages: []cappv1alpha1.RolloutStage{{Percent: 0}},
+			},
+		}},
+	}
+
+	resp := FromK8s(capp, minimalSizes())
+
+	require.NotNil(t, resp.RouteSpec)
+	require.NotNil(t, resp.RouteSpec.RolloutStrategy)
+	require.Len(t, resp.RouteSpec.RolloutStrategy.Stages, 1)
+	assert.Equal(t, pct(0), resp.RouteSpec.RolloutStrategy.Stages[0].Percent)
+}
+
+func TestFromK8s_RolloutStatus(t *testing.T) {
+	stageStart := metav1.NewTime(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC))
+	since := metav1.NewTime(time.Date(2026, 11, 4, 11, 0, 0, 0, time.UTC))
+	capp := &cappv1alpha1.Capp{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "ns1"},
+		Status: cappv1alpha1.CappStatus{Rollout: &cappv1alpha1.RolloutStatus{
+			StableRevision:     "app-00001",
+			CandidateRevision:  "app-00002",
+			PinnedRevision:     "app-00000",
+			Phase:              cappv1alpha1.RolloutPhaseHolding,
+			StageIndex:         1,
+			HeldPercent:        pct(10),
+			StageStartTime:     &stageStart,
+			CandidateSince:     &since,
+			CandidateReadyOnce: true,
+			Traffic:            []cappv1alpha1.RevisionTraffic{{RevisionName: "app-00002", Percent: 10, Tag: "candidate"}},
+			Message:            "held",
+		}},
+	}
+
+	got := FromK8s(capp, minimalSizes()).Status.Rollout
+
+	require.NotNil(t, got)
+	assert.Equal(t, RolloutStatusResponse{
+		StableRevision:     "app-00001",
+		CandidateRevision:  "app-00002",
+		PinnedRevision:     "app-00000",
+		Phase:              "Holding",
+		StageIndex:         1,
+		HeldPercent:        pct(10),
+		StageStartTime:     "2026-11-04T12:00:00Z",
+		CandidateSince:     "2026-11-04T11:00:00Z",
+		CandidateReadyOnce: true,
+		Traffic:            []RevisionTrafficResponse{{RevisionName: "app-00002", Percent: 10, Tag: "candidate"}},
+		Message:            "held",
+	}, *got)
+
+	capp.Status.Rollout = nil
+	assert.Nil(t, FromK8s(capp, minimalSizes()).Status.Rollout)
 }

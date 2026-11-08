@@ -63,6 +63,8 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.POST("/:name/sync", h.sync)
 	ns.POST("/:name/migrate", h.migrate)
 	ns.DELETE("/:name/sync", h.unsync)
+	ns.POST("/:name/rollout", h.rolloutAction)
+	ns.DELETE("/:name/rollout/strategy", h.removeRolloutStrategy)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

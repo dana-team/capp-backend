@@ -52,6 +52,8 @@ GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list
        /api/v1/clusters/:cluster/namespaces/:namespace/capps[/:name]         (CRUD)
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — enable Git sync / re-sync; returns 501 if gitops feature is disabled in backend
 DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (auth + cluster) — disable Git sync (deletes values file); returns 501 if gitops feature is disabled in backend
+POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/rollout   (auth + cluster) — promote/abort/retry a staged rollout by setting the rcs.dana.io/rollout annotation; 202, applied asynchronously by the operator; 409 when status shows the action cannot apply
+DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/rollout/strategy  (auth + cluster) — remove the rollout strategy; moves live traffic (operator promotes a Ready candidate, otherwise pins to stable)
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate  (auth + cluster) — migrate Capp to another cluster/namespace with dependent resources; requires targetHostname on copy when source has a custom hostname
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions                     (auth + cluster) — list CappRevisions (label rcs.dana.io/cappName), newest first
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions/:revision           (auth + cluster) — get revision by number (spec.revisionNumber, not object name)
@@ -79,6 +81,8 @@ LDAP clients submit passwords over HTTPS, retain access tokens securely, and log
 **DTO conversion** (`internal/resources/namespaced/capps/convert.go`): Converts between API request/response types and Kubernetes Capp resources. The CLI (`internal/cli/capps/capps.go`) imports these same types directly — no duplication. `TestConvertCoverage` (`drift_test.go`) fails when a new `CappRequest` field is not populated in `fullCappRequest()` and round-tripped through `ToK8s`/`FromK8s`, so every new field must be wired both ways.
 
 List fields are full-replace on update (`PUT`): `env`, `volumeMounts`, `secretVolumes`, `configMapVolumes`, `nfsVolumes` and `imagePullSecrets` are rebuilt from the request, so omitting one clears it. `imagePullSecrets` (`[]string` of Secret names) maps to the pod spec's `imagePullSecrets`; names are validated as DNS-1123 subdomains and must be unique, but Secret existence/type is not checked (same as env and volume refs).
+
+`routeSpec.rolloutStrategy` is the exception to full replace: omitting it on `PUT` keeps the current strategy, because removing one mid-rollout makes the operator promote the candidate or pin traffic. Only `DELETE .../rollout/strategy` removes it. Stage ordering rules belong to the operator webhook and are not duplicated here.
 
 ### Configuration
 
@@ -125,7 +129,7 @@ internal/
     resource/                   # ResourceCommand interface + registry
     root/                       # State struct, root Cobra command, PersistentPreRunE, token refresh
     auth/                       # login, logout, context commands
-    capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync/migrate/rollback
+    capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync/migrate/rollback/rollout
     capprevisions/              # CappRevisions ResourceCommand: get only
   apierrors/                    # Canonical error types
 pkg/k8s/                        # Kubernetes scheme builder (CRD type registration)
@@ -151,6 +155,8 @@ cappctl delete   capps <name>
 cappctl sync     capps <name> [--disable]
 cappctl migrate  capps <name>
 cappctl rollback capps <name> --to-revision N [-y]
+cappctl rollout  capps <name> --action promote|abort|retry [--revision REV] [-y]
+cappctl rollout  capps <name> --remove-strategy [-y]
 cappctl get      capprevisions --capp <name> [revision]
 ```
 
@@ -168,7 +174,7 @@ cappctl get      capprevisions --capp <name> [revision]
 
 **MCP integration:** `cappctl mcp-headers` (`internal/cli/auth/headers.go`) prints `{"Authorization": "Bearer <token>"}` after the same root authentication checks as resource commands. Expired LDAP context tokens produce a nonzero exit and no headers; the helper cannot renew them. Explicit login must precede reconnecting after LDAP expiry. OpenShift refresh remains supported. Configure a Claude Code MCP `headersHelper` with `"headersHelper": "cappctl mcp-headers --context <name>"`; see [the CLI reference](docs/cappctl.md#mcp--claude-code).
 
-**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)`, `RegisterMigrateCommand(parent *cobra.Command)` and `RegisterRollbackCommand(parent *cobra.Command)` — implement as no-ops if sync, migrate or rollback is not applicable to the resource.
+**Adding a resource:** implement `ResourceCommand` interface (`internal/cli/resource/handler.go`), call `registry.Register` in `cmd/cappctl/main.go`. No other files change. The interface requires `RegisterSyncCommand(parent *cobra.Command)`, `RegisterMigrateCommand(parent *cobra.Command)`, `RegisterRollbackCommand(parent *cobra.Command)` and `RegisterRolloutCommand(parent *cobra.Command)` — implement as no-ops if sync, migrate, rollback or rollout is not applicable to the resource.
 
 ### Startup Sequence
 1. Load config (YAML + env vars) → validate

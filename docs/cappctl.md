@@ -558,6 +558,47 @@ cappctl migrate capps my-app --cluster east --namespace team-a \
 # → Migrate Capp "my-app" from east/team-a to west/team-b and DELETE source? [y/N]
 ```
 
+### Staged rollouts
+
+Requires container-app-operator v0.12.0 or later on the cluster. An older CRD silently drops the strategy, so check that it appears in the command's output.
+
+Set a strategy with `create` or `update`. `--rollout-stage` takes `PERCENT[:DURATION]`, is repeatable, and replaces all existing stages. Every stage except the last needs a duration. The operator's webhook rejects other invalid combinations.
+
+```bash
+# Canary: 10% for 5 minutes, 50% for 10 minutes, then 100%
+cappctl update capps my-app \
+  --rollout-stage 10:5m --rollout-stage 50:10m --rollout-stage 100 \
+  --rollout-auto-rollback --rollout-progress-deadline 10m
+
+# Blue-green: the candidate gets no traffic until promoted
+cappctl update capps my-app --rollout-stage 0
+```
+
+Updating a Capp without these flags keeps its strategy. See the rollout's state with `cappctl get capps my-app -o yaml` under `status.rollout`, or its phase with `-o wide`.
+
+Act on the current candidate with `cappctl rollout`:
+
+```bash
+# Prompts with the current candidate's name
+cappctl rollout capps my-app --action promote
+
+# Automation must name the revision
+cappctl rollout capps my-app --action abort --revision my-app-00002 -y
+
+# Restart a Failed, RolledBack or Aborted rollout, or one held by a strategy change
+cappctl rollout capps my-app --action retry
+```
+
+The operator applies actions asynchronously. An action the Capp's status shows cannot apply fails immediately, for example when the revision is no longer the candidate. A promote of a candidate that is not Ready is accepted and then rejected only by a `RolloutPromoteRejected` Warning event, visible with `kubectl get events`.
+
+Removing the strategy moves live traffic:
+
+```bash
+cappctl rollout capps my-app --remove-strategy
+```
+
+If a Ready candidate is rolling out, it is promoted to 100%. Otherwise traffic is pinned to the stable revision until a newer revision is Ready. `cappctl rollback` to a revision that has no strategy removes the strategy with the same effect.
+
 ---
 
 ## Insecure TLS

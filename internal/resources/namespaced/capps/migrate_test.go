@@ -8,6 +8,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/testutil"
+	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -507,4 +508,18 @@ func TestResolveTargetHostname(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestPrepareCapp_StripsRolloutAnnotation(t *testing.T) {
+	source := makeCapp("app1", "ns1")
+	source.Annotations = map[string]string{k8s.AnnotationRollout: "promote:app-00002", "keep": "me"}
+	source.Spec.RouteSpec.RolloutStrategy = &cappv1alpha1.RolloutStrategy{
+		Stages: []cappv1alpha1.RolloutStage{{Percent: 50}},
+	}
+
+	target := prepareCapp(source, "ns2", "")
+
+	assert.NotContains(t, target.Annotations, k8s.AnnotationRollout)
+	assert.Equal(t, "me", target.Annotations["keep"])
+	assert.NotNil(t, target.Spec.RouteSpec.RolloutStrategy)
 }
