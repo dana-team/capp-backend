@@ -299,12 +299,19 @@ func RequireNamespaceAccess(c *gin.Context) (bool, authorization.NamespaceState,
 // RequireNamespaceAllowed checks a body-supplied namespace against the prepared
 // cluster's configured boundary. It does not grant resource or operator authority.
 func RequireNamespaceAllowed(c *gin.Context, namespace string) bool {
-	decision, ok := requestPolicyDecision(c)
-	if !ok || decision.namespaceAllowed == nil || !decision.namespaceAllowed(namespace) {
+	if !NamespaceAllowed(c, namespace) {
 		respondPolicyError(c, authorization.ErrDenied)
 		return false
 	}
 	return true
+}
+
+// NamespaceAllowed checks the prepared cluster boundary without writing a
+// response, so discovery can omit excluded namespaces before reading their data.
+// It does not grant resource or operator authority.
+func NamespaceAllowed(c *gin.Context, namespace string) bool {
+	decision, ok := requestPolicyDecision(c)
+	return ok && decision.namespaceAllowed != nil && decision.namespaceAllowed(namespace)
 }
 
 func requestPolicyDecision(c *gin.Context) (policyDecision, bool) {

@@ -15,6 +15,7 @@ import (
 	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -100,6 +101,10 @@ func TestStoreLookupSnapshot(t *testing.T) {
 		require.Equal(t, tt.role == RoleEditor, tt.state.Allows("alice", nil, []string{RoleEditor}), tt.name)
 	}
 	current.Namespace.Labels[consts.ManagedNameSpaceLabelKey] = "false"
+	bindings := current.Bindings()
+	require.Equal(t, []Binding{{Kind: rbacv1.UserKind, Name: "alice", Role: RoleEditor}}, bindings)
+	bindings[0].Name = "someone"
+	require.True(t, current.Allows("alice", nil, []string{RoleEditor}))
 	current.assignment.bindings[0].Name = "someone"
 	unchanged := s.Lookup(ns.Name)
 	require.Equal(t, consts.ManagedLabelValue, unchanged.Namespace.Labels[consts.ManagedNameSpaceLabelKey])

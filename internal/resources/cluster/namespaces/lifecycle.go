@@ -2,6 +2,7 @@ package namespaces
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 
@@ -73,7 +74,11 @@ func (h *Handler) createManagedNamespace(c *gin.Context) {
 		return
 	}
 	progress.succeeded = true
-	c.JSON(http.StatusCreated, NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), CanEdit: true})
+	item := admin.policyNamespaceItem(ns, policy)
+	if quota != nil {
+		item.Quota = quotaInfoFromK8s(quota)
+	}
+	c.JSON(http.StatusCreated, item)
 }
 
 func (h *Handler) deleteManagedNamespace(c *gin.Context) {
@@ -176,21 +181,9 @@ func (a *Administration) prepareNamespaceDelete(ctx context.Context, name string
 	if ns.Labels[consts.ManagedNameSpaceLabelKey] != consts.ManagedLabelValue {
 		return nil, nil, apierrors.NewConflict("namespace must be managed")
 	}
-	template, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: name, Bindings: []authorization.Binding{}}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	policy, err := a.readOwnedPolicy(ctx, ns)
 	if err != nil {
-		return nil, nil, err
-	}
-	policy := &corev1.ConfigMap{}
-	err = a.client.Get(ctx, client.ObjectKeyFromObject(template), policy)
-	switch {
-	case k8serrors.IsNotFound(err):
-		policy = nil
-	case err != nil:
-		return nil, nil, err
-	default:
-		if err := a.checkPolicyOwnershipAndIdentity(policy, template, ns); err != nil {
-			return nil, policy, err
-		}
+		return nil, policy, err
 	}
 	var capps cappv1alpha1.CappList
 	if err := a.client.List(ctx, &capps, client.InNamespace(name)); err != nil {
@@ -252,6 +245,10 @@ func validatedQuota(quota resourceQuota, ns *corev1.Namespace) (*corev1.Resource
 }
 
 func (op *namespaceOperation) respondError(c *gin.Context, err error) {
+	var readError *namespaceReadError
+	if errors.As(err, &readError) {
+		op.namespace, op.policy = readError.namespace, readError.policy
+	}
 	op.failureReason = administrationFailureReason(err)
 	sanitized := administrationError(err)
 	if len(op.completed) != 0 {

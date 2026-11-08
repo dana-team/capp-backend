@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/cluster"
@@ -45,6 +46,8 @@ const (
 	clusterRoleName = "capp-user"
 	clusterRoleKind = "ClusterRole"
 )
+
+const quotaNameSuffix = "-quota"
 
 // Handler implements resources.ResourceHandler for Kubernetes Namespaces.
 type Handler struct {
@@ -75,6 +78,16 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 // client lists all CAPP-labeled namespaces and a SelfSubjectAccessReview filters
 // to those where the user can create Capps.
 func (h *Handler) list(c *gin.Context) {
+	if middleware.UsesBackendPolicy(c) {
+		operator, _, allowed := middleware.RequireNamespaceAccess(c)
+		if !allowed {
+			return
+		}
+		if operator {
+			h.listManagedNamespaces(c)
+			return
+		}
+	}
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
 		apierrors.Respond(c, apierrors.NewInternal(utils.ErrContextMissing("K8sClientKey")))
@@ -192,6 +205,10 @@ func listK8sNamespaces(
 
 // get handles GET /api/v1/clusters/:cluster/namespaces/:namespace.
 func (h *Handler) get(c *gin.Context) {
+	if middleware.UsesBackendPolicy(c) {
+		h.getManagedNamespace(c)
+		return
+	}
 	namespaceName := c.Param("namespace")
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
@@ -218,7 +235,7 @@ func (h *Handler) get(c *gin.Context) {
 	}
 
 	rq := &corev1.ResourceQuota{}
-	err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: fmt.Sprintf("%s-quota", namespaceName), Namespace: namespaceName}, rq)
+	err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: namespaceName + quotaNameSuffix, Namespace: namespaceName}, rq)
 	if err != nil && !k8serrors.IsNotFound(err) {
 		apierrors.Respond(c, err)
 		return
@@ -269,7 +286,7 @@ func (h *Handler) create(c *gin.Context) {
 	}
 
 	var ns CreateNamespaceRequest
-	if err := c.ShouldBindJSON(&ns); err != nil {
+	if err := decodeLegacyNamespaceRequest(c, &ns); err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
 	}
@@ -279,7 +296,7 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 
-	item := buildNamespaceItem(c.Request.Context(), adminClient, ns.Name, "Active")
+	item := buildNamespaceItem(c.Request.Context(), adminClient, ns.Name, string(corev1.NamespaceActive))
 	item.CanEdit = true
 	c.JSON(http.StatusCreated, item)
 }
@@ -310,7 +327,7 @@ func (h *Handler) update(c *gin.Context) {
 	}
 
 	req := UpdateNamespaceRequest{}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := decodeLegacyNamespaceRequest(c, &req); err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
 	}
@@ -348,7 +365,7 @@ func updateNamespaceQuota(ctx context.Context, adminClient client.Client, ns *co
 	}
 
 	existingQuota := &corev1.ResourceQuota{}
-	err = adminClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-quota", ns.Name), Namespace: ns.Name}, existingQuota)
+	err = adminClient.Get(ctx, client.ObjectKey{Name: ns.Name + quotaNameSuffix, Namespace: ns.Name}, existingQuota)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return adminClient.Create(ctx, newQuotaObj)
@@ -408,7 +425,7 @@ func (h *Handler) patch(c *gin.Context) {
 	}
 
 	req := PatchNamespaceRequest{}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := decodeLegacyNamespaceRequest(c, &req); err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
 	}
@@ -454,6 +471,24 @@ func (h *Handler) patch(c *gin.Context) {
 	canEdit, _ := canAccessNamespaces(c.Request.Context(), userClient, "create")
 	item.CanEdit = canEdit
 	c.JSON(http.StatusOK, item)
+}
+
+// decodeLegacyNamespaceRequest preserves legacy binding behavior while refusing
+// the membership representation that only backend-policy mode understands.
+func decodeLegacyNamespaceRequest(c *gin.Context, req any) error {
+	if err := c.ShouldBindBodyWithJSON(req); err != nil {
+		return err
+	}
+	var fields map[string]any
+	if err := c.ShouldBindBodyWithJSON(&fields); err != nil {
+		return err
+	}
+	for name := range fields {
+		if strings.EqualFold(name, "bindings") {
+			return apierrors.NewBadRequest("bindings requires backend-policy authorization")
+		}
+	}
+	return nil
 }
 
 // delete handles DELETE /api/v1/clusters/:cluster/namespaces/:namespace.
@@ -513,7 +548,7 @@ func buildNamespaceItem(ctx context.Context, adminClient client.Client, nsName, 
 	item := NamespaceItem{Name: nsName, Status: phase}
 
 	rq := &corev1.ResourceQuota{}
-	if err := adminClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-quota", nsName), Namespace: nsName}, rq); err == nil {
+	if err := adminClient.Get(ctx, client.ObjectKey{Name: nsName + quotaNameSuffix, Namespace: nsName}, rq); err == nil {
 		item.Quota = quotaInfoFromK8s(rq)
 	}
 
@@ -627,7 +662,7 @@ func generateResourceQuota(quota resourceQuota, ns *corev1.Namespace) (*corev1.R
 	}
 	quotaObj := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-quota", ns.Name),
+			Name:      ns.Name + quotaNameSuffix,
 			Namespace: ns.Name,
 		},
 		Spec: corev1.ResourceQuotaSpec{

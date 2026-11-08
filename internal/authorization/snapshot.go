@@ -45,6 +45,14 @@ func (s NamespaceState) Ready() bool {
 	return s.Reason == Ready
 }
 
+// Bindings returns a detached copy of the observed policy membership.
+func (s NamespaceState) Bindings() []Binding {
+	if s.assignment == nil {
+		return nil
+	}
+	return s.assignment.Bindings()
+}
+
 func (s NamespaceState) clone() NamespaceState {
 	s.Namespace = s.Namespace.DeepCopy()
 	if s.assignment != nil {

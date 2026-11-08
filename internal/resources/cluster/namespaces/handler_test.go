@@ -171,7 +171,7 @@ func TestGet_ExistingNamespace(t *testing.T) {
 	assert.Equal(t, "Active", resp.Status)
 }
 
-func TestGet_ExistingNamespaceWithQuotaAndUsers(t *testing.T) {
+func TestGetExistingNamespaceWithQuotaAndUsers(t *testing.T) {
 	ns := managedNamespace("my-ns")
 	rq := existingResourceQuota("my-ns", "2", "4Gi")
 	rb := existingRoleBinding("my-ns", []string{"alice", "bob"})
@@ -179,6 +179,9 @@ func TestGet_ExistingNamespaceWithQuotaAndUsers(t *testing.T) {
 	w := e.Get("/namespaces/my-ns")
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	for _, field := range []string{"bindings", "policyResourceVersion", "policyState"} {
+		assert.NotContains(t, w.Body.String(), field)
+	}
 	var resp NamespaceItem
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "my-ns", resp.Name)

@@ -350,10 +350,15 @@ func invalidateMembershipPolicy(_ *corev1.Namespace, cm *corev1.ConfigMap) {
 
 func membershipRouter(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, allowedNamespaces ...string) *gin.Engine {
 	t.Helper()
-	boundary, boundaryErr := cluster.New(nil, nil, zap.NewNop())
-	require.NoError(t, boundaryErr)
 	store, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
+	return membershipRouterWithStore(t, storage, user, logger, before, store, allowedNamespaces...)
+}
+
+func membershipRouterWithStore(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, store *authorization.Store, allowedNamespaces ...string) *gin.Engine {
+	t.Helper()
+	boundary, boundaryErr := cluster.New(nil, nil, zap.NewNop())
+	require.NoError(t, boundaryErr)
 	admin, err := NewAdministration(storage, "capp-system", nil, []string{"system:"})
 	require.NoError(t, err)
 	rules, err := middleware.NewPolicyRoutes("")
@@ -373,19 +378,15 @@ func membershipRouter(t *testing.T, storage client.Client, user string, logger *
 		r.Use(before)
 	}
 	h := NewWithAdministration(logger, map[string]*Administration{"c1": admin})
-	// Mount completed mutation consumers; observation is deliberately unsynchronized.
 	group := r.Group("/api/v1/clusters/:cluster")
-	group.POST("/namespaces", h.create)
-	group.DELETE("/namespaces/:namespace", h.delete)
-	group.PUT("/namespaces/:namespace", h.update)
-	group.PATCH("/namespaces/:namespace", h.patch)
+	h.RegisterRoutes(group)
 	return r
 }
 
 func membershipRequest(r http.Handler, method, namespace, body string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	path := "/api/v1/clusters/c1/namespaces"
-	if method != http.MethodPost {
+	if method != http.MethodPost && namespace != "" {
 		path += "/" + namespace
 	}
 	req := httptest.NewRequest(method, path, strings.NewReader(body))

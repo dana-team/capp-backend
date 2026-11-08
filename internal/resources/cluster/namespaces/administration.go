@@ -74,6 +74,14 @@ func (h *Handler) updateManagedNamespace(c *gin.Context) {
 		progress.respondError(c, err)
 		return
 	}
+	var quotaInfo *QuotaInfo
+	if req.Quota == nil {
+		quotaInfo, err = admin.readQuota(c.Request.Context(), proposal.namespace.Name)
+		if err != nil {
+			progress.respondError(c, err)
+			return
+		}
+	}
 	if req.Quota != nil {
 		quota, create, err := admin.prepareQuota(c.Request.Context(), proposal.namespace, *req.Quota)
 		if err != nil {
@@ -90,6 +98,7 @@ func (h *Handler) updateManagedNamespace(c *gin.Context) {
 			return
 		}
 		progress.completed = append(progress.completed, stepQuotaSaved)
+		quotaInfo = quotaInfoFromK8s(quota)
 	}
 	if err := admin.saveMembership(c.Request.Context(), proposal); err != nil {
 		progress.respondError(c, err)
@@ -97,8 +106,13 @@ func (h *Handler) updateManagedNamespace(c *gin.Context) {
 	}
 	progress.policy = proposal.policy
 	progress.succeeded = true
-	// Membership mutations retain the namespace response envelope.
-	c.JSON(http.StatusOK, NamespaceItem{Name: proposal.namespace.Name, Status: string(proposal.namespace.Status.Phase), CanEdit: true})
+	policy := proposal.policy
+	if proposal.create && !proposal.write {
+		policy = nil
+	}
+	item := admin.policyNamespaceItem(proposal.namespace, policy)
+	item.Quota = quotaInfo
+	c.JSON(http.StatusOK, item)
 }
 
 func decodeNamespaceRequest(c *gin.Context, req any) error {
@@ -219,18 +233,36 @@ func membershipBindings(users *[]string, bindings *[]authorization.Binding) ([]a
 	return result, nil
 }
 
+// readOwnedPolicy fetches the canonical policy without validating its membership.
+// Missing policies return nil; ownership or identity errors retain the fetched
+// policy for auditing. Each call reads storage afresh.
+func (a *Administration) readOwnedPolicy(ctx context.Context, ns *corev1.Namespace) (*corev1.ConfigMap, error) {
+	template, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: ns.Name, Bindings: []authorization.Binding{}}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	if err != nil {
+		return nil, err
+	}
+	policy := &corev1.ConfigMap{}
+	if err := a.client.Get(ctx, client.ObjectKeyFromObject(template), policy); err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return policy, a.checkPolicyOwnershipAndIdentity(policy, template, ns)
+}
+
 func (a *Administration) checkPolicyOwnershipAndIdentity(current, template *corev1.ConfigMap, ns *corev1.Namespace) error {
 	for key, value := range template.Labels {
 		if current.Labels[key] != value {
-			return apierrors.NewConflict("canonical policy is not owned by backend policy")
+			return &policyConflictError{APIError: apierrors.NewConflict("canonical policy is not owned by backend policy")}
 		}
 	}
 	if current.DeletionTimestamp != nil {
-		return apierrors.NewConflict("policy is terminating")
+		return &policyConflictError{APIError: apierrors.NewConflict("policy is terminating")}
 	}
 	associated := current.Annotations[authorization.NamespaceUIDAnnotation]
 	if associated != "" && associated != string(ns.UID) {
-		return apierrors.NewConflict("policy belongs to another namespace instance; manual recovery required")
+		return &policyConflictError{APIError: apierrors.NewConflict("policy belongs to another namespace instance; manual recovery required")}
 	}
 	return nil
 }
@@ -262,6 +294,14 @@ func (a *Administration) saveMembership(ctx context.Context, p *membershipPropos
 	// retry can silently merge a concurrent operator edit or worker association.
 	return a.client.Update(ctx, p.policy)
 }
+
+// policyConflictError identifies ownership, termination, or namespace-UID conflicts,
+// excluding malformed membership and storage errors.
+type policyConflictError struct {
+	*apierrors.APIError
+}
+
+func (e *policyConflictError) Unwrap() error { return e.APIError }
 
 func administrationError(err error) *apierrors.APIError {
 	var apiErr *apierrors.APIError
