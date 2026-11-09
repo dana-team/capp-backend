@@ -10,10 +10,14 @@ RUN go mod download
 
 COPY . .
 
+# VERSION is the release tag (e.g. v0.6.2). The backend warns cappctl clients
+# that are at least one minor release behind it; "dev" disables the check.
+ARG VERSION=dev
+
 # Build a statically linked binary so it runs in the distroless image without
 # glibc. CGO_ENABLED=0 ensures pure Go networking is used (no cgo resolver).
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w" -o bin/server ./cmd/server/...
+    go build -ldflags="-s -w -X main.version=${VERSION}" -o bin/server ./cmd/server/...
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM gcr.io/distroless/static:nonroot

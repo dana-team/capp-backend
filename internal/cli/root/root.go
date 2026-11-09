@@ -2,6 +2,7 @@ package root
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/client"
 	"github.com/dana-team/capp-backend/internal/cli/config"
 	"github.com/dana-team/capp-backend/internal/cli/resource"
+	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 
 // State holds resolved runtime values shared across all sub-commands.
@@ -25,6 +27,41 @@ type State struct {
 	OutputFmt string
 	Cluster   string
 	Namespace string
+
+	// Version is the cappctl build version. Clients from NewClient send it to
+	// the backend, which warns when it is at least one minor release behind.
+	Version string
+
+	// Stderr receives backend warnings. PersistentPreRunE sets it to the
+	// command's error stream when nil; nil at print time means os.Stderr.
+	Stderr io.Writer
+
+	// warned holds warnings already printed by this process.
+	warned map[string]bool
+}
+
+// NewClient returns a backend client that identifies itself as cappctl at
+// s.Version and prints each distinct backend warning (such as an upgrade
+// notice) once to s.Stderr. Use it for every request cappctl makes so that
+// outdated CLIs are told to upgrade.
+func (s *State) NewClient(server, token string, insecure bool) *client.Client {
+	return client.New(server, token, insecure).WithClientVersion(clientversion.Cappctl, s.Version, s.printWarning)
+}
+
+func (s *State) printWarning(msg string) {
+	if s.warned[msg] {
+		return
+	}
+	if s.warned == nil {
+		s.warned = map[string]bool{}
+	}
+	s.warned[msg] = true
+
+	w := s.Stderr
+	if w == nil {
+		w = os.Stderr
+	}
+	fmt.Fprintf(w, "warning: %s\n", msg) //nolint:errcheck
 }
 
 const skipAuthAnnotation = "cappctl/skip-auth"
@@ -48,6 +85,10 @@ func New(state *State, registry *resource.Registry) *cobra.Command {
 		Short:        "CLI for the CAPP backend API",
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if state.Stderr == nil {
+				state.Stderr = cmd.ErrOrStderr()
+			}
+
 			path := cfgPath
 			if path == "" {
 				path = config.DefaultPath()
@@ -95,7 +136,7 @@ func New(state *State, registry *resource.Registry) *cobra.Command {
 				return fmt.Errorf("invalid output format %q: must be one of table|wide|json|yaml", outputFmt)
 			}
 
-			state.Client = client.New(resolvedServer, resolvedToken, insecure)
+			state.Client = state.NewClient(resolvedServer, resolvedToken, insecure)
 			state.Token = resolvedToken
 			state.OutputFmt = outputFmt
 			state.Cluster = resolvedCluster
@@ -166,7 +207,7 @@ func resolveFromContext(
 		namespace = activeCtx.Namespace
 	}
 	if token == "" {
-		token, err = maybeRefresh(cmd, cfg, state.CfgPath, activeCtx, insecure)
+		token, err = maybeRefresh(cmd, state, activeCtx, insecure)
 		if err != nil {
 			return "", "", "", "", err
 		}
@@ -187,8 +228,9 @@ func lookupContext(cfg *config.Config, ctxName string) (*config.Context, error) 
 }
 
 // maybeRefresh rejects expired LDAP tokens without refreshing them. Other modes
-// retain automatic refresh within 30 seconds of expiry, saving successful refreshes.
-func maybeRefresh(cmd *cobra.Command, cfg *config.Config, cfgPath string, ctx *config.Context, insecure bool) (string, error) {
+// retain automatic refresh within 30 seconds of expiry, saving successful
+// refreshes to state.Cfg at state.CfgPath.
+func maybeRefresh(cmd *cobra.Command, state *State, ctx *config.Context, insecure bool) (string, error) {
 	if ctx.Token == "" {
 		return "", nil
 	}
@@ -213,7 +255,7 @@ func maybeRefresh(cmd *cobra.Command, cfg *config.Config, cfgPath string, ctx *c
 		RefreshToken string `json:"refreshToken"`
 	}
 
-	refreshClient := client.New(ctx.Server, "", insecure)
+	refreshClient := state.NewClient(ctx.Server, "", insecure)
 	var pair client.TokenPair
 	if err := refreshClient.Post(cmd.Context(), "/api/v1/auth/refresh", refreshReq{RefreshToken: ctx.RefreshToken}, &pair); err != nil {
 		return "", fmt.Errorf("refreshing token: %w", err)
@@ -222,8 +264,8 @@ func maybeRefresh(cmd *cobra.Command, cfg *config.Config, cfgPath string, ctx *c
 	ctx.Token = pair.AccessToken
 	ctx.RefreshToken = pair.RefreshToken
 	ctx.TokenExpiresAt = pair.ExpiresAt
-	cfg.UpsertContext(*ctx)
-	if err := config.Save(cfgPath, cfg); err != nil {
+	state.Cfg.UpsertContext(*ctx)
+	if err := config.Save(state.CfgPath, state.Cfg); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not save refreshed token: %v\n", err) //nolint:errcheck
 	}
 	return pair.AccessToken, nil

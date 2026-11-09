@@ -15,6 +15,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources"
 	"github.com/dana-team/capp-backend/internal/server/ui"
+	"github.com/dana-team/capp-backend/pkg/clientversion"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
@@ -27,9 +28,11 @@ type Server struct {
 }
 
 // New builds the Gin engine, registers all middleware and routes, and returns
-// a Server ready to call Start on.
+// a Server ready to call Start on. version is the backend build version; it is
+// compared with the version of each known client (see middleware.ClientVersion).
 func New(
 	cfg *config.Config,
+	version string,
 	authMgr auth.AuthManager,
 	clusterMgr cluster.ClusterManager,
 	registry *resources.Registry,
@@ -45,6 +48,7 @@ func New(
 	engine.Use(middleware.Logging(logger))
 	engine.Use(middleware.Metrics())
 	engine.Use(middleware.CORS(cfg.Server.CORSAllowedOrigins))
+	engine.Use(middleware.ClientVersion(version, clientversion.Known, logger))
 
 	if cfg.Auth.RateLimit.Enabled {
 		engine.Use(middleware.RateLimit(

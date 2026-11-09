@@ -15,7 +15,7 @@ import (
 var version = "dev"
 
 func main() {
-	state := &root.State{}
+	state := &root.State{Version: version}
 
 	registry := resource.NewRegistry()
 	registry.Register(capps.New(state))

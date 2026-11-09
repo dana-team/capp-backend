@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 
 // APIError is returned when the server responds with a structured error body.
@@ -40,6 +42,8 @@ type Client struct {
 	token                string
 	httpClient           *http.Client
 	requireSuccessStatus bool
+	userAgent            string
+	onWarning            func(string)
 }
 
 // New creates a Client targeting baseURL with the given bearer token.
@@ -69,6 +73,17 @@ func New(baseURL, token string, insecure bool) *Client {
 func (c *Client) WithToken(token string) *Client {
 	cp := *c
 	cp.token = token
+	return &cp
+}
+
+// WithClientVersion returns a copy that identifies itself to the backend as
+// app at version (User-Agent "<name>/<version>") and calls onWarning with the
+// backend's upgrade warning when the response carries one. The warning is
+// reported for error responses too. onWarning may be nil.
+func (c *Client) WithClientVersion(app clientversion.Client, version string, onWarning func(string)) *Client {
+	cp := *c
+	cp.userAgent = app.UserAgent(version)
+	cp.onWarning = onWarning
 	return &cp
 }
 
@@ -131,12 +146,19 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if c.userAgent != "" {
+		req.Header.Set("User-Agent", c.userAgent)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
+
+	if warning := resp.Header.Get(clientversion.WarningHeader); warning != "" && c.onWarning != nil {
+		c.onWarning(warning)
+	}
 
 	// CheckRedirect is not called for redirects without a Location header.
 	// Preserve the structured API error handling below for 4xx/5xx responses.

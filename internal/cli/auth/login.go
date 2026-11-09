@@ -57,7 +57,7 @@ LDAP credential requests never follow redirects.`,
 				return fmt.Errorf("--context is required")
 			}
 			if authMode == "" {
-				detected, err := detectAuthMode(cmd.Context(), server, insecure)
+				detected, err := detectAuthMode(cmd.Context(), state, server, insecure)
 				if err != nil {
 					return fmt.Errorf("detecting auth mode: %w", err)
 				}
@@ -68,7 +68,7 @@ LDAP credential requests never follow redirects.`,
 				return fmt.Errorf("--password-stdin is only supported in ldap mode")
 			}
 
-			ctx, err := login(cmd, server, authMode, cluster, token, username, password, insecure)
+			ctx, err := login(cmd, state, server, authMode, cluster, token, username, password, insecure)
 			if err != nil {
 				return err
 			}
@@ -99,8 +99,8 @@ LDAP credential requests never follow redirects.`,
 	return cmd
 }
 
-func detectAuthMode(ctx context.Context, server string, insecure bool) (string, error) {
-	c := client.New(server, "", insecure)
+func detectAuthMode(ctx context.Context, state *root.State, server string, insecure bool) (string, error) {
+	c := state.NewClient(server, "", insecure)
 	var resp struct {
 		Mode string `json:"mode"`
 	}
@@ -110,7 +110,7 @@ func detectAuthMode(ctx context.Context, server string, insecure bool) (string, 
 	return resp.Mode, nil
 }
 
-func login(cmd *cobra.Command, server, authMode, cluster, token, username, password string, insecure bool) (config.Context, error) {
+func login(cmd *cobra.Command, state *root.State, server, authMode, cluster, token, username, password string, insecure bool) (config.Context, error) {
 	ctx := config.Context{
 		Server:   server,
 		AuthMode: authMode,
@@ -133,17 +133,17 @@ func login(cmd *cobra.Command, server, authMode, cluster, token, username, passw
 			ctx.Token = token
 			return ctx, nil
 		}
-		return loginOpenShift(cmd, server, insecure, ctx, username, password)
+		return loginOpenShift(cmd, state, server, insecure, ctx, username, password)
 
 	case "ldap":
-		return loginLDAP(cmd, ctx, token, username, insecure)
+		return loginLDAP(cmd, state, ctx, token, username, insecure)
 
 	default:
 		return ctx, fmt.Errorf("unsupported auth mode %q", authMode)
 	}
 }
 
-func loginLDAP(cmd *cobra.Command, ctx config.Context, token, username string, insecure bool) (config.Context, error) {
+func loginLDAP(cmd *cobra.Command, state *root.State, ctx config.Context, token, username string, insecure bool) (config.Context, error) {
 	u, err := url.Parse(ctx.Server)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return ctx, fmt.Errorf("LDAP login requires a certificate-verified HTTPS server")
@@ -177,7 +177,7 @@ func loginLDAP(cmd *cobra.Command, ctx config.Context, token, username string, i
 	if err != nil {
 		return ctx, err
 	}
-	c := client.New(ctx.Server, "", false).WithoutRedirects()
+	c := state.NewClient(ctx.Server, "", false).WithoutRedirects()
 	pair, err := loginWithPassword(cmd.Context(), c, username, password)
 	if err != nil {
 		return ctx, err
@@ -243,8 +243,8 @@ func validateLDAPTokenExpiry(expiresAt time.Time) error {
 	return nil
 }
 
-func loginOpenShift(cmd *cobra.Command, server string, insecure bool, ctx config.Context, username, password string) (config.Context, error) {
-	c := client.New(server, "", insecure)
+func loginOpenShift(cmd *cobra.Command, cli *root.State, server string, insecure bool, ctx config.Context, username, password string) (config.Context, error) {
+	c := cli.NewClient(server, "", insecure)
 
 	// Password path: skip the browser flow entirely.
 	if username != "" || password != "" {
