@@ -2,11 +2,9 @@ package middleware
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"slices"
 
-	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/gin-gonic/gin"
@@ -26,11 +24,7 @@ func ListAggregate(c *gin.Context, list client.ObjectList, options ...client.Lis
 		return false
 	}
 	if err := decision.aggregate(c, list, options...); err != nil {
-		if errors.Is(err, authorization.ErrUnavailable) || errors.Is(err, authorization.ErrDenied) {
-			respondPolicyError(c, err)
-		} else {
-			apierrors.Respond(c, err)
-		}
+		respondPolicyOperationError(c, err)
 		return false
 	}
 	return true

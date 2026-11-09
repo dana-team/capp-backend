@@ -51,6 +51,7 @@ type policyDecision struct {
 	namespaceAllowed                  func(string) bool
 	discover                          func(string) ([]authorization.NamespaceState, bool, error)
 	aggregate                         func(*gin.Context, client.ObjectList, ...client.ListOption) error
+	prepareMigration                  func(string, string) (client.Client, client.Client, error)
 }
 
 // BackendPolicy authenticates and prepares requests using the fixed API rules.
@@ -160,7 +161,12 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 				respondPolicyError(c, err)
 				return
 			}
-			if rule.Category == PolicyNamespace && !namespaceDetail {
+			switch {
+			case rule.Category == PolicyMigration:
+				decision.prepareMigration = func(clusterName, namespace string) (client.Client, client.Client, error) {
+					return migrationClients(clusterMgr, targets, cred, rule.AllowedRoles, decision, clusterName, namespace, logger)
+				}
+			case !namespaceDetail:
 				if target.ExecutionClient == nil {
 					respondPolicyError(c, authorization.ErrUnavailable)
 					return
@@ -245,6 +251,14 @@ func preparePolicyCluster(c *gin.Context, mgr cluster.ClusterManager) *cluster.C
 	meta.Healthy = cc.IsHealthy()
 	c.Set(string(ClusterMetaKey), meta)
 	return cc
+}
+
+func respondPolicyOperationError(c *gin.Context, err error) {
+	if errors.Is(err, authorization.ErrDenied) || errors.Is(err, authorization.ErrUnavailable) {
+		respondPolicyError(c, err)
+		return
+	}
+	apierrors.Respond(c, err)
 }
 
 func respondPolicyError(c *gin.Context, err error) {

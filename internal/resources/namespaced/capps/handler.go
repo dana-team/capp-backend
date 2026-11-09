@@ -2,12 +2,10 @@ package capps
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
@@ -15,7 +13,6 @@ import (
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
-	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -376,9 +373,12 @@ func SyncCappValues(ctx context.Context, gitops GitOpsSyncer, meta cluster.Clust
 
 // migrate handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate
 func (h *Handler) migrate(c *gin.Context) {
-	sourceClient := namespaced.ExtractClient(c)
-	if sourceClient == nil {
-		return
+	var sourceClient client.Client
+	if !middleware.UsesBackendPolicy(c) {
+		sourceClient = namespaced.ExtractClient(c)
+		if sourceClient == nil {
+			return
+		}
 	}
 	namespace := c.Param("namespace")
 	name := c.Param("name")
@@ -400,53 +400,20 @@ func (h *Handler) migrate(c *gin.Context) {
 		return
 	}
 
-	credVal, exists := c.Get(string(middleware.CredentialKey))
-	if !exists {
-		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential not found in context")))
-		return
-	}
-	cred, ok := credVal.(auth.ClusterCredential)
-	if !ok {
-		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential has unexpected type in context")))
-		return
-	}
-
-	targetCC, err := h.clusterMgr.Get(req.TargetCluster)
-	if err != nil {
-		if errors.Is(err, cluster.ErrClusterNotFound) {
-			apierrors.Respond(c, apierrors.NewClusterNotFound(req.TargetCluster))
+	var targetClient client.Client
+	if middleware.UsesBackendPolicy(c) {
+		var ok bool
+		sourceClient, targetClient, ok = middleware.PrepareMigration(c, req.TargetCluster, req.TargetNamespace)
+		if !ok {
 			return
 		}
-		apierrors.Respond(c, apierrors.NewInternal(err))
-		return
+	} else {
+		targetClient = h.legacyMigrationTarget(c, req)
+		if targetClient == nil {
+			return
+		}
 	}
-	if !targetCC.IsHealthy() {
-		apierrors.Respond(c, apierrors.NewClusterUnhealthy(req.TargetCluster))
-		return
-	}
-
-	if !h.clusterMgr.IsNamespaceAllowed(targetCC, req.TargetNamespace) {
-		apierrors.Respond(c, apierrors.NewNamespaceDenied(req.TargetNamespace, req.TargetCluster))
-		return
-	}
-
-	targetClient, err := h.clusterMgr.ClientFor(targetCC, cred)
-	if err != nil {
-		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("build target client: %w", err)))
-		return
-	}
-
 	ctx := c.Request.Context()
-
-	var targetNS corev1.Namespace
-	if err := targetClient.Get(ctx, client.ObjectKey{Name: req.TargetNamespace}, &targetNS); err != nil {
-		if k8serrors.IsNotFound(err) {
-			apierrors.Respond(c, apierrors.NewNotFound("Namespace", req.TargetNamespace))
-			return
-		}
-		apierrors.Respond(c, err)
-		return
-	}
 
 	var sourceCapp cappv1alpha1.Capp
 	if err := sourceClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &sourceCapp); err != nil {

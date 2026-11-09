@@ -2,12 +2,17 @@ package capps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
+	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -183,4 +188,54 @@ func resolveTargetHostname(sourceHostname, targetHostname string, deleteSource b
 	}
 
 	return targetHostname, nil
+}
+
+func (h *Handler) legacyMigrationTarget(c *gin.Context, req MigrateRequest) client.Client {
+	credVal, exists := c.Get(string(middleware.CredentialKey))
+	if !exists {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential not found in context")))
+		return nil
+	}
+	cred, ok := credVal.(auth.ClusterCredential)
+	if !ok {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential has unexpected type in context")))
+		return nil
+	}
+
+	targetCC, err := h.clusterMgr.Get(req.TargetCluster)
+	if err != nil {
+		if errors.Is(err, cluster.ErrClusterNotFound) {
+			apierrors.Respond(c, apierrors.NewClusterNotFound(req.TargetCluster))
+			return nil
+		}
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return nil
+	}
+	if !targetCC.IsHealthy() {
+		apierrors.Respond(c, apierrors.NewClusterUnhealthy(req.TargetCluster))
+		return nil
+	}
+
+	if !h.clusterMgr.IsNamespaceAllowed(targetCC, req.TargetNamespace) {
+		apierrors.Respond(c, apierrors.NewNamespaceDenied(req.TargetNamespace, req.TargetCluster))
+		return nil
+	}
+
+	targetClient, err := h.clusterMgr.ClientFor(targetCC, cred)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("build target client: %w", err)))
+		return nil
+	}
+
+	var targetNS corev1.Namespace
+	if err := targetClient.Get(c.Request.Context(), client.ObjectKey{Name: req.TargetNamespace}, &targetNS); err != nil {
+		if k8serrors.IsNotFound(err) {
+			apierrors.Respond(c, apierrors.NewNotFound("Namespace", req.TargetNamespace))
+			return nil
+		}
+		apierrors.Respond(c, err)
+		return nil
+	}
+
+	return targetClient
 }
