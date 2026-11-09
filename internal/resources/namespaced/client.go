@@ -10,6 +10,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// ListAll lists resources using the active authorization mode. Backend policy
+// collects only permitted namespaces; legacy mode retains the caller's client.
+// It writes an error response and returns false if the collection fails.
+func ListAll(c *gin.Context, list client.ObjectList, options ...client.ListOption) bool {
+	if middleware.UsesBackendPolicy(c) {
+		return middleware.ListAggregate(c, list, options...)
+	}
+	k8sClient := ExtractClient(c)
+	if k8sClient == nil {
+		return false
+	}
+	if err := k8sClient.List(c.Request.Context(), list, options...); err != nil {
+		apierrors.Respond(c, err)
+		return false
+	}
+	return true
+}
+
 // ExtractClient retrieves the scoped K8s client from the Gin context.
 // Backend-policy requests must carry a matching operation/target decision.
 // It responds with an internal error and returns nil if the client is absent

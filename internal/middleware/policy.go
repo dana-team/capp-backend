@@ -50,6 +50,7 @@ type policyDecision struct {
 	operator                          bool
 	namespaceAllowed                  func(string) bool
 	discover                          func(string) ([]authorization.NamespaceState, bool, error)
+	aggregate                         func(*gin.Context, client.ObjectList, ...client.ListOption) error
 }
 
 // BackendPolicy authenticates and prepares requests using the fixed API rules.
@@ -172,8 +173,9 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 				return discoverNamespaces(clusterMgr, targets[name], cred, rule.AllowedRoles, name)
 			}
 		case PolicyAggregate:
-			// Aggregate consumers must authorize each namespace before using
-			// an execution client.
+			decision.aggregate = func(c *gin.Context, list client.ObjectList, options ...client.ListOption) error {
+				return listAggregate(c, list, target, cred, rule.AllowedRoles, decision, logger, options...)
+			}
 		default:
 			respondPolicyError(c, authorization.ErrDenied)
 			return

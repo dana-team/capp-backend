@@ -72,14 +72,8 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 // listAll handles GET /api/v1/clusters/:cluster/capps
 // Lists Capps across all namespaces visible to the caller.
 func (h *Handler) listAll(c *gin.Context) {
-	k8sClient := namespaced.ExtractClient(c)
-	if k8sClient == nil {
-		return
-	}
-
 	var cappList cappv1alpha1.CappList
-	if err := k8sClient.List(c.Request.Context(), &cappList); err != nil {
-		apierrors.Respond(c, err)
+	if !namespaced.ListAll(c, &cappList) {
 		return
 	}
 

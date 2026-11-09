@@ -595,7 +595,7 @@ func policyExecutionMapper() meta.RESTMapper {
 	for _, kind := range []string{"Secret", "SecretList", "ConfigMapList"} {
 		mapper.Add(corev1.SchemeGroupVersion.WithKind(kind), meta.RESTScopeNamespace)
 	}
-	for _, kind := range []string{"Capp", "CappRevision", "CappRevisionList"} {
+	for _, kind := range []string{"Capp", "CappList", "CappRevision", "CappRevisionList"} {
 		mapper.Add(cappv1alpha1.GroupVersion.WithKind(kind), meta.RESTScopeNamespace)
 	}
 	return mapper

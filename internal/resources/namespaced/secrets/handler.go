@@ -48,16 +48,10 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 }
 
 func (h *Handler) listAll(c *gin.Context) {
-	k8sClient := namespaced.ExtractClient(c)
-	if k8sClient == nil {
-		return
-	}
-
 	secretList := &corev1.SecretList{}
-	if err := k8sClient.List(c.Request.Context(), secretList, client.MatchingLabels{
+	if !namespaced.ListAll(c, secretList, client.MatchingLabels{
 		consts.ManagedLabelKey: consts.ManagedLabelValue,
-	}); err != nil {
-		apierrors.Respond(c, err)
+	}) {
 		return
 	}
 
