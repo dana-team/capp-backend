@@ -421,11 +421,15 @@ func validateBenchmarks(b *BenchmarkConfig) []error {
 				"set via CAPP_RESOURCES_BENCHMARKS_VMURLS environment variable",
 		))
 	}
-	if strings.TrimSpace(b.APIKey) == "" {
+	queryURL := strings.TrimSpace(b.QueryURL)
+	if queryURL == "" {
 		errs = append(errs, errors.New(
-			"config: resources.benchmarks.apiKey is required when resources.benchmarks.enabled is true; "+
-				"set via CAPP_RESOURCES_BENCHMARKS_APIKEY environment variable",
+			"config: resources.benchmarks.queryURL is required when resources.benchmarks.enabled is true; "+
+				"set via CAPP_RESOURCES_BENCHMARKS_QUERYURL environment variable",
 		))
+	} else if u, err := url.Parse(queryURL); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		// The value is left out of the error because it can carry a token.
+		errs = append(errs, errors.New("config: resources.benchmarks.queryURL must be an absolute http or https URL"))
 	}
 
 	return errs

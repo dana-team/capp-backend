@@ -467,7 +467,7 @@ func TestValidate_Benchmarks(t *testing.T) {
 			benchmarks: BenchmarkConfig{Enabled: false},
 		},
 		{
-			name: "enabled with image, vmURLs, and apiKey — valid",
+			name: "enabled with image, vmURLs, and queryURL — valid",
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
@@ -475,7 +475,7 @@ func TestValidate_Benchmarks(t *testing.T) {
 					"http://vm-a.monitoring.svc:8428",
 					"http://vm-b.monitoring.svc:8428",
 				},
-				APIKey: "vm-secret",
+				QueryURL: "http://vm-query.monitoring.svc:8428",
 			},
 		},
 		{
@@ -483,7 +483,6 @@ func TestValidate_Benchmarks(t *testing.T) {
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
-				APIKey:  "vm-secret",
 			},
 			wantErr:    true,
 			errContain: "resources.benchmarks.image is required",
@@ -493,20 +492,39 @@ func TestValidate_Benchmarks(t *testing.T) {
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-				APIKey:  "vm-secret",
 			},
 			wantErr:    true,
 			errContain: "resources.benchmarks.vmURLs is required",
 		},
 		{
-			name: "enabled without apiKey — error",
+			name: "queryURL with a token — valid",
+			benchmarks: BenchmarkConfig{
+				Enabled:  true,
+				Image:    "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+				VMURLs:   []string{"http://vm-a.monitoring.svc:8428"},
+				QueryURL: "https://vm.example.com?apikey=abc123",
+			},
+		},
+		{
+			name: "queryURL without a scheme — error",
+			benchmarks: BenchmarkConfig{
+				Enabled:  true,
+				Image:    "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+				VMURLs:   []string{"http://vm-a.monitoring.svc:8428"},
+				QueryURL: "vm.example.com?apikey=abc123",
+			},
+			wantErr:    true,
+			errContain: "resources.benchmarks.queryURL must be an absolute http or https URL",
+		},
+		{
+			name: "enabled without queryURL — error",
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
 				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
 			},
 			wantErr:    true,
-			errContain: "resources.benchmarks.apiKey is required",
+			errContain: "resources.benchmarks.queryURL is required",
 		},
 	}
 	for _, tt := range tests {
@@ -566,8 +584,8 @@ resources:
 	}, cfg.Resources.Benchmarks.VMURLs)
 }
 
-func TestLoad_BenchmarkAPIKeyFromEnv(t *testing.T) {
-	t.Setenv("CAPP_RESOURCES_BENCHMARKS_APIKEY", " vm-secret ")
+func TestLoad_BenchmarkQueryURLFromEnv(t *testing.T) {
+	t.Setenv("CAPP_RESOURCES_BENCHMARKS_QUERYURL", " http://vm-query.monitoring.svc:8428 ")
 	cfg := loadTempConfig(t, `
 clusters:
   - name: dev
@@ -578,9 +596,9 @@ resources:
   benchmarks:
     enabled: true
     image: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
-    apiKey: "from-file"
+    queryURL: "http://from-file:8428"
 `)
-	assert.Equal(t, "vm-secret", cfg.Resources.Benchmarks.APIKey)
+	assert.Equal(t, "http://vm-query.monitoring.svc:8428", cfg.Resources.Benchmarks.QueryURL)
 }
 
 func TestLoad(t *testing.T) {

@@ -1,6 +1,7 @@
 package benchmarks
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,9 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
-func TestQuery_ProxiesToFirstVM(t *testing.T) {
+func TestQuery_ProxiesToQueryURL(t *testing.T) {
 	var gotPath string
 	var got url.Values
 	var gotAuth string
@@ -26,12 +28,15 @@ func TestQuery_ProxiesToFirstVM(t *testing.T) {
 	}))
 	t.Cleanup(vm.Close)
 
-	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("second VictoriaMetrics URL must not be queried")
+	writeTarget := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("write URLs must not be queried")
 	}))
-	t.Cleanup(other.Close)
+	t.Cleanup(writeTarget.Close)
 
-	e := metricsEngine(t, vm.URL, other.URL)
+	cfg := testConfig()
+	cfg.QueryURL = vm.URL
+	cfg.VMURLs = []string{writeTarget.URL}
+	e := testutil.NewEngineHelper(t, testutil.FakeClient(t, testCapp("my-capp")), New(cfg, zap.NewNop()))
 	promql := `rate(k6_http_req_duration{capp="my-capp"}[1m])`
 	w := e.Get(metricsPath("my-capp") + "/query?query=" + url.QueryEscape(promql) + "&time=1700000000&extra=nope")
 	require.Equal(t, http.StatusOK, w.Code)
@@ -39,11 +44,69 @@ func TestQuery_ProxiesToFirstVM(t *testing.T) {
 	assert.Equal(t, promql, got.Get("query"))
 	assert.Equal(t, "1700000000", got.Get("time"))
 	assert.Empty(t, got.Get("extra"))
-	assert.Equal(t, "Bearer vm-secret", gotAuth)
+	assert.Empty(t, gotAuth, "the token is carried in the query URL")
 	assert.JSONEq(t, `{"status":"success","data":{"resultType":"vector","result":[]}}`, w.Body.String())
 }
 
-func TestQuery_OmitsAuthorizationWhenKeyUnset(t *testing.T) {
+func TestQuery_KeepsTokenInQueryURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		suffix   string
+		wantPath string
+	}{
+		{name: "no path", suffix: "?apikey=abc123", wantPath: "/api/v1/query"},
+		{name: "trailing slash", suffix: "/?apikey=abc123", wantPath: "/api/v1/query"},
+		{name: "path prefix", suffix: "/select/0/prometheus?apikey=abc123", wantPath: "/select/0/prometheus/api/v1/query"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath string
+			var got url.Values
+			vm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				got = r.URL.Query()
+				_, _ = w.Write([]byte(`{"status":"success"}`))
+			}))
+			t.Cleanup(vm.Close)
+
+			w := metricsEngine(t, vm.URL+tt.suffix).Get(metricsPath("my-capp") + "/query?query=up&time=5")
+
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, tt.wantPath, gotPath)
+			assert.Equal(t, "abc123", got.Get("apikey"))
+			assert.Equal(t, "up", got.Get("query"))
+			assert.Equal(t, "5", got.Get("time"))
+		})
+	}
+}
+
+func TestQuery_FailureDoesNotExposeURLToken(t *testing.T) {
+	vm := httptest.NewServer(http.NotFoundHandler())
+	vmURL := vm.URL
+	vm.Close()
+
+	core, logs := observer.New(zap.ErrorLevel)
+	cfg := testConfig()
+	cfg.QueryURL = vmURL + "?apikey=abc123"
+	e := testutil.NewEngineHelper(t, testutil.FakeClient(t, testCapp("my-capp")), New(cfg, zap.New(core)))
+
+	w := e.Get(metricsPath("my-capp") + "/query?query=up")
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	assert.NotContains(t, w.Body.String(), "abc123")
+	require.Equal(t, 1, logs.Len())
+	assert.NotContains(t, fmt.Sprint(logs.All()[0].ContextMap()), "abc123")
+}
+
+func TestMetricsEndpoint_InvalidURLDoesNotExposeToken(t *testing.T) {
+	for _, queryURL := range []string{"", "http://[bad?apikey=abc123", "vm.example.com?apikey=abc123"} {
+		_, err := metricsEndpoint(queryURL, vmQueryPath, url.Values{})
+		require.Error(t, err, queryURL)
+		assert.NotContains(t, err.Error(), "abc123")
+	}
+}
+
+func TestQuery_SendsNoAuthorizationHeader(t *testing.T) {
 	var gotAuth string
 	vm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -53,8 +116,7 @@ func TestQuery_OmitsAuthorizationWhenKeyUnset(t *testing.T) {
 	t.Cleanup(vm.Close)
 
 	cfg := testConfig()
-	cfg.VMURLs = []string{vm.URL}
-	cfg.APIKey = ""
+	cfg.QueryURL = vm.URL
 	e := testutil.NewEngineHelper(t, testutil.FakeClient(t, testCapp("my-capp")), New(cfg, zap.NewNop()))
 	w := e.Get(metricsPath("my-capp") + "/query?query=up")
 	require.Equal(t, http.StatusOK, w.Code)
@@ -134,7 +196,7 @@ func TestQuery_CappNotFound(t *testing.T) {
 	t.Cleanup(vm.Close)
 
 	cfg := testConfig()
-	cfg.VMURLs = []string{vm.URL}
+	cfg.QueryURL = vm.URL
 	e := testutil.NewEngineHelper(t, testutil.FakeClient(t), New(cfg, zap.NewNop()))
 	w := e.Get(metricsPath("missing") + "/query?query=up")
 	require.Equal(t, http.StatusNotFound, w.Code)
@@ -168,9 +230,9 @@ func TestQueryRange_MissingParams(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "query, start, end, and step are required")
 }
 
-func metricsEngine(t *testing.T, vmURLs ...string) *testutil.EngineHelper {
+func metricsEngine(t *testing.T, queryURL string) *testutil.EngineHelper {
 	t.Helper()
 	cfg := testConfig()
-	cfg.VMURLs = vmURLs
+	cfg.QueryURL = queryURL
 	return testutil.NewEngineHelper(t, testutil.FakeClient(t, testCapp("my-capp")), New(cfg, zap.NewNop()))
 }
