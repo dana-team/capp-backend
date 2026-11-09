@@ -13,7 +13,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/testutil"
@@ -85,7 +85,7 @@ func TestPrepareMigration(t *testing.T) {
 					return nil
 				},
 			})
-			targets := map[string]middleware.PolicyTarget{"c1": {Store: tc.source, ExecutionClient: execution}, "c2": {Store: tc.destination, ExecutionClient: execution}}
+			targets := map[string]requestpolicy.Target{"c1": {Store: tc.source, ExecutionClient: execution}, "c2": {Store: tc.destination, ExecutionClient: execution}}
 			r := migrationRouter(t, targets, tc.sourceAllowed, tc.destinationAllowed, tc.unhealthy, zap.NewNop())
 			targetCluster, targetNamespace := tc.targetCluster, tc.targetNamespace
 			if targetCluster == "" {
@@ -106,10 +106,10 @@ func TestPrepareMigration(t *testing.T) {
 	t.Run("wrong target decision cannot be reused", func(t *testing.T) {
 		cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1"}}
 		cc.SetHealthy(true)
-		r := policyRouter(t, policyIdentity("editor"), policyManager(t, cc), middleware.PolicyTarget{Store: sourceStore}, zap.NewNop())
+		r := policyRouter(t, policyIdentity("editor"), policyManager(t, cc), requestpolicy.Target{Store: sourceStore}, zap.NewNop())
 		r.POST("/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate", func(c *gin.Context) {
 			c.Params = append(c.Params[:0], gin.Param{Key: "cluster", Value: "c1"}, gin.Param{Key: "namespace", Value: "other"})
-			_, _, ok := middleware.PrepareMigration(c, "c2", "team-a")
+			_, _, ok := requestpolicy.PrepareMigration(c, "c2", "team-a")
 			require.False(t, ok)
 		})
 		w := policyRequest(r, http.MethodPost, "/api/v1/clusters/c1/namespaces/team-a/capps/app/migrate", "")
@@ -164,7 +164,7 @@ func TestMigrateBackendPolicy(t *testing.T) {
 				},
 			})
 			core, logs := observer.New(zap.InfoLevel)
-			r := migrationRouter(t, map[string]middleware.PolicyTarget{"c1": {Store: store, ExecutionClient: source}, "c2": {Store: store, ExecutionClient: destination}}, nil, nil, false, zap.New(core))
+			r := migrationRouter(t, map[string]requestpolicy.Target{"c1": {Store: store, ExecutionClient: source}, "c2": {Store: store, ExecutionClient: destination}}, nil, nil, false, zap.New(core))
 			body, err := json.Marshal(capps.MigrateRequest{TargetCluster: "c2", TargetNamespace: "team-a", DeleteSource: tc.deleteSource})
 			require.NoError(t, err)
 			w := policyRequest(r, http.MethodPost, "/api/v1/clusters/c1/namespaces/team-a/capps/app/migrate", string(body))
@@ -207,7 +207,7 @@ func TestMigrateBackendPolicy(t *testing.T) {
 	}
 }
 
-func migrationRouter(t *testing.T, targets map[string]middleware.PolicyTarget, sourceAllowed, destinationAllowed []string, unhealthy bool, logger *zap.Logger) *gin.Engine {
+func migrationRouter(t *testing.T, targets map[string]requestpolicy.Target, sourceAllowed, destinationAllowed []string, unhealthy bool, logger *zap.Logger) *gin.Engine {
 	t.Helper()
 	source := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1", AllowedNamespaces: sourceAllowed}}
 	source.SetHealthy(true)
@@ -224,10 +224,10 @@ func migrationRouter(t *testing.T, targets map[string]middleware.PolicyTarget, s
 			return nil, cluster.ErrClusterNotFound
 		}
 	}
-	rules, err := middleware.NewPolicyRoutes("")
+	rules, err := requestpolicy.NewRoutes("")
 	require.NoError(t, err)
 	r := gin.New()
-	r.Use(middleware.BackendPolicy(policyIdentity("editor"), mgr, rules, targets, logger))
+	r.Use(requestpolicy.New(policyIdentity("editor"), mgr, rules, targets, logger))
 	capps.New(false, nil, mgr, config.CappSizes{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
 	return r
 }
@@ -259,9 +259,9 @@ func TestPrepareMigrationNamespaceIsolation(t *testing.T) {
 	})
 	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1"}}
 	cc.SetHealthy(true)
-	r := policyRouter(t, policyIdentity("editor"), policyManager(t, cc), middleware.PolicyTarget{Store: store, ExecutionClient: execution}, zap.NewNop())
+	r := policyRouter(t, policyIdentity("editor"), policyManager(t, cc), requestpolicy.Target{Store: store, ExecutionClient: execution}, zap.NewNop())
 	r.POST("/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate", func(c *gin.Context) {
-		source, destination, ok := middleware.PrepareMigration(c, "c1", "team-b")
+		source, destination, ok := requestpolicy.PrepareMigration(c, "c1", "team-b")
 		require.True(t, ok)
 		require.NoError(t, source.List(c.Request.Context(), &corev1.SecretList{}))
 		require.NoError(t, destination.List(c.Request.Context(), &corev1.SecretList{}))
@@ -275,7 +275,7 @@ func TestPrepareMigrationNamespaceIsolation(t *testing.T) {
 
 func TestPrepareMigrationCredentials(t *testing.T) {
 	store, _, _ := policyStore(t, nil)
-	targets := make(map[string]middleware.PolicyTarget)
+	targets := make(map[string]requestpolicy.Target)
 	for _, name := range []string{"c1", "c2"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer "+name+"-token" || r.Header.Get(transport.ImpersonateUserHeader) != "" {
@@ -304,7 +304,7 @@ func TestPrepareMigrationCredentials(t *testing.T) {
 		t.Cleanup(server.Close)
 		clients, err := cluster.NewSystemClients(&cluster.ClusterClient{RestConfig: &rest.Config{Host: server.URL, BearerToken: name + "-token", Impersonate: rest.ImpersonationConfig{UserName: "caller"}}, Scheme: testutil.TestScheme(t)})
 		require.NoError(t, err)
-		targets[name] = middleware.PolicyTarget{Store: store, ExecutionClient: clients.Resources}
+		targets[name] = requestpolicy.Target{Store: store, ExecutionClient: clients.Resources}
 	}
 	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1"}}
 	cc.SetHealthy(true)
@@ -314,12 +314,12 @@ func TestPrepareMigrationCredentials(t *testing.T) {
 		target.SetHealthy(true)
 		return target, nil
 	}
-	rules, err := middleware.NewPolicyRoutes("")
+	rules, err := requestpolicy.NewRoutes("")
 	require.NoError(t, err)
 	r := gin.New()
-	r.Use(middleware.BackendPolicy(policyIdentity("editor"), mgr, rules, targets, zap.NewNop()))
+	r.Use(requestpolicy.New(policyIdentity("editor"), mgr, rules, targets, zap.NewNop()))
 	r.POST("/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate", func(c *gin.Context) {
-		source, destination, ok := middleware.PrepareMigration(c, "c2", "team-a")
+		source, destination, ok := requestpolicy.PrepareMigration(c, "c2", "team-a")
 		require.True(t, ok)
 		for i, execution := range []client.Client{source, destination} {
 			var secret corev1.Secret

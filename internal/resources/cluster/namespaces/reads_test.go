@@ -363,7 +363,7 @@ func TestHandlerCreateManagedNamespaceResponse(t *testing.T) {
 	require.True(t, item.CanEdit)
 }
 
-func TestHandlerLegacyBindings(t *testing.T) {
+func TestHandlerKubernetesBindings(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch} {
 		for _, bindings := range []string{"[]", "null"} {
 			t.Run(method+bindings, func(t *testing.T) {

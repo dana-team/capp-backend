@@ -1,4 +1,4 @@
-package middleware
+package policy
 
 import (
 	"cmp"
@@ -19,7 +19,7 @@ import (
 // have been rechecked. On failure it writes the HTTP error and returns false.
 func ListAggregate(c *gin.Context, list client.ObjectList, options ...client.ListOption) bool {
 	decision, ok := requestPolicyDecision(c)
-	if !UsesBackendPolicy(c) || !ok || decision.category != PolicyAggregate || decision.aggregate == nil {
+	if !Enabled(c) || !ok || decision.category != Aggregate || decision.aggregate == nil {
 		respondPolicyError(c, authorization.ErrDenied)
 		return false
 	}
@@ -30,7 +30,7 @@ func ListAggregate(c *gin.Context, list client.ObjectList, options ...client.Lis
 	return true
 }
 
-func listAggregate(c *gin.Context, list client.ObjectList, target PolicyTarget, cred auth.ClusterCredential, roles []string, decision policyDecision, logger *zap.Logger, options ...client.ListOption) error {
+func listAggregate(c *gin.Context, list client.ObjectList, target Target, cred auth.ClusterCredential, roles []string, decision policyDecision, logger *zap.Logger, options ...client.ListOption) error {
 	if target.Store == nil {
 		return authorization.ErrUnavailable
 	}
@@ -121,7 +121,7 @@ type aggregateAudit struct {
 	policyVersion string
 }
 
-func recheckAggregate(target PolicyTarget, cred auth.ClusterCredential, roles []string, original authorization.NamespaceState, decision policyDecision, logger *zap.Logger, lastAudit *aggregateAudit) (bool, error) {
+func recheckAggregate(target Target, cred auth.ClusterCredential, roles []string, original authorization.NamespaceState, decision policyDecision, logger *zap.Logger, lastAudit *aggregateAudit) (bool, error) {
 	state, err := target.Store.Authorize(original.Namespace.Name, cred.ImpersonateUser, cred.ImpersonateGroups, roles)
 	if state.Reason == authorization.CacheNotReady {
 		return false, authorization.ErrUnavailable
@@ -129,7 +129,7 @@ func recheckAggregate(target PolicyTarget, cred auth.ClusterCredential, roles []
 	allowed := err == nil && decision.namespaceAllowed(original.Namespace.Name) &&
 		state.Namespace.UID == original.Namespace.UID && state.PolicyUID == original.PolicyUID
 	decision.namespace, decision.state = original.Namespace.Name, state
-	decision.category = PolicyNamespace
+	decision.category = Namespace
 	outcome := auditOutcomeDenied
 	if allowed {
 		outcome = auditOutcomeAllowed

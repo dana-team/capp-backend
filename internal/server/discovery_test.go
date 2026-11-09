@@ -10,7 +10,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -52,7 +52,7 @@ func TestListClusters(t *testing.T) {
 			if c1Store == nil {
 				c1Store = store
 			}
-			targets := map[string]middleware.PolicyTarget{
+			targets := map[string]requestpolicy.Target{
 				"c1": {Store: c1Store}, "c2": {Store: tc.c2Store, OperatorUsers: tc.operators},
 			}
 			if tc.missingTarget {
@@ -95,7 +95,7 @@ func TestGetCluster(t *testing.T) {
 		{name: "operator without observations", user: "operator", target: "c2", c2Store: unsynced, operators: []string{"operator"}, status: http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			router := discoveryRouter(t, auth.ClusterCredential{ImpersonateUser: tc.user}, map[string]middleware.PolicyTarget{
+			router := discoveryRouter(t, auth.ClusterCredential{ImpersonateUser: tc.user}, map[string]requestpolicy.Target{
 				"c1": {Store: store}, "c2": {Store: tc.c2Store, OperatorUsers: tc.operators},
 			}, tc.allowed)
 			w := policyRequest(router, http.MethodGet, "/api/v1/clusters/"+tc.target, "")
@@ -115,7 +115,7 @@ func TestGetCluster(t *testing.T) {
 	}
 }
 
-func TestListClustersLegacy(t *testing.T) {
+func TestListClustersKubernetes(t *testing.T) {
 	items := []cluster.ClusterMeta{{Name: "zeta", Healthy: false}, {Name: "alpha", Healthy: true}}
 	mgr := &testutil.MockClusterManager{ListFn: func() []cluster.ClusterMeta { return items }}
 	router := gin.New()
@@ -135,7 +135,7 @@ func TestListClustersLegacy(t *testing.T) {
 	require.Equal(t, items[0], detail)
 }
 
-func discoveryRouter(t *testing.T, credential auth.ClusterCredential, targets map[string]middleware.PolicyTarget, allowed []string) *gin.Engine {
+func discoveryRouter(t *testing.T, credential auth.ClusterCredential, targets map[string]requestpolicy.Target, allowed []string) *gin.Engine {
 	t.Helper()
 	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1", AllowedNamespaces: allowed}}
 	cc.SetHealthy(true)
@@ -160,11 +160,11 @@ func discoveryRouter(t *testing.T, credential auth.ClusterCredential, targets ma
 		target.ExecutionClient = &clientThatMustNotRun{t: t}
 		targets[name] = target
 	}
-	rules, err := middleware.NewPolicyRoutes("")
+	rules, err := requestpolicy.NewRoutes("")
 	require.NoError(t, err)
 	identity := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) { return credential, nil }}
 	router := gin.New()
-	router.Use(middleware.BackendPolicy(identity, mgr, rules, targets, zap.NewNop()))
+	router.Use(requestpolicy.New(identity, mgr, rules, targets, zap.NewNop()))
 	router.GET("/api/v1/clusters", listClusters(mgr))
 	router.GET("/api/v1/clusters/:cluster", getCluster(mgr))
 	return router

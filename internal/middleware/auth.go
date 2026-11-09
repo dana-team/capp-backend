@@ -22,14 +22,16 @@ import (
 // handler is invoked.
 func Auth(mgr auth.AuthManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if _, ok := authenticate(c, mgr); !ok {
+		if _, ok := Authenticate(c, mgr); !ok {
 			return
 		}
 		c.Next()
 	}
 }
 
-func authenticate(c *gin.Context, mgr auth.AuthManager) (auth.ClusterCredential, bool) {
+// Authenticate validates the request, stores its credential, and reports errors.
+// On failure it aborts the request and returns false.
+func Authenticate(c *gin.Context, mgr auth.AuthManager) (auth.ClusterCredential, bool) {
 	// Cluster-list routes omit the :cluster parameter.
 	clusterName := c.Param("cluster")
 

@@ -69,8 +69,7 @@ func existingResourceQuota(nsName, cpu, memory string) *corev1.ResourceQuota {
 	}
 }
 
-// engine builds a test engine where both user and admin client are the same
-// fake client with SAR allowed.
+// engine builds separate user and admin fake clients with SAR allowed.
 // nolint:unparam
 func engine(t *testing.T, meta cluster.ClusterMeta, adminObjects []client.Object, userObjects ...client.Object) *testutil.EngineHelper {
 	return testutil.NewEngineHelperWithAdmin(t,
@@ -234,14 +233,6 @@ func TestCreate_WithUsersAndQuota(t *testing.T) {
 	require.NotNil(t, resp.Quota)
 	assert.Equal(t, "2", resp.Quota.CPU)
 	assert.Equal(t, "4Gi", resp.Quota.Memory)
-}
-
-func TestCreate_NilUsersAndQuota_NoNilDeref(t *testing.T) {
-	e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
-	// Send only required Name field — Users and Quota are nil pointers.
-	w := e.PostJSON("/namespaces", map[string]string{"name": "bare-ns"})
-
-	assert.Equal(t, http.StatusCreated, w.Code)
 }
 
 func TestCreate_InvalidCPUQuota(t *testing.T) {

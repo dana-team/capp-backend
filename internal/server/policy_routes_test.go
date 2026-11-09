@@ -7,7 +7,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources"
 	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/benchmarks"
@@ -36,13 +36,13 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 				if optional {
 					metricsPath = cfg.Metrics.Path
 				}
-				rules, err := middleware.NewPolicyRoutes(metricsPath)
+				rules, err := policy.NewRoutes(metricsPath)
 				require.NoError(t, err)
 				for _, route := range engine.Routes() {
 					rule, exists := rules.Lookup(route.Method, route.Path)
 					require.True(t, exists, "%s %s must have exactly one policy rule", route.Method, route.Path)
 					switch rule.Category {
-					case middleware.PolicyNamespace, middleware.PolicyDiscovery, middleware.PolicyAggregate, middleware.PolicyMigration:
+					case policy.Namespace, policy.Discovery, policy.Aggregate, policy.Migration:
 						want := []string{authorization.RoleEditor}
 						if route.Method == http.MethodGet {
 							want = []string{authorization.RoleViewer, authorization.RoleEditor}

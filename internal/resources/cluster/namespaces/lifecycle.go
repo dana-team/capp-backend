@@ -10,6 +10,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/middleware"
+	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
@@ -47,7 +48,7 @@ func (h *Handler) createManagedNamespace(c *gin.Context) {
 		return
 	}
 	progress.namespace = req.Name
-	if !middleware.RequireNamespaceAllowed(c, req.Name) {
+	if !requestpolicy.RequireNamespaceAllowed(c, req.Name) {
 		return
 	}
 	ns, quota, policy, err := admin.prepareNamespaceCreate(c.Request.Context(), req)
@@ -116,7 +117,7 @@ func (h *Handler) deleteManagedNamespace(c *gin.Context) {
 // administration component. On failure it writes an error response and returns
 // nil; callers must stop processing.
 func (h *Handler) requireAdministration(c *gin.Context) *Administration {
-	operator, _, allowed := middleware.RequireNamespaceAccess(c)
+	operator, _, allowed := requestpolicy.RequireNamespaceAccess(c)
 	if !allowed {
 		return nil
 	}

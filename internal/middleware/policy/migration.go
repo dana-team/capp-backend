@@ -1,4 +1,4 @@
-package middleware
+package policy
 
 import (
 	"errors"
@@ -18,7 +18,7 @@ import (
 // On failure it writes the HTTP error and returns false.
 func PrepareMigration(c *gin.Context, clusterName, namespace string) (client.Client, client.Client, bool) {
 	decision, ok := requestPolicyDecision(c)
-	if !UsesBackendPolicy(c) || !ok || decision.category != PolicyMigration || decision.prepareMigration == nil {
+	if !Enabled(c) || !ok || decision.category != Migration || decision.prepareMigration == nil {
 		respondPolicyError(c, authorization.ErrDenied)
 		return nil, nil, false
 	}
@@ -38,7 +38,7 @@ func PrepareMigration(c *gin.Context, clusterName, namespace string) (client.Cli
 	return source, destination, true
 }
 
-func migrationClients(mgr cluster.ClusterManager, targets map[string]PolicyTarget, cred auth.ClusterCredential, roles []string, source policyDecision, clusterName, namespace string, logger *zap.Logger) (client.Client, client.Client, error) {
+func migrationClients(mgr cluster.ClusterManager, targets map[string]Target, cred auth.ClusterCredential, roles []string, source policyDecision, clusterName, namespace string, logger *zap.Logger) (client.Client, client.Client, error) {
 	destination := source
 	destination.cluster, destination.namespace = clusterName, namespace
 	destination.state = authorization.NamespaceState{}

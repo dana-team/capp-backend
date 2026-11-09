@@ -1,58 +1,14 @@
-package middleware
+package policy
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-func TestListAggregate(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		change  func(*gin.Context, *policyDecision)
-		allowed bool
-	}{
-		{"matching request", func(*gin.Context, *policyDecision) {}, true},
-		{"missing mode", func(c *gin.Context, _ *policyDecision) { delete(c.Keys, string(backendPolicyKey)) }, false},
-		{"missing decision", func(c *gin.Context, _ *policyDecision) { delete(c.Keys, string(policyDecisionKey)) }, false},
-		{"different request", func(c *gin.Context, d *policyDecision) { d.request = c.Request.Clone(c.Request.Context()) }, false},
-		{"different method", func(_ *gin.Context, d *policyDecision) { d.method = http.MethodPost }, false},
-		{"different route", func(_ *gin.Context, d *policyDecision) { d.route += "/other" }, false},
-		{"different cluster", func(_ *gin.Context, d *policyDecision) { d.cluster = "other" }, false},
-		{"namespace decision", func(_ *gin.Context, d *policyDecision) { d.category = PolicyNamespace }, false},
-		{"missing collection authorization", func(_ *gin.Context, d *policyDecision) { d.aggregate = nil }, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := gin.New()
-			called := false
-			r.GET("/:cluster/secrets", func(c *gin.Context) {
-				c.Set(string(backendPolicyKey), true)
-				d := policyDecision{request: c.Request, method: c.Request.Method, route: c.FullPath(), cluster: c.Param("cluster"), category: PolicyAggregate}
-				d.aggregate = func(*gin.Context, client.ObjectList, ...client.ListOption) error { called = true; return nil }
-				c.Set(string(policyDecisionKey), d)
-				tc.change(c, &d)
-				if _, ok := c.Get(string(policyDecisionKey)); ok {
-					c.Set(string(policyDecisionKey), d)
-				}
-				require.Equal(t, tc.allowed, ListAggregate(c, &corev1.SecretList{}))
-			})
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/c1/secrets", nil))
-			require.Equal(t, tc.allowed, called)
-			if !tc.allowed {
-				require.Equal(t, http.StatusForbidden, w.Code)
-				require.Contains(t, w.Body.String(), apierrors.ReasonPolicyDenied)
-			}
-		})
-	}
-}
 
 func TestRequireExecution(t *testing.T) {
 	for _, tt := range []struct {
@@ -68,9 +24,9 @@ func TestRequireExecution(t *testing.T) {
 		{"changed route", func(_ *gin.Context, d *policyDecision) { d.route += "/sync" }, false},
 		{"changed cluster", func(_ *gin.Context, d *policyDecision) { d.cluster = "other" }, false},
 		{"changed namespace", func(_ *gin.Context, d *policyDecision) { d.namespace = "other" }, false},
-		{"administration decision cannot authorize resource execution", func(_ *gin.Context, d *policyDecision) { d.category = PolicyAdministration; d.operator = true }, false},
-		{"aggregate cannot use ordinary execution", func(_ *gin.Context, d *policyDecision) { d.category = PolicyAggregate }, false},
-		{"legacy request", func(c *gin.Context, _ *policyDecision) {
+		{"administration decision cannot authorize resource execution", func(_ *gin.Context, d *policyDecision) { d.category = Administration; d.operator = true }, false},
+		{"aggregate cannot use ordinary execution", func(_ *gin.Context, d *policyDecision) { d.category = Aggregate }, false},
+		{"Kubernetes-mode request", func(c *gin.Context, _ *policyDecision) {
 			delete(c.Keys, string(backendPolicyKey))
 			delete(c.Keys, string(policyDecisionKey))
 		}, true},
@@ -79,7 +35,7 @@ func TestRequireExecution(t *testing.T) {
 			r := gin.New()
 			r.GET("/:cluster/:namespace", func(c *gin.Context) {
 				c.Set(string(backendPolicyKey), true)
-				d := policyDecision{request: c.Request, method: c.Request.Method, route: c.FullPath(), cluster: c.Param("cluster"), namespace: c.Param("namespace"), category: PolicyNamespace}
+				d := policyDecision{request: c.Request, method: c.Request.Method, route: c.FullPath(), cluster: c.Param("cluster"), namespace: c.Param("namespace"), category: Namespace}
 				c.Set(string(policyDecisionKey), d)
 				tt.change(c, &d)
 				// Preserve deliberate removal/type corruption of the context entry.
@@ -115,14 +71,14 @@ func TestRequireNamespaceAccess(t *testing.T) {
 		{"different operation", func(_ *gin.Context, d *policyDecision) { d.method = http.MethodDelete }, false},
 		{"different cluster", func(_ *gin.Context, d *policyDecision) { d.cluster = "other" }, false},
 		{"different namespace", func(_ *gin.Context, d *policyDecision) { d.namespace = "other" }, false},
-		{"ordinary resource decision", func(_ *gin.Context, d *policyDecision) { d.category = PolicyNamespace }, false},
+		{"ordinary resource decision", func(_ *gin.Context, d *policyDecision) { d.category = Namespace }, false},
 		{"nonoperator administration", func(_ *gin.Context, d *policyDecision) { d.operator = false }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := gin.New()
 			r.PUT("/:cluster/:namespace", func(c *gin.Context) {
 				c.Set(string(backendPolicyKey), true)
-				d := policyDecision{request: c.Request, method: c.Request.Method, route: c.FullPath(), cluster: c.Param("cluster"), namespace: c.Param("namespace"), category: PolicyAdministration, operator: true}
+				d := policyDecision{request: c.Request, method: c.Request.Method, route: c.FullPath(), cluster: c.Param("cluster"), namespace: c.Param("namespace"), category: Administration, operator: true}
 				c.Set(string(policyDecisionKey), d)
 				tc.change(c, &d)
 				if _, ok := c.Get(string(policyDecisionKey)); ok {
@@ -145,21 +101,21 @@ func TestRequireNamespaceAccess(t *testing.T) {
 func TestRequireDiscovery(t *testing.T) {
 	for _, tc := range []struct {
 		name, target          string
-		category              PolicyCategory
+		category              Category
 		missing, otherRequest bool
 		global                bool
 		err                   error
 		allowed               bool
 		status                int
 	}{
-		{name: "matching discovery", target: "c1", category: PolicyDiscovery, allowed: true, status: http.StatusOK},
-		{name: "different target", target: "c2", category: PolicyDiscovery, status: http.StatusForbidden},
-		{name: "missing decision", target: "c1", category: PolicyDiscovery, missing: true, status: http.StatusForbidden},
-		{name: "different request", target: "c1", category: PolicyDiscovery, otherRequest: true, status: http.StatusForbidden},
-		{name: "resource decision", target: "c1", category: PolicyNamespace, status: http.StatusForbidden},
-		{name: "global discovery skips unavailable target", target: "c1", category: PolicyDiscovery, global: true, err: authorization.ErrUnavailable, allowed: true, status: http.StatusOK},
-		{name: "scoped discovery reports unavailable target", target: "c1", category: PolicyDiscovery, err: authorization.ErrUnavailable, status: http.StatusServiceUnavailable},
-		{name: "global discovery preserves denial", target: "c1", category: PolicyDiscovery, global: true, err: authorization.ErrDenied, status: http.StatusForbidden},
+		{name: "matching discovery", target: "c1", category: Discovery, allowed: true, status: http.StatusOK},
+		{name: "different target", target: "c2", category: Discovery, status: http.StatusForbidden},
+		{name: "missing decision", target: "c1", category: Discovery, missing: true, status: http.StatusForbidden},
+		{name: "different request", target: "c1", category: Discovery, otherRequest: true, status: http.StatusForbidden},
+		{name: "resource decision", target: "c1", category: Namespace, status: http.StatusForbidden},
+		{name: "global discovery skips unavailable target", target: "c1", category: Discovery, global: true, err: authorization.ErrUnavailable, allowed: true, status: http.StatusOK},
+		{name: "scoped discovery reports unavailable target", target: "c1", category: Discovery, err: authorization.ErrUnavailable, status: http.StatusServiceUnavailable},
+		{name: "global discovery preserves denial", target: "c1", category: Discovery, global: true, err: authorization.ErrDenied, status: http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := gin.New()

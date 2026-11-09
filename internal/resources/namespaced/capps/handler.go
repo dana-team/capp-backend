@@ -9,6 +9,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -374,7 +375,7 @@ func SyncCappValues(ctx context.Context, gitops GitOpsSyncer, meta cluster.Clust
 // migrate handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate
 func (h *Handler) migrate(c *gin.Context) {
 	var sourceClient client.Client
-	if !middleware.UsesBackendPolicy(c) {
+	if !policy.Enabled(c) {
 		sourceClient = namespaced.ExtractClient(c)
 		if sourceClient == nil {
 			return
@@ -401,14 +402,14 @@ func (h *Handler) migrate(c *gin.Context) {
 	}
 
 	var targetClient client.Client
-	if middleware.UsesBackendPolicy(c) {
+	if policy.Enabled(c) {
 		var ok bool
-		sourceClient, targetClient, ok = middleware.PrepareMigration(c, req.TargetCluster, req.TargetNamespace)
+		sourceClient, targetClient, ok = policy.PrepareMigration(c, req.TargetCluster, req.TargetNamespace)
 		if !ok {
 			return
 		}
 	} else {
-		targetClient = h.legacyMigrationTarget(c, req)
+		targetClient = h.kubernetesMigrationTarget(c, req)
 		if targetClient == nil {
 			return
 		}

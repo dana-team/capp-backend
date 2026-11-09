@@ -9,7 +9,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/authorization"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"
@@ -27,7 +27,7 @@ const namespaceReadConcurrency = 4
 func (h *Handler) getManagedNamespace(c *gin.Context) {
 	progress := namespaceOperation{namespace: c.Param("namespace")}
 	defer func() { h.auditNamespaceOperation(c, "namespace read", &progress) }()
-	operator, state, allowed := middleware.RequireNamespaceAccess(c)
+	operator, state, allowed := requestpolicy.RequireNamespaceAccess(c)
 	if !allowed {
 		return
 	}
@@ -59,7 +59,7 @@ func (h *Handler) getManagedNamespace(c *gin.Context) {
 func (h *Handler) listAuthorizedNamespaces(c *gin.Context) {
 	progress := namespaceOperation{}
 	defer func() { h.auditNamespaceOperation(c, "namespace discovery", &progress) }()
-	states, _, ok := middleware.RequireDiscovery(c, c.Param("cluster"))
+	states, _, ok := requestpolicy.RequireDiscovery(c, c.Param("cluster"))
 	if !ok {
 		return
 	}
@@ -102,7 +102,7 @@ func (h *Handler) listManagedNamespaces(c *gin.Context) {
 	allowed := make([]*corev1.Namespace, 0, len(namespaces.Items))
 	for i := range namespaces.Items {
 		ns := &namespaces.Items[i]
-		if middleware.NamespaceAllowed(c, ns.Name) && admin.checkNamespaceName(ns.Name) == nil {
+		if requestpolicy.NamespaceAllowed(c, ns.Name) && admin.checkNamespaceName(ns.Name) == nil {
 			allowed = append(allowed, ns)
 		}
 	}

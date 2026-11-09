@@ -12,7 +12,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
@@ -82,7 +82,7 @@ func TestListAggregate(t *testing.T) {
 					return nil
 				},
 			}, objects...)
-			r := aggregateRouter(t, middleware.PolicyTarget{Store: store, ExecutionClient: execution}, "alice", []string{"team-a", "team-b"}, zap.New(core))
+			r := aggregateRouter(t, requestpolicy.Target{Store: store, ExecutionClient: execution}, "alice", []string{"team-a", "team-b"}, zap.New(core))
 			w := policyRequest(r, http.MethodGet, "/api/v1/clusters/c1/"+resource, "")
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			var response secrets.SecretListResponse
@@ -141,7 +141,7 @@ func TestListAggregate(t *testing.T) {
 			{name: "store absent", caller: "alice", status: http.StatusServiceUnavailable},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				r := aggregateRouter(t, middleware.PolicyTarget{Store: tc.store, ExecutionClient: execution, OperatorUsers: []string{"operator"}}, tc.caller, tc.allowed, zap.NewNop())
+				r := aggregateRouter(t, requestpolicy.Target{Store: tc.store, ExecutionClient: execution, OperatorUsers: []string{"operator"}}, tc.caller, tc.allowed, zap.NewNop())
 				w := policyRequest(r, http.MethodGet, "/api/v1/clusters/c1/secrets", "")
 				require.Equal(t, tc.status, w.Code, w.Body.String())
 				if tc.status == http.StatusOK {
@@ -189,7 +189,7 @@ func TestListAggregate(t *testing.T) {
 						return nil
 					},
 				})
-				r := aggregateRouter(t, middleware.PolicyTarget{Store: store, ExecutionClient: execution}, "alice", nil, zap.New(core))
+				r := aggregateRouter(t, requestpolicy.Target{Store: store, ExecutionClient: execution}, "alice", nil, zap.New(core))
 				w := policyRequest(r, http.MethodGet, "/api/v1/clusters/c1/secrets", "")
 				require.Equal(t, failure.status, w.Code, w.Body.String())
 				require.Equal(t, 2, calls, "failed page must not be retried")
@@ -231,7 +231,7 @@ func TestListAggregate(t *testing.T) {
 							return nil
 						},
 					})
-					r := aggregateRouter(t, middleware.PolicyTarget{Store: store, ExecutionClient: execution}, "alice", nil, zap.New(core))
+					r := aggregateRouter(t, requestpolicy.Target{Store: store, ExecutionClient: execution}, "alice", nil, zap.New(core))
 					w := policyRequest(r, http.MethodGet, "/api/v1/clusters/c1/secrets", "")
 					require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 					var response secrets.SecretListResponse
@@ -272,7 +272,7 @@ func TestListAggregate(t *testing.T) {
 	})
 }
 
-func aggregateRouter(t *testing.T, target middleware.PolicyTarget, caller string, allowed []string, logger *zap.Logger) *gin.Engine {
+func aggregateRouter(t *testing.T, target requestpolicy.Target, caller string, allowed []string, logger *zap.Logger) *gin.Engine {
 	t.Helper()
 	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1", AllowedNamespaces: allowed}}
 	cc.SetHealthy(true)

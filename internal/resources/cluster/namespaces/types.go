@@ -36,7 +36,7 @@ type NamespaceItem struct {
 	// Nil when no ResourceQuota exists for the namespace.
 	Quota *QuotaInfo `json:"quota,omitempty"`
 
-	// Users contains legacy RoleBinding users or direct backend-policy editors.
+	// Users contains Kubernetes-mode RoleBinding users or direct backend-policy editors.
 	// Nil when membership is unavailable, including an invalid policy.
 	Users *[]string `json:"users,omitempty"`
 

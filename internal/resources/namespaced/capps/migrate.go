@@ -190,7 +190,7 @@ func resolveTargetHostname(sourceHostname, targetHostname string, deleteSource b
 	return targetHostname, nil
 }
 
-func (h *Handler) legacyMigrationTarget(c *gin.Context, req MigrateRequest) client.Client {
+func (h *Handler) kubernetesMigrationTarget(c *gin.Context, req MigrateRequest) client.Client {
 	credVal, exists := c.Get(string(middleware.CredentialKey))
 	if !exists {
 		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("credential not found in context")))
