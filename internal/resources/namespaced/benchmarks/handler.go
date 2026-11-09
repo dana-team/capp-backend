@@ -2,7 +2,7 @@
 // Trigger creates one Job for a Capp. A Job that is still running blocks
 // another trigger. A finished Job is replaced. Status reports that Job.
 // Dashboards returns the preset PromQL for a Capp. Query and query_range
-// proxy those expressions to the first configured Prometheus URL.
+// proxy those expressions to the configured query URL.
 // Routes are registered only when benchmarks are enabled.
 package benchmarks
 

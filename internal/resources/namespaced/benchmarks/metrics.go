@@ -1,6 +1,7 @@
 package benchmarks
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,8 +74,7 @@ func rangeParams(c *gin.Context) (url.Values, error) {
 	return values, nil
 }
 
-// proxyPromQL forwards one PromQL request to the first configured Prometheus URL.
-// That is the same instance k6 remote-write uses. Samples are also imported to the other URLs.
+// proxyPromQL forwards one PromQL request to the configured query URL.
 func (h *Handler) proxyPromQL(c *gin.Context, path string, values url.Values) {
 	k8sClient := namespaced.ExtractClient(c)
 	if k8sClient == nil {
@@ -91,18 +91,15 @@ func (h *Handler) proxyPromQL(c *gin.Context, path string, values url.Values) {
 		return
 	}
 
-	endpoint, err := metricsEndpoint(h.cfg.VMURLs, path, values)
+	endpoint, err := metricsEndpoint(h.cfg.QueryURL, path, values)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewInternal(err))
 		return
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		apierrors.Respond(c, apierrors.NewInternal(err))
+		apierrors.Respond(c, apierrors.NewInternal(withoutURL(err)))
 		return
-	}
-	if key := strings.TrimSpace(h.cfg.APIKey); key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := h.vmHTTP().Do(req)
@@ -134,6 +131,7 @@ func (h *Handler) proxyPromQL(c *gin.Context, path string, values url.Values) {
 }
 
 func (h *Handler) failQuery(c *gin.Context, cappName, namespace string, err error) {
+	err = withoutURL(err)
 	h.logger.Error("prometheus query failed",
 		zap.String("capp", cappName),
 		zap.String("namespace", namespace),
@@ -158,10 +156,29 @@ func newVMClient() *http.Client {
 	}
 }
 
-func metricsEndpoint(vmURLs []string, path string, values url.Values) (string, error) {
-	if len(vmURLs) == 0 || strings.TrimSpace(vmURLs[0]) == "" {
-		return "", fmt.Errorf("no Prometheus URL configured")
+// metricsEndpoint adds path and values to queryURL, keeping any query
+// parameters it already has, such as an API key.
+func metricsEndpoint(queryURL, path string, values url.Values) (string, error) {
+	base, err := url.Parse(strings.TrimSpace(queryURL))
+	if err != nil || base.Host == "" {
+		// url.Parse errors quote the URL, which can carry a token.
+		return "", errors.New("invalid Prometheus query URL")
 	}
-	base := strings.TrimRight(strings.TrimSpace(vmURLs[0]), "/")
-	return base + path + "?" + values.Encode(), nil
+	endpoint := base.JoinPath(path)
+	query := endpoint.Query()
+	for key, value := range values {
+		query[key] = value
+	}
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String(), nil
+}
+
+// withoutURL drops the request URL from an HTTP client error, because the URL
+// can carry a token.
+func withoutURL(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
+	}
+	return err
 }

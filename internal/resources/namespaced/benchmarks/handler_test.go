@@ -24,10 +24,10 @@ import (
 
 func testConfig() config.BenchmarkConfig {
 	return config.BenchmarkConfig{
-		Enabled: true,
-		Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-		VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
-		APIKey:  "vm-secret",
+		Enabled:  true,
+		Image:    "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+		VMURLs:   []string{"http://vm-a.monitoring.svc:8428"},
+		QueryURL: "http://vm-query.monitoring.svc:8428",
 	}
 }
 

@@ -2632,9 +2632,9 @@ paths:
       tags: [metrics]
       summary: Run an instant PromQL query for a Capp
       description: |
-        Forwards the query to the first configured Prometheus-compatible URL
-        (`resources.benchmarks.vmURLs`) and returns that response unchanged.
-        Sends `resources.benchmarks.apiKey` as `Authorization: Bearer`.
+        Forwards the query to the configured Prometheus-compatible URL
+        (`resources.benchmarks.queryURL`) and returns that response unchanged.
+        Keeps any query parameters on that URL, such as an API key.
         The Capp must exist. Registered only when
         `resources.benchmarks.enabled` is true.
       parameters:
@@ -2690,9 +2690,9 @@ paths:
       tags: [metrics]
       summary: Run a range PromQL query for a Capp
       description: |
-        Forwards the query to the first configured Prometheus-compatible URL
-        (`resources.benchmarks.vmURLs`) and returns that response unchanged.
-        Sends `resources.benchmarks.apiKey` as `Authorization: Bearer`.
+        Forwards the query to the configured Prometheus-compatible URL
+        (`resources.benchmarks.queryURL`) and returns that response unchanged.
+        Keeps any query parameters on that URL, such as an API key.
         The Capp must exist. Registered only when
         `resources.benchmarks.enabled` is true.
       parameters:
