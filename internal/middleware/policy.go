@@ -49,6 +49,7 @@ type policyDecision struct {
 	state                             authorization.NamespaceState
 	operator                          bool
 	namespaceAllowed                  func(string) bool
+	discover                          func(string) ([]authorization.NamespaceState, bool, error)
 }
 
 // BackendPolicy authenticates and prepares requests using the fixed API rules.
@@ -166,9 +167,13 @@ func BackendPolicy(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, 
 				c.Set(string(K8sClientKey), client.NewNamespacedClient(target.ExecutionClient, namespace))
 			}
 
-		case PolicyDiscovery, PolicyAggregate:
-			// These categories prepare identity/target only. Their consumers must
-			// filter each namespace before exposing data or using an execution client.
+		case PolicyDiscovery:
+			decision.discover = func(name string) ([]authorization.NamespaceState, bool, error) {
+				return discoverNamespaces(clusterMgr, targets[name], cred, rule.AllowedRoles, name)
+			}
+		case PolicyAggregate:
+			// Aggregate consumers must authorize each namespace before using
+			// an execution client.
 		default:
 			respondPolicyError(c, authorization.ErrDenied)
 			return
@@ -191,6 +196,27 @@ func RequireExecution(c *gin.Context) bool {
 		return false
 	}
 	return true
+}
+
+func discoverNamespaces(mgr cluster.ClusterManager, target PolicyTarget, cred auth.ClusterCredential, roles []string, name string) ([]authorization.NamespaceState, bool, error) {
+	cc, err := mgr.Get(name)
+	if err != nil {
+		return nil, false, authorization.ErrUnavailable
+	}
+	if target.isOperator(cred.ImpersonateUser, cred.ImpersonateGroups) {
+		return nil, true, nil
+	}
+	if target.Store == nil {
+		return nil, false, authorization.ErrUnavailable
+	}
+	states, synced := target.Store.Eligible(cred.ImpersonateUser, cred.ImpersonateGroups, roles)
+	if !synced {
+		return nil, false, authorization.ErrUnavailable
+	}
+	states = slices.DeleteFunc(states, func(state authorization.NamespaceState) bool {
+		return !mgr.IsNamespaceAllowed(cc, state.Namespace.Name)
+	})
+	return states, false, nil
 }
 
 func preparePolicyCluster(c *gin.Context, mgr cluster.ClusterManager) *cluster.ClusterClient {
@@ -294,6 +320,33 @@ func RequireNamespaceAccess(c *gin.Context) (bool, authorization.NamespaceState,
 		return false, authorization.NamespaceState{}, false
 	}
 	return decision.operator, decision.state, true
+}
+
+// RequireDiscovery returns eligible namespace observations or operator authority
+// for a discovery request. Scoped requests cannot inspect another cluster.
+// Operator authority permits administrative discovery, not resource access.
+// An empty cluster name only validates a global discovery request.
+// Global discovery omits unavailable targets by returning no observations or
+// operator authority with success; scoped discovery still reports unavailability.
+func RequireDiscovery(c *gin.Context, clusterName string) ([]authorization.NamespaceState, bool, bool) {
+	decision, ok := requestPolicyDecision(c)
+	if !UsesBackendPolicy(c) || !ok || decision.category != PolicyDiscovery || decision.discover == nil ||
+		(decision.cluster != "" && decision.cluster != clusterName) {
+		respondPolicyError(c, authorization.ErrDenied)
+		return nil, false, false
+	}
+	if clusterName == "" {
+		return nil, false, true
+	}
+	states, operator, err := decision.discover(clusterName)
+	if decision.cluster == "" && errors.Is(err, authorization.ErrUnavailable) {
+		return nil, false, true
+	}
+	if err != nil {
+		respondPolicyError(c, err)
+		return nil, false, false
+	}
+	return states, operator, true
 }
 
 // RequireNamespaceAllowed checks a body-supplied namespace against the prepared

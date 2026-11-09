@@ -44,10 +44,9 @@ func (h *Handler) getManagedNamespace(c *gin.Context) {
 			item, progress.policy, err = admin.readNamespace(c.Request.Context(), ns)
 		}
 	} else {
-		item = namespaceItem(state.Namespace, state.Bindings(), state.PolicyResourceVersion, false)
 		progress.policy = &corev1.ConfigMap{}
 		progress.policy.UID, progress.policy.ResourceVersion = state.PolicyUID, state.PolicyResourceVersion
-		item.Quota, err = admin.readQuota(c.Request.Context(), progress.namespace)
+		item, err = admin.readObservedNamespace(c.Request.Context(), state)
 	}
 	if err != nil {
 		progress.respondError(c, err)
@@ -55,6 +54,36 @@ func (h *Handler) getManagedNamespace(c *gin.Context) {
 	}
 	progress.succeeded = true
 	c.JSON(http.StatusOK, item)
+}
+
+func (h *Handler) listAuthorizedNamespaces(c *gin.Context) {
+	progress := namespaceOperation{}
+	defer func() { h.auditNamespaceOperation(c, "namespace discovery", &progress) }()
+	states, _, ok := middleware.RequireDiscovery(c, c.Param("cluster"))
+	if !ok {
+		return
+	}
+	admin := h.administration[c.Param("cluster")]
+	if len(states) != 0 && admin == nil {
+		progress.respondError(c, authorization.ErrUnavailable)
+		return
+	}
+	items, err := readNamespaceItems(c.Request.Context(), len(states), func(ctx context.Context, i int) (NamespaceItem, error) {
+		state := states[i]
+		policy := &corev1.ConfigMap{}
+		policy.UID, policy.ResourceVersion = state.PolicyUID, state.PolicyResourceVersion
+		item, err := admin.readObservedNamespace(ctx, state)
+		if err != nil {
+			return NamespaceItem{}, &namespaceReadError{namespace: state.Namespace.Name, policy: policy, err: err}
+		}
+		return item, nil
+	})
+	if err != nil {
+		progress.respondError(c, err)
+		return
+	}
+	progress.succeeded = true
+	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, Total: len(items)})
 }
 
 func (h *Handler) listManagedNamespaces(c *gin.Context) {
@@ -156,6 +185,13 @@ func (a *Administration) readNamespace(ctx context.Context, ns *corev1.Namespace
 	item := a.policyNamespaceItem(ns, policy)
 	item.Quota, err = a.readQuota(ctx, ns.Name)
 	return item, policy, err
+}
+
+func (a *Administration) readObservedNamespace(ctx context.Context, state authorization.NamespaceState) (NamespaceItem, error) {
+	item := namespaceItem(state.Namespace, state.Bindings(), state.PolicyResourceVersion, false)
+	var err error
+	item.Quota, err = a.readQuota(ctx, state.Namespace.Name)
+	return item, err
 }
 
 func (a *Administration) policyNamespaceItem(ns *corev1.Namespace, policy *corev1.ConfigMap) NamespaceItem {

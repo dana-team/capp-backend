@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,6 +26,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -410,6 +413,156 @@ func TestHandlerGetManagedNamespaceObservation(t *testing.T) {
 	require.Equal(t, []authorization.Binding{{Kind: rbacv1.UserKind, Name: "reader", Role: authorization.RoleViewer}}, *item.Bindings)
 	require.Empty(t, *item.Users)
 	require.Equal(t, "1", item.Quota.CPU)
+}
+
+func TestHandlerListAuthorizedNamespaces(t *testing.T) {
+	objects := make([]runtime.Object, 0, 12)
+	for _, name := range []string{"zeta", "alpha", "unmanaged", "pending", "recreated", "capp-system"} {
+		ns, policy := membershipObjects(t, []authorization.Binding{})
+		ns.Name = name
+		policy.Name = "capp-assignment-" + name
+		policy.Data["policy.json"] = fmt.Sprintf(`{"version":1,"namespace":%q,"bindings":[{"kind":"User","name":"reader","role":"viewer"},{"kind":"User","name":"editor","role":"editor"}]}`, name)
+		switch name {
+		case "unmanaged":
+			ns.Labels = nil
+		case "pending":
+			delete(policy.Annotations, authorization.NamespaceUIDAnnotation)
+		case "recreated":
+			ns.UID = "replacement"
+		}
+		objects = append(objects, ns, policy)
+	}
+	observations := fake.NewClientset(objects...)
+	store, err := authorization.NewStore(observations, authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- store.Run(ctx) }()
+	t.Cleanup(func() { cancel(); require.NoError(t, <-done) })
+	require.Eventually(t, func() bool { return store.Health().Synced }, 5*time.Second, time.Millisecond)
+	unsynced, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, user    string
+		store         *authorization.Store
+		allowed, want []string
+		status        int
+	}{
+		{name: "viewer sorted eligible namespaces", user: "reader", store: store, want: []string{"alpha", "zeta"}, status: http.StatusOK},
+		{name: "editor discovery", user: "editor", store: store, want: []string{"alpha", "zeta"}, status: http.StatusOK},
+		{name: "allowlist filters reads and totals", user: "reader", store: store, allowed: []string{"zeta"}, want: []string{"zeta"}, status: http.StatusOK},
+		{name: "no permitted namespaces", user: "reader", store: store, allowed: []string{"other"}, want: []string{}, status: http.StatusOK},
+		{name: "no grants", user: "stranger", store: store, want: []string{}, status: http.StatusOK},
+		{name: "incomplete observations", user: "reader", store: unsynced, status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := []string{}
+			var readsMu sync.Mutex
+			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*corev1.ResourceQuota); !ok {
+						t.Errorf("discovery read %T, want ResourceQuota", obj)
+					}
+					if !slices.Contains(tc.want, key.Namespace) {
+						t.Errorf("discovery read %q outside authorized namespaces", key.Namespace)
+					}
+					readsMu.Lock()
+					reads = append(reads, key.Namespace)
+					readsMu.Unlock()
+					return c.Get(ctx, key, obj, opts...)
+				},
+				List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+					t.Fatal("ordinary discovery must not list live resources")
+					return nil
+				},
+				Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+					t.Fatal("ordinary discovery must not write or review Kubernetes permissions")
+					return nil
+				},
+			}, existingResourceQuota("alpha", "1", ""), existingResourceQuota("zeta", "2", ""))
+			core, logs := observer.New(zap.InfoLevel)
+			router := membershipRouterWithStore(t, storage, tc.user, zap.New(core), nil, tc.store, tc.allowed...)
+			observations.ClearActions()
+			w := membershipRequest(router, http.MethodGet, "", "")
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			require.Empty(t, observations.Actions(), "discovery must use existing observations")
+			if tc.status != http.StatusOK {
+				require.Contains(t, w.Body.String(), "POLICY_UNAVAILABLE")
+				require.Empty(t, reads)
+				return
+			}
+			require.Empty(t, logs.FilterMessage("namespace read").All())
+			entries := logs.FilterMessage("namespace discovery").All()
+			require.Len(t, entries, 1)
+			require.Equal(t, "succeeded", entries[0].ContextMap()["outcome"])
+			require.Len(t, logs.FilterMessage("authorization decision").All(), 1)
+			var result NamespaceListResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+			require.False(t, result.CanCreate)
+			require.Equal(t, len(tc.want), result.Total)
+			require.NotNil(t, result.Items)
+			names := make([]string, 0, len(result.Items))
+			for _, item := range result.Items {
+				names = append(names, item.Name)
+				require.False(t, item.CanEdit)
+				require.Equal(t, "1", item.PolicyResourceVersion)
+				require.Equal(t, []string{"editor"}, *item.Users)
+				require.Len(t, *item.Bindings, 2)
+				require.NotNil(t, item.Quota)
+			}
+			require.Equal(t, tc.want, names)
+			require.ElementsMatch(t, tc.want, reads)
+		})
+	}
+}
+
+func TestHandlerListAuthorizedNamespacesChanges(t *testing.T) {
+	ns, policy := membershipObjects(t, []authorization.Binding{{Kind: rbacv1.UserKind, Name: "reader", Role: authorization.RoleViewer}})
+	observations := fake.NewClientset(ns, policy)
+	store, err := authorization.NewStore(observations, authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- store.Run(ctx) }()
+	t.Cleanup(func() { cancel(); require.NoError(t, <-done) })
+	require.Eventually(t, func() bool { return store.Health().Synced }, 5*time.Second, time.Millisecond)
+	reads := 0
+	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		require.IsType(t, &corev1.ResourceQuota{}, obj)
+		reads++
+		return c.Get(ctx, key, obj, opts...)
+	}})
+	router := membershipRouterWithStore(t, storage, "reader", zap.NewNop(), nil, store)
+	check := func(want int) {
+		t.Helper()
+		reads = 0
+		w := membershipRequest(router, http.MethodGet, "", "")
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		var result NamespaceListResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+		require.Equal(t, want, result.Total)
+		require.Len(t, result.Items, want)
+		require.Equal(t, want, reads)
+	}
+	check(1)
+	original := policy.Data["policy.json"]
+	policy.Data["policy.json"] = `{"version":1,"namespace":"team-a","bindings":[]}`
+	policy.ResourceVersion = "2"
+	_, err = observations.CoreV1().ConfigMaps(policy.Namespace).Update(t.Context(), policy, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return store.Lookup(ns.Name).PolicyResourceVersion == "2" }, 5*time.Second, time.Millisecond)
+	check(0)
+	policy.Data["policy.json"] = original
+	policy.ResourceVersion = "3"
+	_, err = observations.CoreV1().ConfigMaps(policy.Namespace).Update(t.Context(), policy, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return store.Lookup(ns.Name).PolicyResourceVersion == "3" }, 5*time.Second, time.Millisecond)
+	check(1)
+	ns.UID = "replacement"
+	_, err = observations.CoreV1().Namespaces().Update(t.Context(), ns, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return store.Lookup(ns.Name).Reason == authorization.NamespaceUIDMismatch }, 5*time.Second, time.Millisecond)
+	check(0)
 }
 
 func TestReadNamespaceItems(t *testing.T) {

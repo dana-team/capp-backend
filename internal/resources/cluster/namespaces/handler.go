@@ -87,6 +87,8 @@ func (h *Handler) list(c *gin.Context) {
 			h.listManagedNamespaces(c)
 			return
 		}
+		h.listAuthorizedNamespaces(c)
+		return
 	}
 	userClient, ok := c.MustGet(string(middleware.K8sClientKey)).(client.Client)
 	if !ok {
