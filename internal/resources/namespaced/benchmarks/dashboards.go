@@ -19,6 +19,7 @@ const (
 	metricInvocation  = "kn_serving_invocation_duration_seconds"
 	metricPodsDesired = "kn_revision_pods_desired"
 	metricPodsReady   = "kn_revision_pods_count"
+	labelCluster      = "cluster"
 	labelNamespace    = "k8s_namespace_name"
 	labelService      = "kn_service_name"
 )
@@ -30,6 +31,12 @@ func (h *Handler) dashboards(c *gin.Context) {
 		return
 	}
 
+	meta, err := clusterMeta(c)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
+
 	namespace := c.Param("namespace")
 	cappName := c.Param("name")
 	capp := &cappv1alpha1.Capp{}
@@ -38,13 +45,15 @@ func (h *Handler) dashboards(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, DashboardsResponse{Dashboards: dashboardsFor(namespace, cappName)})
+	c.JSON(http.StatusOK, DashboardsResponse{Dashboards: dashboardsFor(meta.Name, namespace, cappName)})
 }
 
 // dashboardsFor returns the preset charts for one Capp. The expressions are
-// meant for query_range. The Capp name is the Knative service name.
-func dashboardsFor(namespace, cappName string) []Dashboard {
-	sel := fmt.Sprintf(`%s="%s",%s="%s"`,
+// meant for query_range. The Capp name is the Knative service name. The cluster
+// label keeps Capps with the same name on different clusters apart.
+func dashboardsFor(clusterName, namespace, cappName string) []Dashboard {
+	sel := fmt.Sprintf(`%s="%s",%s="%s",%s="%s"`,
+		labelCluster, promQLString(clusterName),
 		labelNamespace, promQLString(namespace),
 		labelService, promQLString(cappName),
 	)

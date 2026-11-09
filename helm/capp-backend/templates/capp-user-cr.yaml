@@ -17,6 +17,11 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list"]
+  {{- if (dig "resources" "benchmarks" "enabled" false .Values.config) }}
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
+  {{- end }}
   {{- if .Values.rbac.openShiftProjects }}
   - apiGroups: ["", "project.openshift.io"]
     resources: ["projects"]

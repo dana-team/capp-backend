@@ -56,7 +56,7 @@ func newHandler() *Handler {
 
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
 	t.Helper()
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), newHandler())
+	return clusterEngine(t, testutil.FakeClient(t, objects...), testSAToken)
 }
 
 func engineWithUser(t *testing.T, user string, k8sClient client.Client) *testutil.EngineHelper {
@@ -82,7 +82,7 @@ func metricsPath(name string) string {
 
 func TestTrigger_CreatesJob(t *testing.T) {
 	k8sClient := testutil.FakeClient(t, testCapp("my-capp"))
-	e := testutil.NewEngineHelper(t, k8sClient, newHandler())
+	e := clusterEngine(t, k8sClient, testSAToken)
 
 	w := e.PostJSON(benchmarkPath("my-capp"), TriggerRequest{Type: TypeLatency})
 	require.Equal(t, http.StatusCreated, w.Code)
@@ -108,7 +108,7 @@ func TestTrigger_CreatesJob(t *testing.T) {
 
 func TestTrigger_PassesPathAndHeaders(t *testing.T) {
 	k8sClient := testutil.FakeClient(t, testCapp("my-capp"))
-	e := testutil.NewEngineHelper(t, k8sClient, newHandler())
+	e := clusterEngine(t, k8sClient, testSAToken)
 
 	w := e.PostJSON(benchmarkPath("my-capp"), TriggerRequest{
 		Type:    TypeLatency,
@@ -219,7 +219,7 @@ func TestTrigger_ScaleStoresSATokenInSecretOwnedByJob(t *testing.T) {
 
 func TestTrigger_OtherTypesCreateNoSecret(t *testing.T) {
 	k8sClient := jobUIDClient(t, nil, testCapp("my-capp"))
-	e := testutil.NewEngineHelper(t, k8sClient, newHandler())
+	e := clusterEngine(t, k8sClient, testSAToken)
 
 	w := e.PostJSON(benchmarkPath("my-capp"), TriggerRequest{Type: TypeLatency})
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
@@ -270,7 +270,7 @@ func TestTrigger_RejectsInvalidTarget(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := testutil.FakeClient(t, testCapp("my-capp"))
-			e := testutil.NewEngineHelper(t, k8sClient, newHandler())
+			e := clusterEngine(t, k8sClient, testSAToken)
 
 			w := e.PostJSON(benchmarkPath("my-capp"), TriggerRequest{Type: TypeLatency, Path: tt.path, Headers: tt.headers})
 
@@ -319,7 +319,7 @@ func TestTrigger_ReplacesFinished(t *testing.T) {
 	finished := benchmarkJob("bench-my-capp", "my-capp", batchv1.JobComplete)
 	other := benchmarkJob("bench-other", "other", batchv1.JobComplete)
 	k8sClient := testutil.FakeClient(t, testCapp("my-capp"), testCapp("other"), finished, other)
-	e := testutil.NewEngineHelper(t, k8sClient, newHandler())
+	e := clusterEngine(t, k8sClient, testSAToken)
 
 	w := e.PostJSON(benchmarkPath("my-capp"), TriggerRequest{Type: TypeLatency})
 	require.Equal(t, http.StatusCreated, w.Code)

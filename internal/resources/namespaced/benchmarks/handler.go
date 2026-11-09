@@ -84,14 +84,18 @@ func (h *Handler) trigger(c *gin.Context) {
 	}
 
 	// Checked before old Jobs are deleted, so a failure keeps the previous result.
+	meta, err := clusterMeta(c)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
 	var saToken string
 	if req.Type == TypeScale {
-		token, err := clusterSAToken(c)
-		if err != nil {
-			apierrors.Respond(c, apierrors.NewInternal(err))
+		if meta.BenchmarkSAToken == "" {
+			apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("cluster %q has no benchmark SA token", meta.Name)))
 			return
 		}
-		saToken = token
+		saToken = meta.BenchmarkSAToken
 	}
 
 	existing, err := listBenchmarkJobs(ctx, k8sClient, namespace, cappName)
@@ -126,6 +130,7 @@ func (h *Handler) trigger(c *gin.Context) {
 	job, err := BuildJob(JobOptions{
 		CappName:    cappName,
 		CappUID:     capp.UID,
+		Cluster:     meta.Name,
 		Namespace:   namespace,
 		Image:       h.cfg.Image,
 		VMURLs:      h.cfg.VMURLs,
@@ -276,20 +281,17 @@ func deleteJobs(ctx context.Context, k8sClient client.Client, jobs []batchv1.Job
 	return nil
 }
 
-// clusterSAToken returns the scale benchmark token of the requested cluster.
-func clusterSAToken(c *gin.Context) (string, error) {
+// clusterMeta returns the requested cluster.
+func clusterMeta(c *gin.Context) (cluster.ClusterMeta, error) {
 	val, ok := c.Get(string(middleware.ClusterMetaKey))
 	if !ok {
-		return "", errors.New("ClusterMeta not found in context")
+		return cluster.ClusterMeta{}, errors.New("ClusterMeta not found in context")
 	}
 	meta, ok := val.(cluster.ClusterMeta)
 	if !ok {
-		return "", errors.New("ClusterMeta has unexpected type in context")
+		return cluster.ClusterMeta{}, errors.New("ClusterMeta has unexpected type in context")
 	}
-	if meta.BenchmarkSAToken == "" {
-		return "", fmt.Errorf("cluster %q has no benchmark SA token", meta.Name)
-	}
-	return meta.BenchmarkSAToken, nil
+	return meta, nil
 }
 
 func triggeredBy(c *gin.Context) string {

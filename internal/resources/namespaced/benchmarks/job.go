@@ -9,6 +9,7 @@ import (
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
@@ -46,6 +47,7 @@ const (
 type JobOptions struct {
 	CappName    string
 	CappUID     types.UID
+	Cluster     string
 	Namespace   string
 	Image       string
 	VMURLs      []string
@@ -68,6 +70,9 @@ func BuildJob(opts JobOptions) (*batchv1.Job, error) {
 	}
 	if opts.CappUID == "" {
 		return nil, fmt.Errorf("capp UID is required")
+	}
+	if opts.Cluster == "" {
+		return nil, fmt.Errorf("cluster name is required")
 	}
 	if opts.Namespace == "" {
 		return nil, fmt.Errorf("namespace is required")
@@ -131,11 +136,27 @@ func BuildJob(opts JobOptions) (*batchv1.Job, error) {
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						Command:         command,
 						Env:             env,
+						Resources:       runnerResources(),
 					}},
 				},
 			},
 		},
 	}, nil
+}
+
+// runnerResources sets requests and limits, because a namespace ResourceQuota on
+// limits rejects pods that declare none.
+func runnerResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+		},
+	}
 }
 
 func commandAndEnv(opts JobOptions) ([]string, []corev1.EnvVar, error) {
@@ -148,6 +169,7 @@ func commandAndEnv(opts JobOptions) ([]string, []corev1.EnvVar, error) {
 		{Name: "TARGET_PATH", Value: targetPath},
 		{Name: "CAPP_NAME", Value: opts.CappName},
 		{Name: "CAPP_NAMESPACE", Value: opts.Namespace},
+		{Name: "CAPP_CLUSTER", Value: opts.Cluster},
 	}
 	if len(opts.Headers) > 0 {
 		headers, err := json.Marshal(opts.Headers)

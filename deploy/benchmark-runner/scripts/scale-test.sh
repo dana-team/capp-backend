@@ -14,6 +14,7 @@ set -uo pipefail
 
 CAPP_NAME="${CAPP_NAME:?CAPP_NAME must be set}"
 CAPP_NAMESPACE="${CAPP_NAMESPACE:?CAPP_NAMESPACE must be set}"
+CAPP_CLUSTER="${CAPP_CLUSTER:?CAPP_CLUSTER must be set}"
 TARGET_URL="${TARGET_URL:?TARGET_URL must be set}"
 BENCHMARK_SA_TOKEN="${BENCHMARK_SA_TOKEN:?BENCHMARK_SA_TOKEN must be set}"
 TARGET_PATH="${TARGET_PATH:-/}"
@@ -107,7 +108,7 @@ IFS=',' read -ra VM_URLS <<< "$VM_IMPORT_URLS"
 for url in "${VM_URLS[@]}"; do
   echo "==> Pushing metrics to VictoriaMetrics ($url)..."
   curl -s --data-binary @"$METRICS" \
-    "${url%/}/api/v1/import/prometheus?extra_label=capp=${CAPP_NAME}&extra_label=namespace=${CAPP_NAMESPACE}"
+    "${url%/}/api/v1/import/prometheus?extra_label=capp=${CAPP_NAME}&extra_label=namespace=${CAPP_NAMESPACE}&extra_label=cluster=${CAPP_CLUSTER}"
 done
 rm -f "$METRICS"
 

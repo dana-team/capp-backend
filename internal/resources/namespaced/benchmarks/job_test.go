@@ -16,6 +16,7 @@ func testOptions(typ Type) JobOptions {
 	return JobOptions{
 		CappName:  "my-capp",
 		CappUID:   types.UID("uid-1"),
+		Cluster:   "c1",
 		Namespace: "team-a",
 		Image:     "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
 		VMURLs: []string{
@@ -108,6 +109,7 @@ func TestBuildJob(t *testing.T) {
 			assert.Equal(t, "http://my-capp.team-a.svc.cluster.local", env["TARGET_URL"])
 			assert.Equal(t, "my-capp", env["CAPP_NAME"])
 			assert.Equal(t, "team-a", env["CAPP_NAMESPACE"])
+			assert.Equal(t, "c1", env["CAPP_CLUSTER"])
 			for k, v := range tt.extra {
 				assert.Equal(t, v, env[k], k)
 			}
@@ -116,6 +118,20 @@ func TestBuildJob(t *testing.T) {
 				assert.False(t, ok, "env %s should be absent", k)
 			}
 		})
+	}
+}
+
+// Namespaces can have a ResourceQuota on limits, which rejects pods that set none.
+func TestBuildJob_SetsResourceLimits(t *testing.T) {
+	for _, typ := range []Type{TypeLatency, TypeThroughput, TypeScale} {
+		job, err := BuildJob(testOptions(typ))
+		require.NoError(t, err)
+		resources := job.Spec.Template.Spec.Containers[0].Resources
+
+		assert.Equal(t, "250m", resources.Requests.Cpu().String())
+		assert.Equal(t, "256Mi", resources.Requests.Memory().String())
+		assert.Equal(t, "1", resources.Limits.Cpu().String())
+		assert.Equal(t, "1Gi", resources.Limits.Memory().String())
 	}
 }
 
@@ -149,7 +165,7 @@ func TestBuildJob_RunnerImageContainsScripts(t *testing.T) {
 
 	common, err := os.ReadFile(filepath.Join(scripts, "common.js"))
 	require.NoError(t, err)
-	for _, name := range []string{"TARGET_URL", "TARGET_PATH", "TARGET_HEADERS", "CAPP_NAME", "CAPP_NAMESPACE"} {
+	for _, name := range []string{"TARGET_URL", "TARGET_PATH", "TARGET_HEADERS", "CAPP_NAME", "CAPP_NAMESPACE", "CAPP_CLUSTER"} {
 		assert.Contains(t, string(common), "__ENV."+name)
 	}
 }
@@ -196,6 +212,7 @@ func TestBuildJob_Errors(t *testing.T) {
 	}{
 		{name: "missing capp", mutate: func(o *JobOptions) { o.CappName = "" }, wantErr: "capp name"},
 		{name: "missing capp uid", mutate: func(o *JobOptions) { o.CappUID = "" }, wantErr: "capp UID"},
+		{name: "missing cluster", mutate: func(o *JobOptions) { o.Cluster = "" }, wantErr: "cluster"},
 		{name: "missing namespace", mutate: func(o *JobOptions) { o.Namespace = "" }, wantErr: "namespace"},
 		{name: "missing image", mutate: func(o *JobOptions) { o.Image = "" }, wantErr: "image"},
 		{name: "missing vm urls", mutate: func(o *JobOptions) { o.VMURLs = nil }, wantErr: "VictoriaMetrics"},

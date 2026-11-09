@@ -2622,8 +2622,9 @@ paths:
       summary: List preset PromQL dashboards for a Capp
       description: |
         Returns the latency, throughput, and autoscaling charts for this Capp.
-        Each expression is scoped to the Capp's Knative service
-        and is meant for `query_range`. The Capp must exist. Registered only
+        Each expression is scoped to the Capp's Knative service and to the
+        `cluster` label, whose value is the cluster's name, and is meant for
+        `query_range`. The Capp must exist. Registered only
         when `resources.benchmarks.enabled` is true.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
