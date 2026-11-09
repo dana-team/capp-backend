@@ -151,10 +151,10 @@ config:
           memory: "2Gi"
 
   # On-demand per-capp benchmarking. The backend creates a Job from image.
-  # vmURLs and queryURL are injected from the Secret, not set here.
+  # vmURLs, queryURL and the per-cluster SA tokens are injected from the Secret, not set here.
   benchmarks:
     enabled: false
-    image: ""                        # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
+    image: ""                        # e.g. "ghcr.io/dana-team/capp-backend-benchmark-runner:v1.0.0"
 
   # GitOps — push Capp values to a git repository for ArgoCD sync.
   # Disabled by default. Enable and provide credentials to activate.
@@ -206,6 +206,14 @@ secret:
   # Injected as CAPP_RESOURCES_BENCHMARKS_QUERYURL.
   # Override: --set secret.benchmarkQueryURL="http://vm-query.monitoring.svc:8428"
   benchmarkQueryURL: ""
+
+  # ServiceAccount tokens the scale benchmark uses to watch pods. Each entry
+  # corresponds to the cluster at the same index in config.clusters[] and must be
+  # able to list pods in every benchmarked namespace on that cluster. Required
+  # when config.resources.benchmarks.enabled is true.
+  # Injected as CAPP_CLUSTERS_<N>_BENCHMARKSATOKEN.
+  # Override: --set secret.benchmarkSATokens[0]="<token>"
+  benchmarkSATokens: []
 
   # SSH private key for GitOps. Required when config.gitops.authMethod is "ssh".
   # Override: --set-file secret.sshKey=/path/to/private/key

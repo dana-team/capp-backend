@@ -40,6 +40,18 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 	errs = append(errs, validateBenchmarks(&cfg.Resources.Benchmarks)...)
 
+	if cfg.Resources.Benchmarks.Enabled {
+		for i, c := range cfg.Clusters {
+			if strings.TrimSpace(c.BenchmarkSAToken) == "" {
+				errs = append(errs, fmt.Errorf(
+					"config: clusters[%d] (%q): benchmarkSAToken is required when resources.benchmarks.enabled is true; "+
+						"set via CAPP_CLUSTERS_%d_BENCHMARKSATOKEN environment variable",
+					i, c.Name, i,
+				))
+			}
+		}
+	}
+
 	if cfg.GitOps.Enabled {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
 	}

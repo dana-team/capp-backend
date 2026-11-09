@@ -182,9 +182,11 @@ resources:
     enabled: true
 
   # On-demand per-capp benchmarking. The backend creates a Job from image.
-  # The Job writes each sample to every vmURLs entry.
+  # The Job writes samples to vmURLs. PromQL queries read from queryURL, which can
+  # carry an optional token (https://vm.example.com?apikey=abc123). Every cluster
+  # also needs benchmarkSAToken, or CAPP_CLUSTERS_<i>_BENCHMARKSATOKEN.
   # benchmarks:
   #   enabled: false
-  #   image: ""                       # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
+  #   image: ""                       # e.g. "ghcr.io/dana-team/capp-backend-benchmark-runner:v1.0.0"
   #   vmURLs: []                      # or CAPP_RESOURCES_BENCHMARKS_VMURLS=url1,url2
-  #   queryURL: ""                    # or CAPP_RESOURCES_BENCHMARKS_QUERYURL; can carry a token, e.g. https://vm.example.com?apikey=abc123
+  #   queryURL: ""                    # or CAPP_RESOURCES_BENCHMARKS_QUERYURL

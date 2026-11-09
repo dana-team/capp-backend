@@ -1,6 +1,8 @@
 package benchmarks
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,7 +22,8 @@ func testOptions(typ Type) JobOptions {
 			"http://vm-a.monitoring.svc:8428",
 			"http://vm-b.monitoring.svc:8428/",
 		},
-		Type: typ,
+		Type:              typ,
+		SATokenSecretName: "bench-my-capp-sa-abcde",
 	}
 }
 
@@ -35,30 +38,32 @@ func TestBuildJob(t *testing.T) {
 			typ:     TypeLatency,
 			command: []string{"k6", "run", "--out", "experimental-prometheus-rw", "/scripts/latency.js"},
 			extra: map[string]string{
-				"LATENCY_PATH":                "/delay/0.05",
+				"TARGET_PATH":                 "/",
 				"K6_PROMETHEUS_RW_SERVER_URL": "http://vm-a.monitoring.svc:8428/api/v1/write",
 			},
-			absent: []string{"TARGET_PODS", "LOAD_PATH"},
+			absent: []string{"LATENCY_PATH", "TARGET_HEADERS", "VM_IMPORT_URLS"},
 		},
 		{
 			typ:     TypeThroughput,
 			command: []string{"k6", "run", "--out", "experimental-prometheus-rw", "/scripts/throughput.js"},
 			extra: map[string]string{
+				"TARGET_PATH":                 "/",
 				"K6_PROMETHEUS_RW_SERVER_URL": "http://vm-a.monitoring.svc:8428/api/v1/write",
 			},
-			absent: []string{"LATENCY_PATH", "TARGET_PODS", "LOAD_PATH"},
+			absent: []string{"LATENCY_PATH", "TARGET_HEADERS", "VM_IMPORT_URLS"},
 		},
 		{
 			typ:     TypeScale,
 			command: []string{"bash", "/scripts/scale-test.sh"},
 			extra: map[string]string{
+				"TARGET_PATH":     "/",
 				"TARGET_PODS":     "5",
 				"TIMEOUT_SECONDS": "180",
 				"LOAD_VUS":        "100",
 				"LOAD_DURATION":   "3m",
-				"LOAD_PATH":       "/delay/0.5",
+				"VM_IMPORT_URLS":  "http://vm-a.monitoring.svc:8428,http://vm-b.monitoring.svc:8428/",
 			},
-			absent: []string{"LATENCY_PATH", "K6_PROMETHEUS_RW_SERVER_URL", "ZERO_WAIT_SECONDS"},
+			absent: []string{"LATENCY_PATH", "K6_PROMETHEUS_RW_SERVER_URL", "TARGET_HEADERS", "ZERO_WAIT_SECONDS"},
 		},
 	}
 
@@ -103,7 +108,6 @@ func TestBuildJob(t *testing.T) {
 			assert.Equal(t, "http://my-capp.team-a.svc.cluster.local", env["TARGET_URL"])
 			assert.Equal(t, "my-capp", env["CAPP_NAME"])
 			assert.Equal(t, "team-a", env["CAPP_NAMESPACE"])
-			assert.Equal(t, "http://vm-a.monitoring.svc:8428,http://vm-b.monitoring.svc:8428/", env["VM_IMPORT_URLS"])
 			for k, v := range tt.extra {
 				assert.Equal(t, v, env[k], k)
 			}
@@ -113,6 +117,74 @@ func TestBuildJob(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildJob_CustomPathAndHeaders(t *testing.T) {
+	opts := testOptions(TypeLatency)
+	opts.Path = "/api/orders?limit=5"
+	opts.Headers = map[string]string{"X-Team": "blue", "Authorization": "Bearer t"}
+
+	job, err := BuildJob(opts)
+
+	require.NoError(t, err)
+	env := envMap(job.Spec.Template.Spec.Containers[0].Env)
+	assert.Equal(t, "/api/orders?limit=5", env["TARGET_PATH"])
+	assert.JSONEq(t, `{"X-Team":"blue","Authorization":"Bearer t"}`, env["TARGET_HEADERS"])
+}
+
+// The Job runs scripts from the image, so a command naming a file that the
+// image source does not contain fails on every run.
+func TestBuildJob_RunnerImageContainsScripts(t *testing.T) {
+	const scripts = "../../../../deploy/benchmark-runner/scripts"
+	for _, typ := range []Type{TypeLatency, TypeThroughput, TypeScale} {
+		job, err := BuildJob(testOptions(typ))
+		require.NoError(t, err)
+		command := job.Spec.Template.Spec.Containers[0].Command
+		script := command[len(command)-1]
+		require.True(t, strings.HasPrefix(script, "/scripts/"), script)
+		assert.FileExists(t, filepath.Join(scripts, strings.TrimPrefix(script, "/scripts/")))
+	}
+
+	assert.FileExists(t, filepath.Join(scripts, "load.js"), "scale-test.sh runs load.js")
+
+	common, err := os.ReadFile(filepath.Join(scripts, "common.js"))
+	require.NoError(t, err)
+	for _, name := range []string{"TARGET_URL", "TARGET_PATH", "TARGET_HEADERS", "CAPP_NAME", "CAPP_NAMESPACE"} {
+		assert.Contains(t, string(common), "__ENV."+name)
+	}
+}
+
+func TestBuildJob_SATokenFromSecretOnlyForScale(t *testing.T) {
+	findToken := func(t *testing.T, typ Type) *corev1.EnvVar {
+		t.Helper()
+		job, err := BuildJob(testOptions(typ))
+		require.NoError(t, err)
+		for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+			if e.Name == "BENCHMARK_SA_TOKEN" {
+				return &e
+			}
+		}
+		return nil
+	}
+
+	token := findToken(t, TypeScale)
+	require.NotNil(t, token)
+	assert.Empty(t, token.Value, "the token must not be stored in the Job spec")
+	require.NotNil(t, token.ValueFrom)
+	require.NotNil(t, token.ValueFrom.SecretKeyRef)
+	assert.Equal(t, "bench-my-capp-sa-abcde", token.ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "token", token.ValueFrom.SecretKeyRef.Key)
+
+	assert.Nil(t, findToken(t, TypeLatency))
+	assert.Nil(t, findToken(t, TypeThroughput))
+}
+
+func TestBuildJob_ScaleRequiresSATokenSecret(t *testing.T) {
+	opts := testOptions(TypeScale)
+	opts.SATokenSecretName = ""
+	_, err := BuildJob(opts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SA token")
 }
 
 func TestBuildJob_Errors(t *testing.T) {

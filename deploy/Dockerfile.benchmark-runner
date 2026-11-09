@@ -1,0 +1,24 @@
+# Benchmark runner: the tools and scripts that benchmark Jobs execute. The backend
+# refers to the scripts by path, in internal/resources/namespaced/benchmarks/job.go.
+FROM registry.access.redhat.com/ubi9/ubi-minimal
+
+RUN microdnf install -y tar gzip jq bash \
+    && microdnf clean all
+
+WORKDIR /tmp/build
+
+RUN curl -sSL -o k6.tgz \
+    https://github.com/grafana/k6/releases/download/v0.52.0/k6-v0.52.0-linux-amd64.tar.gz \
+    && tar -xzf k6.tgz \
+    && mv k6-v0.52.0-linux-amd64/k6 /usr/local/bin/k6 \
+    && chmod +x /usr/local/bin/k6
+
+# The scale check watches Ready pods with kubectl.
+RUN curl -sSL -o /usr/local/bin/kubectl \
+    "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
+
+RUN rm -rf /tmp/build
+
+COPY deploy/benchmark-runner/scripts/ /scripts/
+WORKDIR /scripts

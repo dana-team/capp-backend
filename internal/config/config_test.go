@@ -479,22 +479,14 @@ func TestValidate_Benchmarks(t *testing.T) {
 			},
 		},
 		{
-			name: "enabled without image — error",
-			benchmarks: BenchmarkConfig{
-				Enabled: true,
-				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
-			},
-			wantErr:    true,
-			errContain: "resources.benchmarks.image is required",
-		},
-		{
-			name: "enabled without vmURLs — error",
+			name: "enabled without queryURL — error",
 			benchmarks: BenchmarkConfig{
 				Enabled: true,
 				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
 			},
 			wantErr:    true,
-			errContain: "resources.benchmarks.vmURLs is required",
+			errContain: "resources.benchmarks.queryURL is required",
 		},
 		{
 			name: "queryURL with a token — valid",
@@ -517,20 +509,42 @@ func TestValidate_Benchmarks(t *testing.T) {
 			errContain: "resources.benchmarks.queryURL must be an absolute http or https URL",
 		},
 		{
-			name: "enabled without queryURL — error",
+			name: "enabled with blank queryURL — error",
 			benchmarks: BenchmarkConfig{
-				Enabled: true,
-				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
+				Enabled:  true,
+				Image:    "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+				VMURLs:   []string{"http://vm-a.monitoring.svc:8428"},
+				QueryURL: "   ",
 			},
 			wantErr:    true,
 			errContain: "resources.benchmarks.queryURL is required",
+		},
+		{
+			name: "enabled without image — error",
+			benchmarks: BenchmarkConfig{
+				Enabled: true,
+				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
+			},
+			wantErr:    true,
+			errContain: "resources.benchmarks.image is required",
+		},
+		{
+			name: "enabled without vmURLs — error",
+			benchmarks: BenchmarkConfig{
+				Enabled: true,
+				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+			},
+			wantErr:    true,
+			errContain: "resources.benchmarks.vmURLs is required",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := passthroughConfig()
 			cfg.Resources.Benchmarks = tt.benchmarks
+			for i := range cfg.Clusters {
+				cfg.Clusters[i].BenchmarkSAToken = "sa-token"
+			}
 			err := Validate(cfg)
 			if tt.wantErr {
 				require.Error(t, err)
@@ -540,6 +554,52 @@ func TestValidate_Benchmarks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidate_BenchmarkSATokenPerCluster(t *testing.T) {
+	benchmarks := BenchmarkConfig{
+		Enabled:  true,
+		Image:    "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
+		VMURLs:   []string{"http://vm-a.monitoring.svc:8428"},
+		QueryURL: "http://vm-query.monitoring.svc:8428",
+	}
+
+	t.Run("cluster without a token — error names the cluster", func(t *testing.T) {
+		cfg := passthroughConfig()
+		cfg.Resources.Benchmarks = benchmarks
+		cfg.Clusters = []ClusterConfig{
+			{Name: "east", BenchmarkSAToken: "east-token", Credential: cfg.Clusters[0].Credential},
+			{Name: "west", Credential: cfg.Clusters[0].Credential},
+		}
+		err := Validate(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `clusters[1] ("west"): benchmarkSAToken is required`)
+		assert.NotContains(t, err.Error(), "east-token")
+	})
+
+	t.Run("not required when benchmarks are disabled", func(t *testing.T) {
+		cfg := passthroughConfig()
+		assert.NoError(t, Validate(cfg))
+	})
+}
+
+func TestLoad_BenchmarkSATokenPerClusterFromEnv(t *testing.T) {
+	t.Setenv("CAPP_CLUSTERS_1_BENCHMARKSATOKEN", " west-token ")
+	cfg := loadTempConfig(t, `
+clusters:
+  - name: east
+    benchmarkSAToken: "east-token"
+    credential:
+      inline:
+        apiServer: "https://east.example.com:6443"
+  - name: west
+    benchmarkSAToken: "from-file"
+    credential:
+      inline:
+        apiServer: "https://west.example.com:6443"
+`)
+	assert.Equal(t, "east-token", cfg.Clusters[0].BenchmarkSAToken)
+	assert.Equal(t, "west-token", cfg.Clusters[1].BenchmarkSAToken)
 }
 
 func TestLoad_BenchmarkFromFile(t *testing.T) {
@@ -556,8 +616,10 @@ resources:
     vmURLs:
       - "http://vm-a.monitoring.svc:8428"
       - "http://vm-b.monitoring.svc:8428"
+    queryURL: "http://vm-query.monitoring.svc:8428"
 `)
 	assert.True(t, cfg.Resources.Benchmarks.Enabled)
+	assert.Equal(t, "http://vm-query.monitoring.svc:8428", cfg.Resources.Benchmarks.QueryURL)
 	assert.Equal(t, "ghcr.io/dana-team/capp-benchmark-runner:0.1.0", cfg.Resources.Benchmarks.Image)
 	assert.Equal(t, []string{
 		"http://vm-a.monitoring.svc:8428",

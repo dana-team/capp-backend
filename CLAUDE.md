@@ -15,6 +15,7 @@ make vet             # go vet
 make tidy            # go mod tidy
 make docker-build    # Build Docker image
 make build-cli       # Build cappctl CLI binary → bin/cappctl
+make docker-build-benchmark-runner  # Build the benchmark runner image (k6 + scripts)
 ```
 
 ## Architecture

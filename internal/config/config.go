@@ -257,6 +257,13 @@ type ClusterConfig struct {
 	// Defaults to Name if unset. Must be a valid filesystem path segment
 	// (no slashes or spaces).
 	GitOpsPath string `mapstructure:"gitOpsPath"`
+
+	// BenchmarkSAToken is the ServiceAccount token the scale benchmark uses to
+	// watch pods on this cluster. It must be able to list pods in every
+	// benchmarked namespace. Each scale Job gets it through a Secret in the
+	// Capp's namespace, so namespace users can read it. Required when benchmarks
+	// are enabled. Inject via CAPP_CLUSTERS_<i>_BENCHMARKSATOKEN.
+	BenchmarkSAToken string `mapstructure:"benchmarkSAToken"`
 }
 
 // ResourceToggle is a simple feature flag for a resource handler.
@@ -287,13 +294,14 @@ type BenchmarkConfig struct {
 
 	// Image is the benchmark runner image. The image contains the benchmark
 	// scripts. Required when enabled.
-	// Example: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0".
+	// Built from deploy/Dockerfile.benchmark-runner.
+	// Example: "ghcr.io/dana-team/capp-backend-benchmark-runner:v1.0.0".
 	Image string `mapstructure:"image"`
 
-	// VMURLs are Prometheus-compatible base URLs. The monitoring stack has two
-	// instances, and each sample is written to all of them. The Job appends
-	// /api/v1/import/prometheus and
-	// /api/v1/write to each entry. Required when enabled. Inject via
+	// VMURLs are the base URLs benchmark samples are written to. The Job appends
+	// /api/v1/import/prometheus and /api/v1/write. k6 remote-write accepts a
+	// single endpoint, so latency and throughput write to the first entry; the
+	// scale check imports to all of them. Required when enabled. Inject via
 	// CAPP_RESOURCES_BENCHMARKS_VMURLS as a comma-separated list.
 	VMURLs []string `mapstructure:"vmURLs"`
 
@@ -417,6 +425,11 @@ func Load(path string) (*Config, error) {
 			if token := os.Getenv(envKey); token != "" {
 				cfg.Clusters[i].Credential.Inline.Token = token
 			}
+		}
+
+		cfg.Clusters[i].BenchmarkSAToken = strings.TrimSpace(cfg.Clusters[i].BenchmarkSAToken)
+		if token := strings.TrimSpace(os.Getenv(fmt.Sprintf("CAPP_CLUSTERS_%d_BENCHMARKSATOKEN", i))); token != "" {
+			cfg.Clusters[i].BenchmarkSAToken = token
 		}
 	}
 

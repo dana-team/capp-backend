@@ -64,6 +64,10 @@ type ClusterMeta struct {
 	// AllowedNamespaces is a copy of the config value. If non-empty, only the
 	// listed namespaces are accessible through this cluster entry.
 	AllowedNamespaces []string `json:"-"`
+
+	// BenchmarkSAToken is the token scale benchmarks use on this cluster.
+	// ClusterMeta is returned to API clients, so it must never be serialized.
+	BenchmarkSAToken string `json:"-"`
 }
 
 // ClusterClient wraps the base Kubernetes rest.Config and scheme for a single

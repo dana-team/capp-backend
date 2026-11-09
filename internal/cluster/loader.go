@@ -94,6 +94,7 @@ func BuildClusterClient(cfg config.ClusterConfig, scheme *runtime.Scheme) (*Clus
 			GitOpsPath:        gitOpsPath,
 			Healthy:           false, // updated by the first health check
 			AllowedNamespaces: cfg.AllowedNamespaces,
+			BenchmarkSAToken:  cfg.BenchmarkSAToken,
 		},
 		RestConfig: restCfg,
 		Scheme:     scheme,

@@ -1218,6 +1218,23 @@ components:
           description: Which baked-in check the runner image executes.
           enum: [latency, throughput, scale]
           example: latency
+        path:
+          type: string
+          maxLength: 2048
+          description: Path and optional query requested on the Capp. Must start with a single `/`. Defaults to `/`.
+          example: /api/orders?limit=5
+        headers:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            type: string
+          description: |
+            Headers added to every benchmark request, up to 8 KiB in total.
+            `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` are
+            rejected. Values are stored in the Job spec, so anyone who can read
+            Jobs in the namespace can read them.
+          example:
+            X-Team: blue
 
     BenchmarkTriggerResponse:
       type: object
@@ -2529,8 +2546,9 @@ paths:
       summary: Run a benchmark for a Capp
       description: |
         Creates one benchmark Job for the Capp. The Job runs the selected
-        check from the configured runner image and writes samples to every
-        configured VictoriaMetrics URL.
+        check from the configured runner image against the requested path and
+        writes samples to `resources.benchmarks.vmURLs`: the scale check to
+        every URL, latency and throughput to the first.
 
         Returns 409 when a benchmark for this Capp is still running. A finished
         Job is deleted and replaced. Registered only when
@@ -2553,7 +2571,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BenchmarkTriggerResponse'
         "400":
-          description: Missing or unknown benchmark type.
+          description: Missing or unknown benchmark type, or an invalid path or header.
           content:
             application/json:
               schema:

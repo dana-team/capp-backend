@@ -8,11 +8,13 @@ package benchmarks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
@@ -76,6 +78,21 @@ func (h *Handler) trigger(c *gin.Context) {
 		apierrors.Respond(c, apierrors.NewBadRequest(fmt.Sprintf("unknown benchmark type %q", req.Type)))
 		return
 	}
+	if err := req.validate(); err != nil {
+		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
+		return
+	}
+
+	// Checked before old Jobs are deleted, so a failure keeps the previous result.
+	var saToken string
+	if req.Type == TypeScale {
+		token, err := clusterSAToken(c)
+		if err != nil {
+			apierrors.Respond(c, apierrors.NewInternal(err))
+			return
+		}
+		saToken = token
+	}
 
 	existing, err := listBenchmarkJobs(ctx, k8sClient, namespace, cappName)
 	if err != nil {
@@ -101,6 +118,11 @@ func (h *Handler) trigger(c *gin.Context) {
 		return
 	}
 
+	var tokenSecretName string
+	if saToken != "" {
+		tokenSecretName = saTokenSecretName(jobName(cappName))
+	}
+
 	job, err := BuildJob(JobOptions{
 		CappName:    cappName,
 		CappUID:     capp.UID,
@@ -108,7 +130,11 @@ func (h *Handler) trigger(c *gin.Context) {
 		Image:       h.cfg.Image,
 		VMURLs:      h.cfg.VMURLs,
 		Type:        req.Type,
+		Path:        req.Path,
+		Headers:     req.Headers,
 		TriggeredBy: triggeredBy(c),
+
+		SATokenSecretName: tokenSecretName,
 	})
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewInternal(err))
@@ -117,6 +143,16 @@ func (h *Handler) trigger(c *gin.Context) {
 	if err := k8sClient.Create(ctx, job); err != nil {
 		apierrors.Respond(c, err)
 		return
+	}
+	if tokenSecretName != "" {
+		if err := k8sClient.Create(ctx, saTokenSecret(job, tokenSecretName, saToken)); err != nil {
+			// Without its Secret the pod never starts, so the Job would block later triggers.
+			if delErr := deleteJobs(ctx, k8sClient, []batchv1.Job{*job}); delErr != nil {
+				h.logger.Error("remove benchmark job after secret failure", zap.String("job", job.Name), zap.Error(delErr))
+			}
+			apierrors.Respond(c, err)
+			return
+		}
 	}
 
 	h.logger.Info("benchmark triggered",
@@ -131,6 +167,27 @@ func (h *Handler) trigger(c *gin.Context) {
 		JobName:  job.Name,
 		Type:     req.Type,
 	})
+}
+
+// saTokenSecret returns the Secret for one Job. The Job owns it, so it is removed with the Job.
+func saTokenSecret(job *batchv1.Job, name, token string) *corev1.Secret {
+	blockOwnerDeletion := false
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: job.Namespace,
+			Labels:    map[string]string{LabelBenchmark: labelValueTrue},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion:         batchv1.SchemeGroupVersion.String(),
+				Kind:               "Job",
+				Name:               job.Name,
+				UID:                job.UID,
+				BlockOwnerDeletion: &blockOwnerDeletion,
+			}},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{saTokenSecretKey: []byte(token)},
+	}
 }
 
 // status handles GET .../benchmark.
@@ -217,6 +274,22 @@ func deleteJobs(ctx context.Context, k8sClient client.Client, jobs []batchv1.Job
 		}
 	}
 	return nil
+}
+
+// clusterSAToken returns the scale benchmark token of the requested cluster.
+func clusterSAToken(c *gin.Context) (string, error) {
+	val, ok := c.Get(string(middleware.ClusterMetaKey))
+	if !ok {
+		return "", errors.New("ClusterMeta not found in context")
+	}
+	meta, ok := val.(cluster.ClusterMeta)
+	if !ok {
+		return "", errors.New("ClusterMeta has unexpected type in context")
+	}
+	if meta.BenchmarkSAToken == "" {
+		return "", fmt.Errorf("cluster %q has no benchmark SA token", meta.Name)
+	}
+	return meta.BenchmarkSAToken, nil
 }
 
 func triggeredBy(c *gin.Context) string {

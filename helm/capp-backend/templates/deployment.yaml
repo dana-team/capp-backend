@@ -83,6 +83,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "capp-backend.secretName" . }}
                   key: benchmarkQueryURL
+            {{- range $i, $_ := .Values.secret.benchmarkSATokens }}
+            - name: CAPP_CLUSTERS_{{ $i }}_BENCHMARKSATOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "capp-backend.secretName" $ }}
+                  key: benchmarkSAToken-{{ $i }}
+            {{- end }}
             {{- end }}
           volumeMounts:
             - name: config
