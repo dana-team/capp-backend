@@ -25,6 +25,8 @@ func testOptions(typ Type) JobOptions {
 		},
 		Type:              typ,
 		SATokenSecretName: "bench-my-capp-sa-abcde",
+		RunID:             "run-1",
+		Revision:          "c-00007",
 	}
 }
 
@@ -37,19 +39,27 @@ func TestBuildJob(t *testing.T) {
 	}{
 		{
 			typ:     TypeLatency,
-			command: []string{"k6", "run", "--out", "experimental-prometheus-rw", "/scripts/latency.js"},
+			command: []string{"bash", "/scripts/run-k6.sh", "latency"},
 			extra: map[string]string{
-				"TARGET_PATH":                 "/",
-				"K6_PROMETHEUS_RW_SERVER_URL": "http://vm-a.monitoring.svc:8428/api/v1/write",
+				"TARGET_PATH":                  "/",
+				"RUN_ID":                       "run-1",
+				"CAPP_REVISION":                "c-00007",
+				"VM_IMPORT_URL":                "http://vm-a.monitoring.svc:8428",
+				"K6_PROMETHEUS_RW_SERVER_URL":  "http://vm-a.monitoring.svc:8428/api/v1/write",
+				"K6_PROMETHEUS_RW_TREND_STATS": "p(50),p(95),p(99)",
 			},
 			absent: []string{"LATENCY_PATH", "TARGET_HEADERS", "VM_IMPORT_URLS"},
 		},
 		{
 			typ:     TypeThroughput,
-			command: []string{"k6", "run", "--out", "experimental-prometheus-rw", "/scripts/throughput.js"},
+			command: []string{"bash", "/scripts/run-k6.sh", "throughput"},
 			extra: map[string]string{
-				"TARGET_PATH":                 "/",
-				"K6_PROMETHEUS_RW_SERVER_URL": "http://vm-a.monitoring.svc:8428/api/v1/write",
+				"TARGET_PATH":                  "/",
+				"RUN_ID":                       "run-1",
+				"CAPP_REVISION":                "c-00007",
+				"VM_IMPORT_URL":                "http://vm-a.monitoring.svc:8428",
+				"K6_PROMETHEUS_RW_SERVER_URL":  "http://vm-a.monitoring.svc:8428/api/v1/write",
+				"K6_PROMETHEUS_RW_TREND_STATS": "p(50),p(95),p(99)",
 			},
 			absent: []string{"LATENCY_PATH", "TARGET_HEADERS", "VM_IMPORT_URLS"},
 		},
@@ -57,14 +67,11 @@ func TestBuildJob(t *testing.T) {
 			typ:     TypeScale,
 			command: []string{"bash", "/scripts/scale-test.sh"},
 			extra: map[string]string{
-				"TARGET_PATH":     "/",
-				"TARGET_PODS":     "5",
-				"TIMEOUT_SECONDS": "180",
-				"LOAD_VUS":        "100",
-				"LOAD_DURATION":   "3m",
-				"VM_IMPORT_URLS":  "http://vm-a.monitoring.svc:8428,http://vm-b.monitoring.svc:8428/",
+				"TARGET_PATH":   "/",
+				"LOAD_VUS":      "100",
+				"LOAD_DURATION": "150s",
 			},
-			absent: []string{"LATENCY_PATH", "K6_PROMETHEUS_RW_SERVER_URL", "TARGET_HEADERS", "ZERO_WAIT_SECONDS"},
+			absent: []string{"LATENCY_PATH", "K6_PROMETHEUS_RW_SERVER_URL", "TARGET_HEADERS", "ZERO_WAIT_SECONDS", "VM_IMPORT_URLS", "TARGET_PODS", "TIMEOUT_SECONDS"},
 		},
 	}
 
@@ -79,6 +86,7 @@ func TestBuildJob(t *testing.T) {
 			assert.Equal(t, "true", job.Labels[LabelBenchmark])
 			assert.Equal(t, "rcs.dana.io/cappName", AnnotationCappName)
 			assert.Equal(t, "my-capp", job.Annotations[AnnotationCappName])
+			assert.Equal(t, "run-1", job.Annotations[AnnotationRunID])
 			_, hasUser := job.Annotations[AnnotationTriggeredBy]
 			assert.False(t, hasUser)
 			require.Len(t, job.OwnerReferences, 1)
@@ -156,12 +164,14 @@ func TestBuildJob_RunnerImageContainsScripts(t *testing.T) {
 		job, err := BuildJob(testOptions(typ))
 		require.NoError(t, err)
 		command := job.Spec.Template.Spec.Containers[0].Command
-		script := command[len(command)-1]
+		require.Equal(t, "bash", command[0])
+		script := command[1]
 		require.True(t, strings.HasPrefix(script, "/scripts/"), script)
 		assert.FileExists(t, filepath.Join(scripts, strings.TrimPrefix(script, "/scripts/")))
 	}
 
 	assert.FileExists(t, filepath.Join(scripts, "load.js"), "scale-test.sh runs load.js")
+	assert.FileExists(t, filepath.Join(scripts, "lib.sh"), "run-k6.sh sources lib.sh")
 
 	common, err := os.ReadFile(filepath.Join(scripts, "common.js"))
 	require.NoError(t, err)
@@ -216,6 +226,7 @@ func TestBuildJob_Errors(t *testing.T) {
 		{name: "missing namespace", mutate: func(o *JobOptions) { o.Namespace = "" }, wantErr: "namespace"},
 		{name: "missing image", mutate: func(o *JobOptions) { o.Image = "" }, wantErr: "image"},
 		{name: "missing vm urls", mutate: func(o *JobOptions) { o.VMURLs = nil }, wantErr: "VictoriaMetrics"},
+		{name: "missing run id", mutate: func(o *JobOptions) { o.RunID = "" }, wantErr: "run ID"},
 		{name: "unknown type", mutate: func(o *JobOptions) { o.Type = "cold-start" }, wantErr: "unknown benchmark type"},
 	}
 	for _, tt := range tests {

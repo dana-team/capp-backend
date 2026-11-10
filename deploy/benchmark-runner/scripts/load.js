@@ -1,7 +1,7 @@
 // Sustained load that drives Knative autoscaling during the scale check.
 // scale-test.sh watches the autoscaler react while this runs.
 import http from 'k6/http';
-import { url, params, tags } from './common.js';
+import { url, params, tags, systemTags } from './common.js';
 
 const VUS = parseInt(__ENV.LOAD_VUS, 10);
 
@@ -11,6 +11,7 @@ export const options = {
     { duration: __ENV.LOAD_DURATION, target: VUS }, // hold to let pods scale out
   ],
   tags,
+  systemTags,
 };
 
 export default function () {

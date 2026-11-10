@@ -88,6 +88,7 @@ type TriggerResponse struct {
 	CappName string `json:"cappName"`
 	JobName  string `json:"jobName"`
 	Type     Type   `json:"type"`
+	RunID    string `json:"runId"`
 }
 
 const (
@@ -104,6 +105,7 @@ const (
 type StatusResponse struct {
 	JobName string `json:"jobName"`
 	Status  string `json:"status"`
+	RunID   string `json:"runId"`
 }
 
 // DashboardQuery is one PromQL series on a dashboard.

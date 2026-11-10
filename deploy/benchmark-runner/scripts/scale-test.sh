@@ -1,41 +1,64 @@
 #!/usr/bin/env bash
-# scale-test.sh measures Knative autoscaling for a Capp and pushes the results
-# to VictoriaMetrics' Prometheus import endpoint.
+# scale-test.sh measures how a Capp's autoscaling responds to load and records
+# what it observed. It runs load.js in the background and watches the Ready pods
+# until k6 exits. Not reaching a pod count, or a slow cold start, is not a
+# failure.
 #
-# Metrics produced:
-#   capp_cold_start_seconds    - TTFB of the first request after a scale-to-zero
-#   capp_scale_delay_seconds   - load start -> scale-out past the first pod
-#   capp_time_to_scale_seconds - load start -> TARGET_PODS pods Ready
-#   capp_scale_test_success    - 1 if TARGET_PODS was reached within the timeout, else 0
-#
-# Exits non-zero when pods cannot be read or TARGET_PODS is not reached, so the
-# Job reports failed.
+# Exit codes: 0 when the run passed, 1 when it broke: pods could not be read,
+# k6 did not complete, no request succeeded, or the summary could not be imported.
 set -uo pipefail
+
+SCRIPTS_DIR="${SCRIPTS_DIR:-/scripts}"
+# shellcheck source=lib.sh
+source "$SCRIPTS_DIR/lib.sh"
 
 CAPP_NAME="${CAPP_NAME:?CAPP_NAME must be set}"
 CAPP_NAMESPACE="${CAPP_NAMESPACE:?CAPP_NAMESPACE must be set}"
 CAPP_CLUSTER="${CAPP_CLUSTER:?CAPP_CLUSTER must be set}"
+CAPP_REVISION="${CAPP_REVISION:?CAPP_REVISION must be set}"
+RUN_ID="${RUN_ID:?RUN_ID must be set}"
 TARGET_URL="${TARGET_URL:?TARGET_URL must be set}"
+VM_IMPORT_URL="${VM_IMPORT_URL:?VM_IMPORT_URL must be set}"
 BENCHMARK_SA_TOKEN="${BENCHMARK_SA_TOKEN:?BENCHMARK_SA_TOKEN must be set}"
 TARGET_PATH="${TARGET_PATH:-/}"
-TARGET_PODS="${TARGET_PODS:-5}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-180}"
 ZERO_WAIT_SECONDS="${ZERO_WAIT_SECONDS:-180}"
-VM_IMPORT_URLS="${VM_IMPORT_URLS:-}"
+SCALE_POLL_SECONDS="${SCALE_POLL_SECONDS:-2}"
 
 HEADERS_JSON="${TARGET_HEADERS:-}"
 [ -n "$HEADERS_JSON" ] || HEADERS_JSON='{}'
 mapfile -t CURL_HEADERS < <(jq -r 'to_entries[] | "-H", "\(.key): \(.value)"' <<< "$HEADERS_JSON")
+
+start=$(date +%s)
+summary=$(mktemp)
+trap 'rm -f "$summary"' EXIT
 
 # kc runs kubectl as the configured benchmark ServiceAccount.
 kc() {
   kubectl --token="$BENCHMARK_SA_TOKEN" "$@"
 }
 
+# finish <result> <reason> [stat=value...] writes the run's one summary and exits.
+# A run that failed, or whose summary could not be imported, exits 1.
+finish() {
+  local result="$1" reason="$2"
+  shift 2
+  local push_status=0
+  write_summary scale "$result" "$reason" "$@" || push_status=$?
+  if [ "$push_status" -ne 0 ]; then
+    echo "could not import the scale summary" >&2
+    exit 1
+  fi
+  if [ "$result" = failed ]; then
+    echo "scale run failed: $reason" >&2
+    exit 1
+  fi
+  exit 0
+}
+
 # ready_pods hides kubectl errors, so permission to read pods is checked up front.
 if ! kc get pods -n "$CAPP_NAMESPACE" -l serving.knative.dev/service="$CAPP_NAME" >/dev/null; then
   echo "ERROR: cannot list pods in namespace $CAPP_NAMESPACE" >&2
-  exit 1
+  finish failed "could not read pods in the namespace" start_seconds="$start" end_seconds="$(date +%s)"
 fi
 
 # ready_pods: count of Ready pods backing the Knative service.
@@ -59,57 +82,80 @@ echo "    ready pods now: $PODS_AT_START"
 COLD=""
 if [ "$PODS_AT_START" -eq 0 ]; then
   echo "==> Measuring cold-start TTFB (scale from zero)..."
-  COLD=$(curl -o /dev/null -s -w '%{time_starttransfer}' --max-time "$TIMEOUT_SECONDS" "${CURL_HEADERS[@]}" "${TARGET_URL}${TARGET_PATH}" || echo "")
+  COLD=$(curl -o /dev/null -s -w '%{time_starttransfer}' --max-time 180 "${CURL_HEADERS[@]}" "${TARGET_URL}${TARGET_PATH}" || echo "")
   echo "    cold_start_seconds: ${COLD:-<failed>}"
 else
   echo "    WARN: not at zero pods - skipping cold-start (would measure a warm pod)"
 fi
 
+# The watch state. MAX_PODS and TIME_TO_MAX are the most Ready pods seen and when
+# they were first seen; SCALE_OUT is when more than one pod was first seen. A
+# reading of zero pods records no time, so a run that never reached a pod has none.
+MAX_PODS=0
+TIME_TO_MAX=""
+SCALE_OUT=""
+
+# poll_pods records one reading of the Ready pods, relative to LOAD_START.
+poll_pods() {
+  local n now
+  n=$(ready_pods)
+  if [ "$n" -gt 0 ] && { [ -z "$TIME_TO_MAX" ] || [ "$n" -gt "$MAX_PODS" ]; }; then
+    now=$(date +%s.%N)
+    MAX_PODS=$n
+    TIME_TO_MAX=$(jq -n "$now - $LOAD_START")
+    echo "    $n ready pods at ${TIME_TO_MAX}s"
+  fi
+  if [ -z "$SCALE_OUT" ] && [ "$n" -gt 1 ]; then
+    now=$(date +%s.%N)
+    SCALE_OUT=$(jq -n "$now - $LOAD_START")
+    echo "    scale-out began: ${SCALE_OUT}s ($n pods)"
+  fi
+}
+
 echo "==> Starting sustained load..."
 LOAD_START=$(date +%s.%N)
-k6 run --quiet /scripts/load.js >/dev/null 2>&1 &
+k6 run --quiet --summary-export="$summary" "$SCRIPTS_DIR/load.js" >/dev/null 2>&1 &
 K6_PID=$!
 
-echo "==> Watching autoscaler scale-out (target=$TARGET_PODS pods, timeout=${TIMEOUT_SECONDS}s)..."
-SCALE_DELAY=""
-TIME_TO_SCALE=""
-SUCCESS=0
-deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  n=$(ready_pods)
-  now=$(date +%s.%N)
-  if [ -z "$SCALE_DELAY" ] && [ "$n" -gt 1 ]; then
-    SCALE_DELAY=$(jq -n "$now - $LOAD_START")
-    echo "    scale-out began: ${SCALE_DELAY}s ($n pods)"
-  fi
-  if [ "$n" -ge "$TARGET_PODS" ]; then
-    TIME_TO_SCALE=$(jq -n "$now - $LOAD_START")
-    SUCCESS=1
-    echo "    reached $TARGET_PODS pods in ${TIME_TO_SCALE}s"
-    break
-  fi
-  sleep 2
+echo "==> Watching the autoscaler until k6 exits..."
+while kill -0 "$K6_PID" 2>/dev/null; do
+  poll_pods
+  sleep "$SCALE_POLL_SECONDS"
 done
+poll_pods
+wait "$K6_PID"
+k6_exit=$?
+end=$(date +%s)
 
-kill "$K6_PID" >/dev/null 2>&1 || true
-wait "$K6_PID" 2>/dev/null || true
+stats=(start_seconds="$start" end_seconds="$end" max_pods="$MAX_PODS")
+if [ "$MAX_PODS" -gt 0 ]; then
+  stats+=(time_to_max_pods_seconds="$TIME_TO_MAX")
+fi
+if [ -n "$SCALE_OUT" ]; then
+  stats+=(scale_out_seconds="$SCALE_OUT")
+fi
+if [ -n "$COLD" ]; then
+  stats+=(cold_start_seconds="$COLD")
+fi
 
-echo "==> Results: cold_start=${COLD:-NaN} scale_delay=${SCALE_DELAY:-NaN} time_to_scale=${TIME_TO_SCALE:-NaN} success=$SUCCESS"
+echo "==> Results: max_pods=$MAX_PODS cold_start=${COLD:-NaN} scale_out=${SCALE_OUT:-NaN} time_to_max=${TIME_TO_MAX:-NaN}"
 
-METRICS=$(mktemp)
-(
-  [ -n "$COLD" ]          && echo "capp_cold_start_seconds $COLD"
-  [ -n "$SCALE_DELAY" ]   && echo "capp_scale_delay_seconds $SCALE_DELAY"
-  [ -n "$TIME_TO_SCALE" ] && echo "capp_time_to_scale_seconds $TIME_TO_SCALE"
-  echo "capp_scale_test_success $SUCCESS"
-) > "$METRICS"
+if [ "$k6_exit" -ne 0 ]; then
+  finish failed "the benchmark could not complete (k6 exited with $k6_exit)" "${stats[@]}"
+fi
 
-IFS=',' read -ra VM_URLS <<< "$VM_IMPORT_URLS"
-for url in "${VM_URLS[@]}"; do
-  echo "==> Pushing metrics to VictoriaMetrics ($url)..."
-  curl -s --data-binary @"$METRICS" \
-    "${url%/}/api/v1/import/prometheus?extra_label=capp=${CAPP_NAME}&extra_label=namespace=${CAPP_NAMESPACE}&extra_label=cluster=${CAPP_CLUSTER}"
-done
-rm -f "$METRICS"
+# A request succeeded when k6 counted at least one and the failure ratio is below 1.
+# Both values are required: a missing key cannot show that a request succeeded.
+succeeded=false
+if values=$(jq -r 'def required(f): f | if . == null then error("missing") else . end;
+  "\(required(.metrics.http_req_failed.value)) \(required(.metrics.http_reqs.count))"' "$summary" 2>/dev/null); then
+  read -r failed count <<< "$values"
+  if [ "$(jq -rn --argjson f "$failed" --argjson c "$count" '$f < 1 and $c > 0' 2>/dev/null)" = true ]; then
+    succeeded=true
+  fi
+fi
+if [ "$succeeded" != true ]; then
+  finish failed "no request succeeded" "${stats[@]}"
+fi
 
-[ "$SUCCESS" -eq 1 ]
+finish passed "" "${stats[@]}"

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
@@ -24,8 +25,16 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// rolloutInFlightPhases are the phases in which the stable and candidate revisions both take traffic.
+var rolloutInFlightPhases = map[cappv1alpha1.RolloutPhase]bool{
+	cappv1alpha1.RolloutPhaseProgressing: true,
+	cappv1alpha1.RolloutPhaseHolding:     true,
+	cappv1alpha1.RolloutPhasePromoting:   true,
+}
 
 // Handler implements resources.ResourceHandler for on-demand Capp benchmarks.
 type Handler struct {
@@ -127,6 +136,7 @@ func (h *Handler) trigger(c *gin.Context) {
 		tokenSecretName = saTokenSecretName(jobName(cappName))
 	}
 
+	runID := newRunID()
 	job, err := BuildJob(JobOptions{
 		CappName:    cappName,
 		CappUID:     capp.UID,
@@ -138,6 +148,8 @@ func (h *Handler) trigger(c *gin.Context) {
 		Path:        req.Path,
 		Headers:     req.Headers,
 		TriggeredBy: triggeredBy(c),
+		RunID:       runID,
+		Revision:    revisionLabel(capp),
 
 		SATokenSecretName: tokenSecretName,
 	})
@@ -165,12 +177,14 @@ func (h *Handler) trigger(c *gin.Context) {
 		zap.String("namespace", namespace),
 		zap.String("job", job.Name),
 		zap.String("type", string(req.Type)),
+		zap.String("runID", runID),
 	)
 
 	c.JSON(http.StatusCreated, TriggerResponse{
 		CappName: cappName,
 		JobName:  job.Name,
 		Type:     req.Type,
+		RunID:    runID,
 	})
 }
 
@@ -216,8 +230,30 @@ func (h *Handler) status(c *gin.Context) {
 		status, _ := jobOutcome(job)
 		resp.JobName = job.Name
 		resp.Status = status
+		resp.RunID = job.Annotations[AnnotationRunID]
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// newRunID returns an ID that is unique enough to tell two runs of the same Capp apart.
+func newRunID() string {
+	return fmt.Sprintf("%d-%s", time.Now().Unix(), utilrand.String(5))
+}
+
+// revisionLabel names the revision or revisions that serve traffic during the run.
+// While a rollout is in flight, both the stable and the candidate revision take traffic.
+func revisionLabel(capp *cappv1alpha1.Capp) string {
+	if status := capp.Status.Rollout; status != nil && status.StableRevision != "" {
+		if status.CandidateRevision != "" && rolloutInFlightPhases[status.Phase] {
+			return status.StableRevision + "," + status.CandidateRevision
+		}
+		return status.StableRevision
+	}
+	// The operator still fills this deprecated field. The ServingReady condition does not name a revision.
+	if latest := capp.Status.KnativeObjectStatus.LatestReadyRevisionName; latest != "" { //nolint:staticcheck // see above
+		return latest
+	}
+	return "unknown"
 }
 
 // listBenchmarkJobs returns benchmark Jobs for one Capp in a namespace.

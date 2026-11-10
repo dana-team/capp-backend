@@ -1,6 +1,6 @@
 import http from 'k6/http';
 import { check } from 'k6';
-import { url, params, tags, isSuccess } from './common.js';
+import { url, params, tags, systemTags, isSuccess } from './common.js';
 
 export const options = {
   stages: [
@@ -10,6 +10,7 @@ export const options = {
     { duration: '1m', target: 0 },
   ],
   tags,
+  systemTags,
   thresholds: {
     http_req_failed: ['rate<0.05'],
   },

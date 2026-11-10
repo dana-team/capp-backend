@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	knativev1 "knative.dev/serving/pkg/apis/serving/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -89,6 +90,8 @@ func TestTrigger_CreatesJob(t *testing.T) {
 
 	var resp TriggerResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp.RunID)
+	resp.RunID = ""
 	assert.Equal(t, TriggerResponse{CappName: "my-capp", JobName: "bench-my-capp", Type: TypeLatency}, resp)
 
 	var job batchv1.Job
@@ -103,7 +106,7 @@ func TestTrigger_CreatesJob(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, "ghcr.io/dana-team/capp-benchmark-runner:0.1.0", container.Image)
-	assert.Contains(t, container.Command, "/scripts/latency.js")
+	assert.Contains(t, container.Command, "/scripts/run-k6.sh")
 }
 
 func TestTrigger_PassesPathAndHeaders(t *testing.T) {
@@ -326,7 +329,7 @@ func TestTrigger_ReplacesFinished(t *testing.T) {
 
 	var job batchv1.Job
 	require.NoError(t, k8sClient.Get(t.Context(), client.ObjectKey{Namespace: "ns1", Name: "bench-my-capp"}, &job))
-	assert.Contains(t, job.Spec.Template.Spec.Containers[0].Command, "/scripts/latency.js")
+	assert.Contains(t, job.Spec.Template.Spec.Containers[0].Command, "/scripts/run-k6.sh")
 	_, finishedNow := jobOutcome(&job)
 	assert.False(t, finishedNow)
 	require.NoError(t, k8sClient.Get(t.Context(), client.ObjectKey{Namespace: "ns1", Name: "bench-other"}, &batchv1.Job{}))
@@ -341,6 +344,93 @@ func TestTrigger_UnknownType(t *testing.T) {
 	w := engine(t, testCapp("my-capp")).PostJSON(benchmarkPath("my-capp"), map[string]string{"type": "cold-start"})
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "unknown benchmark type")
+}
+
+func TestTrigger_ReturnsRunIDMatchingJob(t *testing.T) {
+	k8sClient := testutil.FakeClient(t, testCapp("my-capp"))
+	e := clusterEngine(t, k8sClient, testSAToken)
+
+	w := e.PostJSON(benchmarkPath("my-capp"), TriggerRequest{Type: TypeLatency})
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp TriggerResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.RunID)
+
+	var job batchv1.Job
+	require.NoError(t, k8sClient.Get(t.Context(), client.ObjectKey{Namespace: "ns1", Name: "bench-my-capp"}, &job))
+	assert.Equal(t, resp.RunID, job.Annotations[AnnotationRunID])
+	assert.Equal(t, resp.RunID, envMap(job.Spec.Template.Spec.Containers[0].Env)["RUN_ID"])
+}
+
+func TestStatus_ReturnsRunID(t *testing.T) {
+	job := benchmarkJob("bench-my-capp", "my-capp", batchv1.JobComplete)
+	job.Annotations[AnnotationRunID] = "run-42"
+	w := engine(t, job).Get(benchmarkPath("my-capp"))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp StatusResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "run-42", resp.RunID)
+}
+
+func TestRevisionLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		status cappv1alpha1.CappStatus
+		want   string
+	}{
+		{
+			name:   "no rollout",
+			status: cappv1alpha1.CappStatus{KnativeObjectStatus: knativeStatus("c-00007")}, //nolint:staticcheck // the field is still filled by the operator
+			want:   "c-00007",
+		},
+		{
+			name: "aborted rollout serves stable",
+			status: cappv1alpha1.CappStatus{Rollout: &cappv1alpha1.RolloutStatus{
+				StableRevision: "c-00006", CandidateRevision: "c-00007", Phase: cappv1alpha1.RolloutPhaseAborted,
+			}},
+			want: "c-00006",
+		},
+		{
+			name: "in-flight rollout serves both",
+			status: cappv1alpha1.CappStatus{Rollout: &cappv1alpha1.RolloutStatus{
+				StableRevision: "c-00006", CandidateRevision: "c-00007", Phase: cappv1alpha1.RolloutPhaseProgressing,
+			}},
+			want: "c-00006,c-00007",
+		},
+		{
+			name: "holding rollout serves both",
+			status: cappv1alpha1.CappStatus{Rollout: &cappv1alpha1.RolloutStatus{
+				StableRevision: "c-00006", CandidateRevision: "c-00007", Phase: cappv1alpha1.RolloutPhaseHolding,
+			}},
+			want: "c-00006,c-00007",
+		},
+		{
+			name: "promoting rollout serves both",
+			status: cappv1alpha1.CappStatus{Rollout: &cappv1alpha1.RolloutStatus{
+				StableRevision: "c-00006", CandidateRevision: "c-00007", Phase: cappv1alpha1.RolloutPhasePromoting,
+			}},
+			want: "c-00006,c-00007",
+		},
+		{
+			name:   "nothing known",
+			status: cappv1alpha1.CappStatus{},
+			want:   "unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capp := &cappv1alpha1.Capp{Status: tt.status}
+			assert.Equal(t, tt.want, revisionLabel(capp))
+		})
+	}
+}
+
+func knativeStatus(latestReady string) knativev1.ServiceStatus {
+	return knativev1.ServiceStatus{ConfigurationStatusFields: knativev1.ConfigurationStatusFields{
+		LatestReadyRevisionName: latestReady,
+	}}
 }
 
 func TestStatus_NotRunning(t *testing.T) {

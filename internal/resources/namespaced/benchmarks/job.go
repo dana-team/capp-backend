@@ -26,14 +26,16 @@ var (
 	AnnotationCappName = k8s.LabelCappName
 	// AnnotationTriggeredBy records the user who requested the benchmark.
 	AnnotationTriggeredBy = cappGVK.Group + "/triggered-by"
+	// AnnotationRunID records the run ID that the runner writes into every metric and summary.
+	AnnotationRunID = cappGVK.Group + "/run-id"
 )
 
 const (
 	defaultTargetPath = "/"
-	scaleTargetPods   = "5"
+	runK6Script       = "/scripts/run-k6.sh"
+	trendStats        = "p(50),p(95),p(99)"
 	scaleLoadVUs      = "100"
-	scaleLoadDuration = "3m"
-	scaleTimeout      = "180"
+	scaleLoadDuration = "150s"
 	saTokenEnv        = "BENCHMARK_SA_TOKEN"
 	saTokenSecretKey  = "token"
 	jobTTLSeconds     = int32(600)
@@ -55,15 +57,19 @@ type JobOptions struct {
 	Path        string
 	Headers     map[string]string
 	TriggeredBy string
+	// RunID identifies this run in the Job annotations and in the runner's output.
+	RunID string
+	// Revision is the revision label written to the runner's output, such as "c-00007".
+	Revision string
 	// SATokenSecretName names the Secret holding the ServiceAccount token.
 	// Required for the scale check.
 	SATokenSecretName string
 }
 
 // BuildJob returns a Job that runs one script baked into the runner image
-// (deploy/Dockerfile.benchmark-runner). It does not set a ServiceAccount. The
-// scale check imports samples to every VMURLs entry. k6 remote-write accepts a
-// single endpoint, so latency and throughput write to the first URL.
+// (deploy/Dockerfile.benchmark-runner). It does not set a ServiceAccount. Every
+// type writes to the first VMURLs entry: k6 remote-write accepts a single
+// endpoint, and the runner imports its summary there.
 func BuildJob(opts JobOptions) (*batchv1.Job, error) {
 	if opts.CappName == "" {
 		return nil, fmt.Errorf("capp name is required")
@@ -83,6 +89,9 @@ func BuildJob(opts JobOptions) (*batchv1.Job, error) {
 	if len(opts.VMURLs) == 0 {
 		return nil, fmt.Errorf("at least one VictoriaMetrics URL is required")
 	}
+	if opts.RunID == "" {
+		return nil, fmt.Errorf("run ID is required")
+	}
 	if !opts.Type.valid() {
 		return nil, fmt.Errorf("unknown benchmark type %q", opts.Type)
 	}
@@ -98,6 +107,7 @@ func BuildJob(opts JobOptions) (*batchv1.Job, error) {
 	blockOwnerDeletion := false
 	annotations := map[string]string{
 		AnnotationCappName: opts.CappName,
+		AnnotationRunID:    opts.RunID,
 	}
 	if opts.TriggeredBy != "" {
 		annotations[AnnotationTriggeredBy] = opts.TriggeredBy
@@ -170,6 +180,9 @@ func commandAndEnv(opts JobOptions) ([]string, []corev1.EnvVar, error) {
 		{Name: "CAPP_NAME", Value: opts.CappName},
 		{Name: "CAPP_NAMESPACE", Value: opts.Namespace},
 		{Name: "CAPP_CLUSTER", Value: opts.Cluster},
+		{Name: "CAPP_REVISION", Value: opts.Revision},
+		{Name: "RUN_ID", Value: opts.RunID},
+		{Name: "VM_IMPORT_URL", Value: strings.TrimRight(opts.VMURLs[0], "/")},
 	}
 	if len(opts.Headers) > 0 {
 		headers, err := json.Marshal(opts.Headers)
@@ -179,12 +192,13 @@ func commandAndEnv(opts JobOptions) ([]string, []corev1.EnvVar, error) {
 		env = append(env, corev1.EnvVar{Name: "TARGET_HEADERS", Value: string(headers)})
 	}
 
-	remoteWrite := corev1.EnvVar{Name: "K6_PROMETHEUS_RW_SERVER_URL", Value: remoteWriteURL(opts.VMURLs[0])}
 	switch opts.Type {
-	case TypeLatency:
-		return []string{"k6", "run", "--out", "experimental-prometheus-rw", "/scripts/latency.js"}, append(env, remoteWrite), nil
-	case TypeThroughput:
-		return []string{"k6", "run", "--out", "experimental-prometheus-rw", "/scripts/throughput.js"}, append(env, remoteWrite), nil
+	case TypeLatency, TypeThroughput:
+		env = append(env,
+			corev1.EnvVar{Name: "K6_PROMETHEUS_RW_SERVER_URL", Value: remoteWriteURL(opts.VMURLs[0])},
+			corev1.EnvVar{Name: "K6_PROMETHEUS_RW_TREND_STATS", Value: trendStats},
+		)
+		return []string{"bash", runK6Script, string(opts.Type)}, env, nil
 	case TypeScale:
 		if opts.SATokenSecretName == "" {
 			return nil, nil, fmt.Errorf("SA token secret name is required for the scale benchmark")
@@ -194,9 +208,6 @@ func commandAndEnv(opts JobOptions) ([]string, []corev1.EnvVar, error) {
 				LocalObjectReference: corev1.LocalObjectReference{Name: opts.SATokenSecretName},
 				Key:                  saTokenSecretKey,
 			}}},
-			corev1.EnvVar{Name: "VM_IMPORT_URLS", Value: strings.Join(opts.VMURLs, ",")},
-			corev1.EnvVar{Name: "TARGET_PODS", Value: scaleTargetPods},
-			corev1.EnvVar{Name: "TIMEOUT_SECONDS", Value: scaleTimeout},
 			corev1.EnvVar{Name: "LOAD_VUS", Value: scaleLoadVUs},
 			corev1.EnvVar{Name: "LOAD_DURATION", Value: scaleLoadDuration},
 		)
