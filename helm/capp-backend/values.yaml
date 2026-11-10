@@ -1,19 +1,6 @@
 # Default values for the capp-backend Helm chart.
 # Override these in a separate values file or with --set on the CLI.
 
-# ── Deployment mode ───────────────────────────────────────────────────────────
-# deployAs controls whether the backend is deployed as a standard Kubernetes
-# Deployment or as a Capp resource managed by the CAPP operator.
-#
-#   deployment — standard Kubernetes Deployment + Service. Works on any cluster
-#                and does not require the CAPP operator to be installed.
-#
-#   capp       — deploys as a rcs.dana.io/v1alpha1 Capp. The CAPP operator
-#                manages autoscaling (Knative), optional TLS (cert-manager),
-#                custom hostname (DNS), and logging. Requires the operator.
-#
-deployAs: deployment   # "deployment" | "capp"
-
 # ── Image ─────────────────────────────────────────────────────────────────────
 image:
   repository: ghcr.io/dana-team/capp-backend
@@ -22,26 +9,6 @@ image:
 
 imagePullSecrets: []
 
-# ── Replica count (deployment mode only) ─────────────────────────────────────
-# In "capp" mode, autoscaling is managed by Knative via the CAPP operator.
-replicaCount: 1
-
-# ── Service ───────────────────────────────────────────────────────────────────
-service:
-  type: ClusterIP
-  port: 8080
-
-# ── Ingress (deployment mode only) ───────────────────────────────────────────
-ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  hosts:
-    - host: capp-backend.example.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls: []
 
 # ── Backend configuration ─────────────────────────────────────────────────────
 # These values are rendered into the ConfigMap that the server reads at startup.
@@ -127,6 +94,29 @@ config:
       enabled: true
     capprevisions:
       enabled: true
+    # Per-Capp metrics charts. The query URL comes from
+    # secret.observabilityQueryURL. Each metric sets either query (one line)
+    # or series (up to 10 lines on one chart). Every query must contain
+    # $selector in every vector selector, which the backend replaces with
+    # the Capp's namespace/name matchers. Set clusterLabel on every metric
+    # when more than one cluster is configured. See config/config.yaml in the
+    # repository for a full example.
+    observability:
+      enabled: false
+      labels: {}          # extra matchers on every query, e.g. {env: prod}
+      metrics: []
+      # metrics:
+      #   - name: latency
+      #     description: Request duration measured by the queue-proxy
+      #     type: histogram
+      #     unit: seconds
+      #     namespaceLabel: k8s_namespace_name
+      #     objectLabel: kn_service_name
+      #     series:
+      #       - legend: p50
+      #         query: histogram_quantile(0.50, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{$selector}[5m])))
+      #       - legend: p95
+      #         query: histogram_quantile(0.95, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{$selector}[5m])))
     cappSizes:
       small:
         requests:
@@ -149,12 +139,6 @@ config:
         limits:
           cpu: "2000m"
           memory: "2Gi"
-
-  # On-demand per-capp benchmarking. The backend creates a Job from image.
-  # vmURLs and queryURL are injected from the Secret, not set here.
-  benchmarks:
-    enabled: false
-    image: ""                        # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
 
   # GitOps — push Capp values to a git repository for ArgoCD sync.
   # Disabled by default. Enable and provide credentials to activate.
@@ -194,18 +178,12 @@ secret:
   # Override: --set secret.gitopsToken="<personal-access-token>"
   gitopsToken: ""
 
-  # Prometheus-compatible base URLs. The monitoring stack writes to two instances.
-  # Required when config.resources.benchmarks.enabled is true.
-  # Injected as CAPP_RESOURCES_BENCHMARKS_VMURLS (comma-separated).
-  # Override: --set secret.benchmarkVmURLs[0]="http://vm-a.monitoring.svc:8428" --set secret.benchmarkVmURLs[1]="http://vm-b.monitoring.svc:8428"
-  benchmarkVmURLs: []
-
-  # Prometheus-compatible URL that PromQL queries read from, including any optional token
-  # in its query string (e.g. https://vm.example.com?apikey=abc123). Required when
-  # config.resources.benchmarks.enabled is true.
-  # Injected as CAPP_RESOURCES_BENCHMARKS_QUERYURL.
-  # Override: --set secret.benchmarkQueryURL="http://vm-query.monitoring.svc:8428"
-  benchmarkQueryURL: ""
+  # Prometheus-compatible URL that metrics queries read from, including any
+  # token in its query string (e.g. https://vm.example.com?apikey=abc123).
+  # Required when config.resources.observability.enabled is true.
+  # Injected as CAPP_RESOURCES_OBSERVABILITY_QUERYURL.
+  # Override: --set secret.observabilityQueryURL="http://vm-query.monitoring.svc:8428"
+  observabilityQueryURL: ""
 
   # SSH private key for GitOps. Required when config.gitops.authMethod is "ssh".
   # Override: --set-file secret.sshKey=/path/to/private/key
@@ -226,7 +204,6 @@ serviceAccount:
   name: "capp-backend"
 
 # ── Capp-mode specific settings ───────────────────────────────────────────────
-# These settings are only used when deployAs: capp.
 capp:
   # spec.scaleSpec.metric: concurrency|rps|cpu|memory (Knative/KPA via CAPP operator).
   scaleMetric: "concurrency"

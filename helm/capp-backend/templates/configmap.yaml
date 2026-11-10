@@ -5,9 +5,7 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "capp-backend.labels" . | nindent 4 }}
-    {{- if eq .Values.deployAs "capp" }}
     dana.io/capp-managed: "true"
-    {{- end }}
 data:
   config.yaml: |
     server:
@@ -108,6 +106,20 @@ data:
         enabled: {{ .Values.config.resources.capps.enabled }}
       capprevisions:
         enabled: {{ .Values.config.resources.capprevisions.enabled }}
+      {{- $obs := dig "resources" "observability" dict .Values.config }}
+      {{- if $obs.enabled }}
+      observability:
+        enabled: true
+        {{- with $obs.labels }}
+        labels:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if not $obs.metrics }}
+        {{- fail "config.resources.observability.metrics must list at least one metric when observability is enabled" }}
+        {{- end }}
+        metrics:
+          {{- toYaml $obs.metrics | nindent 10 }}
+      {{- end }}
       cappSizes:
         small:
           requests:
@@ -130,11 +142,6 @@ data:
           limits:
             cpu: {{ .Values.config.resources.cappSizes.large.limits.cpu | quote }}
             memory: {{ .Values.config.resources.cappSizes.large.limits.memory | quote }}
-      {{- if (dig "resources" "benchmarks" "enabled" false .Values.config) }}
-      benchmarks:
-        enabled: true
-        image: {{ required "config.resources.benchmarks.image is required when benchmarks are enabled" .Values.config.resources.benchmarks.image | quote }}
-      {{- end }}
 
     {{- if .Values.config.gitops.enabled }}
     gitops:

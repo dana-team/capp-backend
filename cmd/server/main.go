@@ -27,7 +27,6 @@ import (
 	"github.com/dana-team/capp-backend/internal/gitops"
 	"github.com/dana-team/capp-backend/internal/resources"
 	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
-	benchhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/benchmarks"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	revhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
 	cmhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
@@ -128,15 +127,17 @@ func main() {
 		"capprevisions": cfg.Resources.Capprevisions.Enabled,
 		"configmaps":    cfg.Resources.Configmaps.Enabled,
 		"secrets":       cfg.Resources.Secrets.Enabled,
-		"benchmarks":    cfg.Resources.Benchmarks.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
 	registry.Register(nshandler.New(logger))
-	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient, clusterMgr, cfg.Sizes))
+	cappHandler, err := capphandler.New(cfg.GitOps.Enabled, gitopsClient, clusterMgr, cfg.Sizes, cfg.Resources.Observability)
+	if err != nil {
+		logger.Fatal("failed to initialise capps handler", zap.Error(err))
+	}
+	registry.Register(cappHandler)
 	registry.Register(revhandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
-	registry.Register(benchhandler.New(cfg.Resources.Benchmarks, logger))
 	// ── 8. Build and start HTTP server ────────────────────────────────────────
 	srv := server.New(cfg, version, authMgr, clusterMgr, registry, logger)
 

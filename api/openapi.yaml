@@ -40,10 +40,6 @@ tags:
     description: Namespace listing within a cluster
   - name: capps
     description: Capp resource management
-  - name: benchmarks
-    description: On-demand per-Capp benchmark Jobs
-  - name: metrics
-    description: Preset Capp dashboards and PromQL queries against the configured Prometheus-compatible server
   - name: configmaps
     description: ConfigMap resource management
   - name: secrets
@@ -1176,6 +1172,81 @@ components:
               type: integer
               example: 3
 
+    MetricInfo:
+      type: object
+      required: [name, type, legends]
+      properties:
+        name:
+          type: string
+          example: latency
+        description:
+          type: string
+          example: Request duration
+        type:
+          type: string
+          enum: [gauge, counter, histogram]
+          description: Display hint from configuration.
+        unit:
+          type: string
+          description: Y-axis unit from configuration. Omitted when not set.
+          example: seconds
+        legends:
+          type: array
+          description: |
+            The metric's lines, in the order `series` is returned. A metric
+            configured with a single `query` has one legend, its name.
+          items:
+            type: string
+          example: [p50, p95]
+
+    MetricListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricInfo'
+
+    MetricSeriesResult:
+      type: object
+      required: [legend, resultType, result]
+      properties:
+        legend:
+          type: string
+          example: p95
+        resultType:
+          type: string
+          enum: [vector, matrix, scalar, string]
+        result:
+          description: |
+            Prometheus `data.result` unchanged. For `vector`, a list of
+            `{metric, value: [unixSeconds, "value"]}`; for `matrix`, a list
+            of `{metric, values: [[unixSeconds, "value"], ...]}`; for
+            `scalar` and `string`, a single `[unixSeconds, "value"]`.
+
+    MetricQueryResponse:
+      allOf:
+        - $ref: '#/components/schemas/MetricInfo'
+        - type: object
+          required: [series]
+          properties:
+            series:
+              type: array
+              description: One entry per legend, in the same order.
+              items:
+                $ref: '#/components/schemas/MetricSeriesResult'
+            warnings:
+              type: array
+              description: Prometheus warnings from every series.
+              items:
+                type: string
+            infos:
+              type: array
+              description: Prometheus infos from every series.
+              items:
+                type: string
+
     CappRevisionListResponse:
       type: object
       properties:
@@ -1208,115 +1279,6 @@ components:
         total:
           type: integer
           example: 3
-
-    BenchmarkTriggerRequest:
-      type: object
-      required: [type]
-      properties:
-        type:
-          type: string
-          description: Which baked-in check the runner image executes.
-          enum: [latency, throughput, scale]
-          example: latency
-
-    BenchmarkTriggerResponse:
-      type: object
-      required: [cappName, jobName, type]
-      properties:
-        cappName:
-          type: string
-          example: my-capp
-        jobName:
-          type: string
-          example: bench-my-capp
-        type:
-          type: string
-          enum: [latency, throughput, scale]
-          example: latency
-
-    BenchmarkStatusResponse:
-      type: object
-      required: [jobName, status]
-      properties:
-        jobName:
-          type: string
-          description: Name of the benchmark Job. Empty when none exists.
-          example: bench-my-capp
-        status:
-          type: string
-          description: |
-            running, completed, or failed. Empty when no benchmark Job exists.
-            A finished Job remains until its TTL elapses or a new benchmark replaces it.
-          enum: ["", running, completed, failed]
-          example: running
-
-    PrometheusResponse:
-      type: object
-      description: |
-        Prometheus HTTP API response, passed through unchanged.
-      properties:
-        status:
-          type: string
-          enum: [success, error]
-          example: success
-        data:
-          type: object
-          additionalProperties: true
-          description: Present when status is success. Shape depends on the query.
-        errorType:
-          type: string
-          description: Present when status is error.
-          example: bad_data
-        error:
-          type: string
-          description: Present when status is error.
-          example: bad query
-      additionalProperties: true
-
-    DashboardQuery:
-      type: object
-      required: [legend, query]
-      properties:
-        legend:
-          type: string
-          description: Series name for the chart.
-          example: p95
-        query:
-          type: string
-          description: PromQL expression scoped to this Capp. Pass it to the query_range endpoint.
-          example: 'histogram_quantile(0.95, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{k8s_namespace_name="default",kn_service_name="my-capp"}[5m])))'
-
-    Dashboard:
-      type: object
-      required: [id, title, description, unit, queries]
-      properties:
-        id:
-          type: string
-          enum: [latency, throughput, autoscaling]
-          example: latency
-        title:
-          type: string
-          example: Latency
-        description:
-          type: string
-          example: Request duration measured by the queue-proxy, excluding activator wait.
-        unit:
-          type: string
-          description: Unit for every series on this dashboard.
-          example: seconds
-        queries:
-          type: array
-          items:
-            $ref: '#/components/schemas/DashboardQuery'
-
-    DashboardsResponse:
-      type: object
-      required: [dashboards]
-      properties:
-        dashboards:
-          type: array
-          items:
-            $ref: '#/components/schemas/Dashboard'
 
     SyncResponse:
       type: object
@@ -2523,240 +2485,6 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/benchmark:
-    post:
-      tags: [benchmarks]
-      summary: Run a benchmark for a Capp
-      description: |
-        Creates one benchmark Job for the Capp. The Job runs the selected
-        check from the configured runner image and writes samples to every
-        configured VictoriaMetrics URL.
-
-        Returns 409 when a benchmark for this Capp is still running. A finished
-        Job is deleted and replaced. Registered only when
-        `resources.benchmarks.enabled` is true.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-        - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/objectNameParam'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BenchmarkTriggerRequest'
-      responses:
-        "201":
-          description: Benchmark Job created.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BenchmarkTriggerResponse'
-        "400":
-          description: Missing or unknown benchmark type.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          $ref: '#/components/responses/NotFound'
-        "409":
-          description: A benchmark for this Capp is still running.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        "500":
-          $ref: '#/components/responses/InternalError'
-
-    get:
-      tags: [benchmarks]
-      summary: Get the benchmark status for a Capp
-      description: |
-        Returns the benchmark Job name and status (`running`, `completed`, or
-        `failed`). Both fields are empty when no Job exists. Registered only
-        when `resources.benchmarks.enabled` is true.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-        - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/objectNameParam'
-      responses:
-        "200":
-          description: Benchmark status. Both fields are empty when no Job exists.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BenchmarkStatusResponse'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "500":
-          $ref: '#/components/responses/InternalError'
-
-  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/dashboards:
-    get:
-      tags: [metrics]
-      summary: List preset PromQL dashboards for a Capp
-      description: |
-        Returns the latency, throughput, and autoscaling charts for this Capp.
-        Each expression is scoped to the Capp's Knative service
-        and is meant for `query_range`. The Capp must exist. Registered only
-        when `resources.benchmarks.enabled` is true.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-        - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/objectNameParam'
-      responses:
-        "200":
-          description: Preset dashboards for the Capp.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DashboardsResponse'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          $ref: '#/components/responses/NotFound'
-        "500":
-          $ref: '#/components/responses/InternalError'
-
-  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/query:
-    get:
-      tags: [metrics]
-      summary: Run an instant PromQL query for a Capp
-      description: |
-        Forwards the query to the configured Prometheus-compatible URL
-        (`resources.benchmarks.queryURL`) and returns that response unchanged.
-        Keeps any query parameters on that URL, such as an API key.
-        The Capp must exist. Registered only when
-        `resources.benchmarks.enabled` is true.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-        - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/objectNameParam'
-        - name: query
-          in: query
-          required: true
-          schema:
-            type: string
-          description: PromQL expression.
-          example: up
-        - name: time
-          in: query
-          required: false
-          schema:
-            type: string
-          description: Evaluation timestamp. Unix seconds or RFC3339. Defaults to now on the Prometheus server.
-          example: "1700000000"
-      responses:
-        "200":
-          description: Prometheus-compatible instant query response, passed through.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PrometheusResponse'
-        "400":
-          description: Missing query, or the Prometheus server rejected the expression.
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/Error'
-                  - $ref: '#/components/schemas/PrometheusResponse'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          $ref: '#/components/responses/NotFound'
-        "502":
-          description: The Prometheus server could not be reached, or it returned a server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        "500":
-          $ref: '#/components/responses/InternalError'
-
-  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/query_range:
-    get:
-      tags: [metrics]
-      summary: Run a range PromQL query for a Capp
-      description: |
-        Forwards the query to the configured Prometheus-compatible URL
-        (`resources.benchmarks.queryURL`) and returns that response unchanged.
-        Keeps any query parameters on that URL, such as an API key.
-        The Capp must exist. Registered only when
-        `resources.benchmarks.enabled` is true.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-        - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/objectNameParam'
-        - name: query
-          in: query
-          required: true
-          schema:
-            type: string
-          description: PromQL expression.
-          example: up
-        - name: start
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Range start. Unix seconds or RFC3339.
-          example: "1700000000"
-        - name: end
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Range end. Unix seconds or RFC3339.
-          example: "1700000300"
-        - name: step
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Query resolution step.
-          example: 15s
-      responses:
-        "200":
-          description: Prometheus-compatible range query response, passed through.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PrometheusResponse'
-        "400":
-          description: Missing parameters, or the Prometheus server rejected the expression.
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/Error'
-                  - $ref: '#/components/schemas/PrometheusResponse'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          $ref: '#/components/responses/NotFound'
-        "502":
-          description: The Prometheus server could not be reached, or it returned a server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        "500":
-          $ref: '#/components/responses/InternalError'
-
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/sync:
     post:
       tags: [capps]
@@ -3069,6 +2797,137 @@ paths:
                 $ref: '#/components/schemas/Error'
         "500":
           $ref: '#/components/responses/InternalError'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics:
+    get:
+      tags: [capps]
+      summary: List the metrics available for a Capp
+      description: |
+        Returns the metrics configured under `resources.observability.metrics`.
+        The caller must be able to read the Capp. Returns 501 when
+        observability is disabled.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Configured metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Capp not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "501":
+          description: Observability is not enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/{metric}:
+    get:
+      tags: [capps]
+      summary: Query one metric for a Capp
+      description: |
+        Runs the configured PromQL for `metric`, scoped to this Capp's
+        namespace and name (and cluster, when the metric has a cluster label).
+        Callers never send PromQL.
+
+        A metric may group several lines (for example p50 and p95); each is
+        a separate query, run in parallel, returned in `series` in the order of
+        `legends`. If any line fails, the request fails with 502.
+
+        Without `start`, `end` and `step` this is an instant query at the
+        current time, the same instant for every line, and `resultType` is
+        usually `vector`. With all three it is a range query and `resultType`
+        is `matrix`. A range may hold at most 11000 points per series.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - name: metric
+          in: path
+          required: true
+          description: Metric name from the list endpoint.
+          schema:
+            type: string
+        - name: start
+          in: query
+          description: Range start, as RFC 3339 or a Unix timestamp in seconds.
+          schema:
+            type: string
+          example: "2026-11-10T10:00:00Z"
+        - name: end
+          in: query
+          description: Range end, as RFC 3339 or a Unix timestamp in seconds. Must be after start.
+          schema:
+            type: string
+          example: "2026-11-10T11:00:00Z"
+        - name: step
+          in: query
+          description: Resolution, as a duration (`30s`, `1m`) or a number of seconds.
+          schema:
+            type: string
+          example: "1m"
+      responses:
+        "200":
+          description: Query result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricQueryResponse'
+        "400":
+          description: Invalid or incomplete range parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Capp or metric not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+        "501":
+          description: Observability is not enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "502":
+          description: The Prometheus query failed (code `PROMETHEUS_QUERY_FAILED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         "503":
           description: Cluster is currently unhealthy.
           content:

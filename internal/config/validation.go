@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/prometheus/prometheus/promql/parser"
 )
 
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
@@ -28,6 +29,20 @@ var validGitOpsAuthMethods = map[string]struct{}{
 	"ssh":   {},
 }
 
+// validMetricTypes is the set of accepted values for MetricsQuery.Type.
+var validMetricTypes = map[string]struct{}{
+	"gauge":     {},
+	"counter":   {},
+	"histogram": {},
+}
+
+// metricNameRe matches a DNS-1123 label, because the metric name is a path
+// segment.
+var metricNameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// promLabelNameRe matches a Prometheus label name.
+var promLabelNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 // Validate checks the fully-loaded Config for semantic errors that cannot be
 // expressed as Viper defaults (e.g. required fields, cross-field constraints).
 // All validation errors are collected and returned together so the operator
@@ -38,7 +53,7 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
-	errs = append(errs, validateBenchmarks(&cfg.Resources.Benchmarks)...)
+	errs = append(errs, validateObservability(&cfg.Resources.Observability, len(cfg.Clusters))...)
 
 	if cfg.GitOps.Enabled {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
@@ -402,34 +417,175 @@ func validateGitOps(g *GitOpsConfig) []error {
 	return errs
 }
 
-// validateBenchmarks checks that benchmark configuration is complete when enabled.
-func validateBenchmarks(b *BenchmarkConfig) []error {
-	if !b.Enabled {
+// validateMetricSeries checks that a metric sets exactly one of query and
+// series, and that every query is scoped to the requested Capp.
+func validateMetricSeries(field string, m MetricsQuery) []error {
+	hasQuery := strings.TrimSpace(m.Query) != ""
+	switch {
+	case !hasQuery && len(m.Series) == 0:
+		return []error{fmt.Errorf("%s.query or series is required", field)}
+	case hasQuery && len(m.Series) > 0:
+		return []error{fmt.Errorf("%s sets both query and series; set one", field)}
+	case hasQuery:
+		return validateSeriesQuery(field+".query", m.Query)
+	}
+
+	var errs []error
+	if len(m.Series) > MaxMetricSeries {
+		errs = append(errs, fmt.Errorf("%s.series has %d entries; at most %d are allowed", field, len(m.Series), MaxMetricSeries))
+	}
+	legends := make(map[string]struct{}, len(m.Series))
+	for j, s := range m.Series {
+		sf := fmt.Sprintf("%s.series[%d]", field, j)
+		if s.Legend == "" {
+			errs = append(errs, fmt.Errorf("%s.legend is required", sf))
+		} else if _, dup := legends[s.Legend]; dup {
+			errs = append(errs, fmt.Errorf("%s.legend %q is a duplicate", sf, s.Legend))
+		}
+		legends[s.Legend] = struct{}{}
+		if strings.TrimSpace(s.Query) == "" {
+			errs = append(errs, fmt.Errorf("%s.query is required", sf))
+		} else {
+			errs = append(errs, validateSeriesQuery(sf+".query", s.Query)...)
+		}
+	}
+	return errs
+}
+
+// selectorSentinel stands in for MetricsSelectorPlaceholder while a query is
+// parsed, so the parser sees a valid label matcher where the placeholder
+// would expand to the Capp's matchers.
+const selectorSentinel = "__capp_selector_placeholder__"
+
+// validateSeriesQuery parses query as PromQL and checks that every vector
+// selector, including ones written with no braces (e.g. `errors_total`),
+// contains MetricsSelectorPlaceholder in its label matchers. Any unscoped
+// selector could return other Capps' series to a caller authorized only for
+// the requested Capp.
+func validateSeriesQuery(field, query string) []error {
+	expanded := strings.ReplaceAll(query, MetricsSelectorPlaceholder, selectorSentinel+`="1"`)
+	expr, err := parser.ParseExpr(expanded)
+	if err != nil {
+		return []error{fmt.Errorf("%s is not valid PromQL: %w", field, err)}
+	}
+
+	var unscoped []string
+	scoped := 0
+	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
+		vs, ok := node.(*parser.VectorSelector)
+		if !ok {
+			return nil
+		}
+		for _, lm := range vs.LabelMatchers {
+			if lm.Name == selectorSentinel {
+				scoped++
+				return nil
+			}
+		}
+		unscoped = append(unscoped, vs.String())
+		return nil
+	})
+
+	if scoped == 0 {
+		return []error{fmt.Errorf("%s must contain %s inside a vector selector's {} so results are limited to one Capp", field, MetricsSelectorPlaceholder)}
+	}
+	errs := make([]error, 0, len(unscoped))
+	for _, sel := range unscoped {
+		errs = append(errs, fmt.Errorf(
+			"%s has a selector (%s) that does not contain %s, so its results are not limited to one Capp",
+			field, sel, MetricsSelectorPlaceholder,
+		))
+	}
+	return errs
+}
+
+// validateObservability checks that observability configuration is complete
+// when enabled: an absolute http(s) query URL and at least one well-formed
+// metric whose query is scoped to the requested Capp. queryURL is shared by
+// every configured cluster, so with more than one cluster each metric must
+// set clusterLabel; otherwise a Capp with the same namespace and name on
+// another cluster would match too.
+func validateObservability(o *ObservabilityConfig, clusterCount int) []error {
+	if !o.Enabled {
 		return nil
 	}
 
 	var errs []error
 
-	if b.Image == "" {
-		errs = append(errs, errors.New(
-			"config: resources.benchmarks.image is required when resources.benchmarks.enabled is true",
-		))
-	}
-	if len(compactVMURLs(b.VMURLs)) == 0 {
-		errs = append(errs, errors.New(
-			"config: resources.benchmarks.vmURLs is required when resources.benchmarks.enabled is true; "+
-				"set via CAPP_RESOURCES_BENCHMARKS_VMURLS environment variable",
-		))
-	}
-	queryURL := strings.TrimSpace(b.QueryURL)
+	queryURL := strings.TrimSpace(o.QueryURL)
 	if queryURL == "" {
 		errs = append(errs, errors.New(
-			"config: resources.benchmarks.queryURL is required when resources.benchmarks.enabled is true; "+
-				"set via CAPP_RESOURCES_BENCHMARKS_QUERYURL environment variable",
+			"config: resources.observability.queryURL is required when resources.observability.enabled is true; "+
+				"set via CAPP_RESOURCES_OBSERVABILITY_QUERYURL environment variable",
 		))
 	} else if u, err := url.Parse(queryURL); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		// The value is left out of the error because it can carry a token.
-		errs = append(errs, errors.New("config: resources.benchmarks.queryURL must be an absolute http or https URL"))
+		errs = append(errs, errors.New("config: resources.observability.queryURL must be an absolute http or https URL"))
+	}
+
+	if len(o.Metrics) == 0 {
+		errs = append(errs, errors.New(
+			"config: resources.observability.metrics is required when resources.observability.enabled is true",
+		))
+	}
+
+	for name := range o.Labels {
+		if !promLabelNameRe.MatchString(name) {
+			errs = append(errs, fmt.Errorf("config: resources.observability.labels key %q is not a valid Prometheus label name", name))
+		}
+	}
+
+	namesSeen := make(map[string]struct{}, len(o.Metrics))
+	for i, m := range o.Metrics {
+		field := fmt.Sprintf("config: resources.observability.metrics[%d]", i)
+
+		switch {
+		case m.Name == "":
+			errs = append(errs, fmt.Errorf("%s.name is required", field))
+		case !metricNameRe.MatchString(m.Name):
+			errs = append(errs, fmt.Errorf("%s.name %q must be a DNS-1123 label", field, m.Name))
+		default:
+			if _, dup := namesSeen[m.Name]; dup {
+				errs = append(errs, fmt.Errorf("%s.name %q is a duplicate", field, m.Name))
+			}
+			namesSeen[m.Name] = struct{}{}
+		}
+
+		errs = append(errs, validateMetricSeries(field, m)...)
+
+		if m.Type == "" {
+			errs = append(errs, fmt.Errorf("%s.type is required", field))
+		} else if _, ok := validMetricTypes[m.Type]; !ok {
+			errs = append(errs, fmt.Errorf("%s.type must be one of 'gauge', 'counter', or 'histogram'", field))
+		}
+
+		if m.NamespaceLabel == "" {
+			errs = append(errs, fmt.Errorf("%s.namespaceLabel is required", field))
+		}
+		if m.ObjectLabel == "" {
+			errs = append(errs, fmt.Errorf("%s.objectLabel is required", field))
+		}
+		if m.ClusterLabel == "" && clusterCount > 1 {
+			errs = append(errs, fmt.Errorf(
+				"%s.clusterLabel is required when more than one cluster is configured, "+
+					"so results are limited to the requested cluster", field,
+			))
+		}
+		for key, label := range map[string]string{
+			"clusterLabel":   m.ClusterLabel,
+			"namespaceLabel": m.NamespaceLabel,
+			"objectLabel":    m.ObjectLabel,
+		} {
+			if label != "" && !promLabelNameRe.MatchString(label) {
+				errs = append(errs, fmt.Errorf("%s.%s %q is not a valid Prometheus label name", field, key, label))
+			}
+			if _, collides := o.Labels[label]; label != "" && collides {
+				errs = append(errs, fmt.Errorf(
+					"%s.%s %q also appears in resources.observability.labels; it would duplicate a matcher in every query",
+					field, key, label,
+				))
+			}
+		}
 	}
 
 	return errs

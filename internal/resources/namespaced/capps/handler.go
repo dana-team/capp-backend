@@ -15,6 +15,7 @@ import (
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,13 +37,27 @@ type Handler struct {
 	gitops        GitOpsSyncer
 	clusterMgr    cluster.ClusterManager
 	sizes         config.CappSizes
+	observability config.ObservabilityConfig
+	prometheus    promv1.API
 }
 
 // New returns a ready-to-use Capp Handler. When gitops is disabled, pass nil
 // for the syncer — the sync endpoint will return 501. Pass nil for clusterMgr
 // when migration is not needed (e.g. in tests that don't exercise migrate).
-func New(gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes) *Handler {
-	return &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, clusterMgr: clusterMgr, sizes: sizes}
+// When observability is disabled, the metrics endpoints return 501.
+//
+// It returns an error only when observability is enabled and the Prometheus
+// client cannot be built; config.Validate already parses QueryURL, so this
+// is a startup-time configuration failure, not a condition the metrics
+// endpoints should have to handle at request time.
+func New(gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes, observability config.ObservabilityConfig) (*Handler, error) {
+	h := &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, clusterMgr: clusterMgr, sizes: sizes, observability: observability}
+	prometheus, err := newPrometheusAPI(observability)
+	if err != nil {
+		return nil, fmt.Errorf("building prometheus client: %w", err)
+	}
+	h.prometheus = prometheus
+	return h, nil
 }
 
 // Name returns the handler's identifier, matching the resources.capps config key.
@@ -65,6 +80,8 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.DELETE("/:name/sync", h.unsync)
 	ns.POST("/:name/rollout", h.rolloutAction)
 	ns.DELETE("/:name/rollout/strategy", h.removeRolloutStrategy)
+	ns.GET("/:name/metrics", h.listMetrics)
+	ns.GET("/:name/metrics/:metric", h.queryMetric)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

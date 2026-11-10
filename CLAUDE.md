@@ -68,6 +68,8 @@ DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync      (au
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/rollout   (auth + cluster) — promote/abort/retry a staged rollout by setting the rcs.dana.io/rollout annotation; 202, applied asynchronously by the operator; 409 when status shows the action cannot apply
 DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/rollout/strategy  (auth + cluster) — remove the rollout strategy; moves live traffic (operator promotes a Ready candidate, otherwise pins to stable)
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate  (auth + cluster) — migrate Capp to another cluster/namespace with dependent resources; requires targetHostname on copy when source has a custom hostname
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/metrics            (auth + cluster) — list configured metrics (resources.observability.metrics); 501 if observability disabled
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/metrics/:metric    (auth + cluster) — run a configured metric (single `query` or up to 10 `series` lines, queried in parallel, returned in legend order) with $selector replaced by Capp namespace/name/cluster matchers; instant by default, range with start+end+step; Capp read is the authz check; 502 PROMETHEUS_QUERY_FAILED on upstream errors
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions                     (auth + cluster) — list CappRevisions (label rcs.dana.io/cappName), newest first
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions/:revision           (auth + cluster) — get revision by number (spec.revisionNumber, not object name)
 POST   /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/revisions/:revision/rollback  (auth + cluster) — apply revision's spec/labels/annotations to live Capp (backup-to-git label kept as live); pushes to Git if synced
@@ -77,16 +79,11 @@ GET    /api/v1/clusters/:cluster/namespaces/:namespace/configmaps/names     (aut
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/secrets/names         (auth + cluster) — list secret names only
 GET    /api/v1/clusters/:cluster/configmaps            (auth + cluster) — list all configmaps across namespaces (dana.io/capp-managed=true only)
 GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list all secrets across namespaces
-
-# benchmarks handler — routes exist only when resources.benchmarks.enabled (default false)
-POST|GET /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/benchmark          — trigger / status of the Capp's benchmark Job (running Job blocks a new trigger; finished Job is replaced)
-GET      /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/metrics/dashboards — preset PromQL for the Capp
-GET      /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/metrics/query[_range] — PromQL proxy to `queryURL` (its query params, e.g. `?apikey=`, are kept on every request)
 ```
 
 ### Key Patterns
 
-**ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `capprevisions`, `namespaces`, `configmaps`, `secrets`, `benchmarks`. To add a new resource type, implement the interface, register it in `cmd/server/main.go`, and add its name to the `enabledResources` map there (plus a `ResourcesConfig` field and default in `internal/config/config.go`). The registry skips only names explicitly set to `false`; a handler missing from the map is always mounted.
+**ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `capprevisions`, `namespaces`, `configmaps`, `secrets`. To add a new resource type, implement the interface, register it in `cmd/server/main.go`, and add its name to the `enabledResources` map there (plus a `ResourcesConfig` field and default in `internal/config/config.go`). The registry skips only names explicitly set to `false`; a handler missing from the map is always mounted.
 
 **capp-mcp** (`cmd/mcp/`, `internal/mcpserver/`, `helm/capp-mcp/`): A separate binary that exposes the REST API as MCP tools over Streamable HTTP (`POST /mcp`, `GET /healthz`; flags `--port`/`CAPP_MCP_PORT` 8081, `--backend-url`/`CAPP_BACKEND_URL`, `--insecure`). It holds no credentials: `AuthMiddleware` puts the client's bearer token in the request context, and each tool calls capp-backend through the cappctl HTTP client (`internal/cli/client`) using that token, so backend RBAC still applies. Tools are grouped into `ToolSet`s (`tools_*.go`) registered in `server.go`: clusters, namespaces, capps, capprevisions, configmaps, secrets (read-only, metadata only). A new backend route that agents should reach needs a matching tool here.
 
@@ -114,7 +111,8 @@ Default config: `config/config.yaml`. Key settings:
 - `auth.mode`: passthrough | openshift | ldap
 - `auth.ldap`: directory URL/CA, search DN/filter/attribute settings, login deadline, token lifetime, issuer/audience, and Ed25519 signing/trust keys; validated only in LDAP mode
 - `clusters[]`: array of cluster connections with credentials
-- `resources.<name>.enabled`: feature flags for resource handlers (all on by default except `benchmarks`, which also requires `image`, `vmURLs` (Job write targets) and `queryURL` (PromQL reads); inject via `CAPP_RESOURCES_BENCHMARKS_VMURLS` comma-separated and `CAPP_RESOURCES_BENCHMARKS_QUERYURL`)
+- `resources.<name>.enabled`: feature flags for resource handlers (all on by default)
+- `resources.observability`: per-Capp metrics endpoints, off by default (`enabled`); when on, requires `queryURL` (a Prometheus-compatible server; inject via `CAPP_RESOURCES_OBSERVABILITY_QUERYURL`) and at least one entry in `metrics`. Each metric's query (or each of its `series`) is parsed as PromQL, and every vector selector (including a bare metric name with no braces) must contain the `$selector` placeholder; `clusterLabel` is required on every metric when more than one cluster is configured, because `queryURL` is shared — `resources.observability.labels` adds extra matchers (e.g. to pin a shared Prometheus) to every query
 - `cappSizes`: small/medium/large resource presets served at `/api/v1/sizes` and passed to the capps and revisions handlers
 - `gitops`: optional Git sync; per-cluster `clusters[].gitOpsPath` nests under `gitops.pathPrefix`
 - `server.corsAllowedOrigins`: defaults to `localhost:3000` (capp-frontend dev server)
@@ -146,8 +144,7 @@ internal/
     cluster/
       namespaces/               # Namespace CRUD handler (SelfSubjectAccessReview filtering, RoleBinding/ResourceQuota)
     namespaced/
-      benchmarks/               # Benchmark Job trigger/status + PromQL dashboards/query proxy (opt-in)
-      capps/                    # Capp CRUD, sync, migrate handler, DTO types, K8s conversion
+      capps/                    # Capp CRUD, sync, migrate handler, DTO types, K8s conversion; metrics.go has the observability endpoints
         revisions/              # CappRevision list/get/rollback handler (reuses capps DTOs + BareFromK8s)
       configmaps/               # ConfigMap CRUD handler (dana.io/capp-managed=true filter on list)
       secrets/                  # Secret CRUD handler
@@ -165,7 +162,7 @@ pkg/k8s/                        # Kubernetes scheme builder (CRD type registrati
 pkg/clientversion/              # backend↔client version check (known clients, User-Agent, warning header, minor comparison); no Gin/K8s imports
 api/openapi.yaml                # OpenAPI 3.1 spec (embedded in binary)
 helm/
-  capp-backend/                 # Helm chart for the server (deployAs=deployment|capp)
+  capp-backend/                 # Helm chart for the server (deployed as a Capp resource)
   capp-mcp/                     # Helm chart for capp-mcp (deployed as a Knative-autoscaled Capp)
   capp-template/                # Generic Helm chart for deploying a single Capp resource
 deploy/                         # Dockerfiles (server, cappctl, capp-mcp) and reference manifests

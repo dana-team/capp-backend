@@ -61,8 +61,19 @@ func makeSizes() config.CappSizes {
 	}
 }
 
+// mustHandler calls New and fails the test immediately if it errors, so
+// call sites that always pass a valid configuration don't need to repeat
+// that check.
+func mustHandler(t *testing.T, gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes) *Handler {
+	o := config.ObservabilityConfig{}
+	t.Helper()
+	h, err := New(gitopsEnabled, gitops, clusterMgr, sizes, o)
+	require.NoError(t, err)
+	return h
+}
+
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(false, nil, nil, makeSizes()))
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), mustHandler(t, false, nil, nil, makeSizes()))
 }
 
 // syncEngine creates an engine with gitops enabled, ClusterMeta in context,
@@ -75,7 +86,7 @@ func syncEngine(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, 
 
 func syncEngineWithClient(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, sizes config.CappSizes, k8sClient client.Client) *testutil.EngineHelper {
 	t.Helper()
-	handler := New(true, mock, nil, sizes)
+	handler := mustHandler(t, true, mock, nil, sizes)
 	return testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
 }
 
@@ -237,7 +248,7 @@ func TestUpdate_PreservesMetadata(t *testing.T) {
 	capp.Finalizers = []string{"dana.io/capp-cleanup"}
 
 	k8sClient := testutil.FakeClient(t, capp)
-	e := testutil.NewEngineHelper(t, k8sClient, New(false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
 
 	w := e.PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
 	require.Equal(t, http.StatusOK, w.Code)
@@ -255,7 +266,7 @@ func TestUpdate_OmittedStrategyIsPreserved(t *testing.T) {
 		Stages: []cappv1alpha1.RolloutStage{{Percent: 50}},
 	}
 	k8sClient := testutil.FakeClient(t, capp)
-	e := testutil.NewEngineHelper(t, k8sClient, New(false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
 
 	w := e.PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
 	require.Equal(t, http.StatusOK, w.Code)
@@ -449,7 +460,7 @@ func TestRespondList_CorrectTotalAndMapping(t *testing.T) {
 // -- Sync tests --
 
 func TestSync_GitOpsDisabled(t *testing.T) {
-	h := New(false, nil, nil, makeSizes())
+	h := mustHandler(t, false, nil, nil, makeSizes())
 	e := testutil.NewEngineHelper(t, testutil.FakeClient(t, makeCapp("app1", "ns1")), h)
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
@@ -615,7 +626,7 @@ func TestSync_SuccessVerifyLabel(t *testing.T) {
 	mock := &mockGitOpsSyncer{}
 
 	k8sClient := testutil.FakeClient(t, capp)
-	handler := New(true, mock, nil, makeSizes())
+	handler := mustHandler(t, true, mock, nil, makeSizes())
 	e := testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
 
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
@@ -708,7 +719,7 @@ func TestSync_UsesClusterNameNotGitOpsPath(t *testing.T) {
 func migrateEngine(t *testing.T, sourceClient client.Client, clusterMgr *testutil.MockClusterManager) *testutil.EngineHelper {
 	t.Helper()
 	meta := cluster.ClusterMeta{Name: "source-cluster"}
-	handler := New(false, nil, clusterMgr, makeSizes())
+	handler := mustHandler(t, false, nil, clusterMgr, makeSizes())
 
 	_, engine := gin.CreateTestContext(httptest.NewRecorder())
 	engine.Use(func(c *gin.Context) {

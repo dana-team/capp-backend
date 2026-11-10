@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -98,11 +99,6 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.True(t, cfg.Resources.Namespaces.Enabled)
 	assert.True(t, cfg.Resources.Capps.Enabled)
 	assert.True(t, cfg.Resources.Capprevisions.Enabled)
-
-	// Benchmark defaults
-	assert.False(t, cfg.Resources.Benchmarks.Enabled)
-	assert.Empty(t, cfg.Resources.Benchmarks.Image)
-	assert.Empty(t, cfg.Resources.Benchmarks.VMURLs)
 }
 
 func TestLoad_FromFile(t *testing.T) {
@@ -453,152 +449,415 @@ func TestValidate_GitOpsPath(t *testing.T) {
 	}
 }
 
-// ── Benchmark config tests ───────────────────────────────────────────────────
+const observabilityYAML = `
+resources:
+  observability:
+    enabled: true
+    queryURL: "%s"
+    metrics:
+      - name: "cpu-usage"
+        query: "sum(rate(container_cpu_usage_seconds_total{$selector}[5m]))"
+        type: "gauge"
+        description: "CPU usage of containers"
+        clusterLabel: "cluster"
+        namespaceLabel: "namespace"
+        objectLabel: "capp"
+      - name: "latency"
+        type: "histogram"
+        unit: "seconds"
+        series:
+          - legend: "p50"
+            query: "histogram_quantile(0.5, sum by (le) (rate(lat_bucket{$selector}[5m])))"
+          - legend: "p95"
+            query: "histogram_quantile(0.95, sum by (le) (rate(lat_bucket{$selector}[5m])))"
+        namespaceLabel: "namespace"
+        objectLabel: "capp"
+    labels:
+      environment: "production"
+      app_version: "1.2.3"
+`
 
-func TestValidate_Benchmarks(t *testing.T) {
+func TestLoad_ObservabilityFromFile(t *testing.T) {
+	cfg := loadTempConfig(t, fmt.Sprintf(observabilityYAML, "http://observability.monitoring.svc:8428"))
+	o := cfg.Resources.Observability
+	assert.True(t, o.Enabled)
+	assert.Equal(t, "http://observability.monitoring.svc:8428", o.QueryURL)
+	require.Len(t, o.Metrics, 2)
+	assert.Equal(t, MetricsQuery{
+		Name:           "cpu-usage",
+		Query:          "sum(rate(container_cpu_usage_seconds_total{$selector}[5m]))",
+		Type:           "gauge",
+		Description:    "CPU usage of containers",
+		ClusterLabel:   "cluster",
+		NamespaceLabel: "namespace",
+		ObjectLabel:    "capp",
+	}, o.Metrics[0])
+	assert.Equal(t, "seconds", o.Metrics[1].Unit)
+	assert.Equal(t, []MetricSeries{
+		{Legend: "p50", Query: "histogram_quantile(0.5, sum by (le) (rate(lat_bucket{$selector}[5m])))"},
+		{Legend: "p95", Query: "histogram_quantile(0.95, sum by (le) (rate(lat_bucket{$selector}[5m])))"},
+	}, o.Metrics[1].Series)
+	assert.Equal(t, map[string]string{
+		"environment": "production",
+		"app_version": "1.2.3",
+	}, o.Labels)
+	assert.Empty(t, validateObservability(&o, 1))
+}
+
+func TestLoad_ObservabilityLabelsPreserveCase(t *testing.T) {
+	cfg := loadTempConfig(t, `
+resources:
+  observability:
+    enabled: true
+    queryURL: "http://observability.monitoring.svc:8428"
+    metrics:
+      - name: "cpu-usage"
+        query: "sum(rate(container_cpu_usage_seconds_total{$selector}[5m]))"
+        type: "gauge"
+        namespaceLabel: "namespace"
+        objectLabel: "capp"
+    labels:
+      clusterName: "Prod-A"
+      Env: "x"
+`)
+	assert.Equal(t, map[string]string{
+		"clusterName": "Prod-A",
+		"Env":         "x",
+	}, cfg.Resources.Observability.Labels)
+}
+
+func TestValidateSeriesQuery_SelectorScoping(t *testing.T) {
 	tests := []struct {
 		name       string
-		benchmarks BenchmarkConfig
+		query      string
 		wantErr    bool
 		errContain string
 	}{
 		{
-			name:       "disabled — no validation",
-			benchmarks: BenchmarkConfig{Enabled: false},
+			name:  "scoped selector",
+			query: `sum(rate(a{$selector}[5m]))`,
 		},
 		{
-			name: "enabled with image, vmURLs, and queryURL — valid",
-			benchmarks: BenchmarkConfig{
-				Enabled: true,
-				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-				VMURLs: []string{
-					"http://vm-a.monitoring.svc:8428",
-					"http://vm-b.monitoring.svc:8428",
-				},
-				QueryURL: "http://vm-query.monitoring.svc:8428",
-			},
-		},
-		{
-			name: "enabled without image — error",
-			benchmarks: BenchmarkConfig{
-				Enabled: true,
-				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
-			},
+			name:       "no braces at all",
+			query:      `sum(rate(a[5m])) # $selector`,
 			wantErr:    true,
-			errContain: "resources.benchmarks.image is required",
+			errContain: "inside a vector selector's {}",
 		},
 		{
-			name: "enabled without vmURLs — error",
-			benchmarks: BenchmarkConfig{
-				Enabled: true,
-				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-			},
+			name:       "only one of two braced selectors scoped",
+			query:      `sum(rate(a{$selector}[5m])) / sum(rate(a{job="x"}[5m]))`,
 			wantErr:    true,
-			errContain: "resources.benchmarks.vmURLs is required",
+			errContain: "does not contain",
 		},
 		{
-			name: "queryURL with a token — valid",
-			benchmarks: BenchmarkConfig{
-				Enabled:  true,
-				Image:    "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-				VMURLs:   []string{"http://vm-a.monitoring.svc:8428"},
-				QueryURL: "https://vm.example.com?apikey=abc123",
-			},
-		},
-		{
-			name: "queryURL without a scheme — error",
-			benchmarks: BenchmarkConfig{
-				Enabled:  true,
-				Image:    "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-				VMURLs:   []string{"http://vm-a.monitoring.svc:8428"},
-				QueryURL: "vm.example.com?apikey=abc123",
-			},
+			name:       "selector union with an unscoped braced selector",
+			query:      `a{$selector} or b{job="x"}`,
 			wantErr:    true,
-			errContain: "resources.benchmarks.queryURL must be an absolute http or https URL",
+			errContain: "does not contain",
 		},
 		{
-			name: "enabled without queryURL — error",
-			benchmarks: BenchmarkConfig{
-				Enabled: true,
-				Image:   "ghcr.io/dana-team/capp-benchmark-runner:0.1.0",
-				VMURLs:  []string{"http://vm-a.monitoring.svc:8428"},
-			},
+			name:  "placeholder-looking text inside a quoted label value doesn't fool the brace scan",
+			query: `a{$selector,label=~"contains } brace"}`,
+		},
+		{
+			name:       "bare selector with no braces alongside a scoped one",
+			query:      `requests_total{$selector} or errors_total`,
 			wantErr:    true,
-			errContain: "resources.benchmarks.queryURL is required",
+			errContain: "selector (errors_total) that does not contain",
+		},
+		{
+			name:       "bare range selector in a binary expression",
+			query:      `sum(rate(a{$selector}[5m])) / sum(rate(b[5m]))`,
+			wantErr:    true,
+			errContain: "selector (b) that does not contain",
+		},
+		{
+			name:       "placeholder only in a comment",
+			query:      "sum(a) # {$selector}",
+			wantErr:    true,
+			errContain: "inside a vector selector's {}",
+		},
+		{
+			name:  "scoped subquery and offset",
+			query: `max_over_time(rate(a{$selector}[1m])[10m:1m] offset 5m)`,
+		},
+		{
+			name:  "scoped selector with extra matchers on both sides",
+			query: `sum by (code) (rate(a{code=~"5..",$selector,method="GET"}[5m]))`,
+		},
+		{
+			name:       "invalid PromQL",
+			query:      `sum(rate(a{$selector}[5m])`,
+			wantErr:    true,
+			errContain: "is not valid PromQL",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := passthroughConfig()
-			cfg.Resources.Benchmarks = tt.benchmarks
-			err := Validate(cfg)
+			errs := validateSeriesQuery("field", tt.query)
 			if tt.wantErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errContain)
+				require.NotEmpty(t, errs)
+				assert.Contains(t, errs[0].Error(), tt.errContain)
 			} else {
-				assert.NoError(t, err)
+				assert.Empty(t, errs)
 			}
 		})
 	}
 }
 
-func TestLoad_BenchmarkFromFile(t *testing.T) {
-	cfg := loadTempConfig(t, `
-clusters:
-  - name: dev
-    credential:
-      inline:
-        apiServer: "https://dev.example.com:6443"
-resources:
-  benchmarks:
-    enabled: true
-    image: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
-    vmURLs:
-      - "http://vm-a.monitoring.svc:8428"
-      - "http://vm-b.monitoring.svc:8428"
-`)
-	assert.True(t, cfg.Resources.Benchmarks.Enabled)
-	assert.Equal(t, "ghcr.io/dana-team/capp-benchmark-runner:0.1.0", cfg.Resources.Benchmarks.Image)
-	assert.Equal(t, []string{
-		"http://vm-a.monitoring.svc:8428",
-		"http://vm-b.monitoring.svc:8428",
-	}, cfg.Resources.Benchmarks.VMURLs)
+func TestValidateObservability_ClusterLabelWithMultipleClusters(t *testing.T) {
+	metric := MetricsQuery{
+		Name:           "cpu-usage",
+		Query:          "sum(rate(a{$selector}[5m]))",
+		Type:           "gauge",
+		NamespaceLabel: "namespace",
+		ObjectLabel:    "capp",
+	}
+	o := ObservabilityConfig{
+		Enabled:  true,
+		QueryURL: "http://observability.monitoring.svc:8428",
+		Metrics:  []MetricsQuery{metric},
+	}
+
+	assert.Empty(t, validateObservability(&o, 1), "clusterLabel is optional with one cluster")
+
+	errs := validateObservability(&o, 2)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "resources.observability.metrics[0].clusterLabel is required when more than one cluster is configured")
+
+	o.Metrics[0].ClusterLabel = "cluster"
+	assert.Empty(t, validateObservability(&o, 2))
 }
 
-func TestLoad_BenchmarkVMURLsFromEnv(t *testing.T) {
-	t.Setenv("CAPP_RESOURCES_BENCHMARKS_VMURLS", "http://vm-a.monitoring.svc:8428, http://vm-b.monitoring.svc:8428")
-	cfg := loadTempConfig(t, `
-clusters:
-  - name: dev
-    credential:
-      inline:
-        apiServer: "https://dev.example.com:6443"
-resources:
-  benchmarks:
-    enabled: true
-    image: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
-`)
-	assert.Equal(t, []string{
-		"http://vm-a.monitoring.svc:8428",
-		"http://vm-b.monitoring.svc:8428",
-	}, cfg.Resources.Benchmarks.VMURLs)
+func TestValidateObservability_LabelCollidesWithMetricLabel(t *testing.T) {
+	o := ObservabilityConfig{
+		Enabled:  true,
+		QueryURL: "http://observability.monitoring.svc:8428",
+		Labels:   map[string]string{"namespace": "prod"},
+		Metrics: []MetricsQuery{
+			{
+				Name:           "cpu-usage",
+				Query:          "sum(rate(a{$selector}[5m]))",
+				Type:           "gauge",
+				NamespaceLabel: "namespace",
+				ObjectLabel:    "capp",
+			},
+		},
+	}
+	errs := validateObservability(&o, 1)
+	require.NotEmpty(t, errs)
+	found := false
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "also appears in resources.observability.labels") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a label-collision error, got: %v", errs)
 }
 
-func TestLoad_BenchmarkQueryURLFromEnv(t *testing.T) {
-	t.Setenv("CAPP_RESOURCES_BENCHMARKS_QUERYURL", " http://vm-query.monitoring.svc:8428 ")
-	cfg := loadTempConfig(t, `
-clusters:
-  - name: dev
-    credential:
-      inline:
-        apiServer: "https://dev.example.com:6443"
-resources:
-  benchmarks:
-    enabled: true
-    image: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
-    queryURL: "http://from-file:8428"
-`)
-	assert.Equal(t, "http://vm-query.monitoring.svc:8428", cfg.Resources.Benchmarks.QueryURL)
+func TestLoad_ObservabilityQueryURLFromEnv(t *testing.T) {
+	t.Setenv("CAPP_RESOURCES_OBSERVABILITY_QUERYURL", " http://vm.monitoring.svc:8428?apikey=abc ")
+	cfg := loadTempConfig(t, fmt.Sprintf(observabilityYAML, "http://from-file:8428"))
+	assert.Equal(t, "http://vm.monitoring.svc:8428?apikey=abc", cfg.Resources.Observability.QueryURL)
+}
+
+func TestLoad_ObservabilityQueryURLFromEnvWithoutFileValue(t *testing.T) {
+	t.Setenv("CAPP_RESOURCES_OBSERVABILITY_QUERYURL", "http://vm.monitoring.svc:8428")
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, "http://vm.monitoring.svc:8428", cfg.Resources.Observability.QueryURL)
+}
+
+func TestLoad_ObservabilityDefaults(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.False(t, cfg.Resources.Observability.Enabled)
+	assert.Empty(t, cfg.Resources.Observability.QueryURL)
+}
+
+func TestMetricsQuery_AllSeries(t *testing.T) {
+	single := MetricsQuery{Name: "cpu", Query: "q{$selector}"}
+	assert.Equal(t, []MetricSeries{{Legend: "cpu", Query: "q{$selector}"}}, single.AllSeries())
+
+	multi := MetricsQuery{Name: "lat", Series: []MetricSeries{{Legend: "p50", Query: "a"}, {Legend: "p95", Query: "b"}}}
+	assert.Equal(t, multi.Series, multi.AllSeries())
+}
+
+func TestValidate_Observability(t *testing.T) {
+	const queryURL = "http://observability.monitoring.svc:8428"
+	valid := func() MetricsQuery {
+		return MetricsQuery{
+			Name:           "cpu-usage",
+			Query:          "sum(rate(container_cpu_usage_seconds_total{$selector}[5m]))",
+			Type:           "gauge",
+			NamespaceLabel: "namespace",
+			ObjectLabel:    "capp",
+		}
+	}
+	with := func(edit func(*MetricsQuery)) []MetricsQuery {
+		m := valid()
+		edit(&m)
+		return []MetricsQuery{m}
+	}
+
+	tests := []struct {
+		name          string
+		observability ObservabilityConfig
+		errContain    string // empty means valid
+	}{
+		{
+			name:          "disabled — not validated",
+			observability: ObservabilityConfig{Enabled: false},
+		},
+		{
+			name:          "valid",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: []MetricsQuery{valid()}},
+		},
+		{
+			name:          "valid with cluster label and extra labels",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Labels: map[string]string{"env": "prod"}, Metrics: with(func(m *MetricsQuery) { m.ClusterLabel = "cluster" })},
+		},
+		{
+			name:          "missing queryURL",
+			observability: ObservabilityConfig{Enabled: true, Metrics: []MetricsQuery{valid()}},
+			errContain:    "resources.observability.queryURL is required",
+		},
+		{
+			name:          "relative queryURL",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: "/vm", Metrics: []MetricsQuery{valid()}},
+			errContain:    "resources.observability.queryURL must be an absolute http or https URL",
+		},
+		{
+			name:          "no metrics",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL},
+			errContain:    "resources.observability.metrics is required",
+		},
+		{
+			name:          "missing name",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.Name = "" })},
+			errContain:    "resources.observability.metrics[0].name is required",
+		},
+		{
+			name:          "name not a DNS label",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.Name = "cpu_usage" })},
+			errContain:    "resources.observability.metrics[0].name \"cpu_usage\" must be a DNS-1123 label",
+		},
+		{
+			name:          "duplicate name",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: []MetricsQuery{valid(), valid()}},
+			errContain:    "resources.observability.metrics[1].name \"cpu-usage\" is a duplicate",
+		},
+		{
+			name:          "missing query",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.Query = "" })},
+			errContain:    "resources.observability.metrics[0].query or series is required",
+		},
+		{
+			name: "valid series",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) {
+				m.Query = ""
+				m.Series = []MetricSeries{{Legend: "p50", Query: "q{$selector}"}, {Legend: "p95", Query: "q{$selector}"}}
+			})},
+		},
+		{
+			name: "both query and series",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) {
+				m.Series = []MetricSeries{{Legend: "p50", Query: "q{$selector}"}}
+			})},
+			errContain: "resources.observability.metrics[0] sets both query and series; set one",
+		},
+		{
+			name: "series missing legend",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) {
+				m.Query = ""
+				m.Series = []MetricSeries{{Query: "q{$selector}"}}
+			})},
+			errContain: "resources.observability.metrics[0].series[0].legend is required",
+		},
+		{
+			name: "series duplicate legend",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) {
+				m.Query = ""
+				m.Series = []MetricSeries{{Legend: "p50", Query: "q{$selector}"}, {Legend: "p50", Query: "q{$selector}"}}
+			})},
+			errContain: "resources.observability.metrics[0].series[1].legend \"p50\" is a duplicate",
+		},
+		{
+			name: "series missing query",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) {
+				m.Query = ""
+				m.Series = []MetricSeries{{Legend: "p50"}}
+			})},
+			errContain: "resources.observability.metrics[0].series[0].query is required",
+		},
+		{
+			name: "series query without selector",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) {
+				m.Query = ""
+				m.Series = []MetricSeries{{Legend: "p50", Query: "sum(up)"}}
+			})},
+			errContain: "resources.observability.metrics[0].series[0].query must contain $selector",
+		},
+		{
+			name: "too many series",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) {
+				m.Query = ""
+				for i := 0; i <= MaxMetricSeries; i++ {
+					m.Series = append(m.Series, MetricSeries{Legend: fmt.Sprint(i), Query: "q{$selector}"})
+				}
+			})},
+			errContain: "resources.observability.metrics[0].series has 11 entries; at most 10 are allowed",
+		},
+		{
+			name:          "query without selector",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.Query = "sum(up)" })},
+			errContain:    "resources.observability.metrics[0].query must contain $selector",
+		},
+		{
+			name:          "missing type",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.Type = "" })},
+			errContain:    "resources.observability.metrics[0].type is required",
+		},
+		{
+			name:          "invalid type",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.Type = "invalid" })},
+			errContain:    "resources.observability.metrics[0].type must be one of 'gauge', 'counter', or 'histogram'",
+		},
+		{
+			name:          "missing namespace label",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.NamespaceLabel = "" })},
+			errContain:    "resources.observability.metrics[0].namespaceLabel is required",
+		},
+		{
+			name:          "missing object label",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.ObjectLabel = "" })},
+			errContain:    "resources.observability.metrics[0].objectLabel is required",
+		},
+		{
+			name:          "invalid label name",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Metrics: with(func(m *MetricsQuery) { m.ClusterLabel = "k8s.cluster" })},
+			errContain:    "resources.observability.metrics[0].clusterLabel \"k8s.cluster\" is not a valid Prometheus label name",
+		},
+		{
+			name:          "invalid extra label name",
+			observability: ObservabilityConfig{Enabled: true, QueryURL: queryURL, Labels: map[string]string{"bad-name": "x"}, Metrics: []MetricsQuery{valid()}},
+			errContain:    "resources.observability.labels key \"bad-name\" is not a valid Prometheus label name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Resources.Observability = tt.observability
+			err := Validate(cfg)
+			if tt.errContain == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContain)
+		})
+	}
 }
 
 func TestLoad(t *testing.T) {

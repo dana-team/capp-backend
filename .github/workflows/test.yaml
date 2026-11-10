@@ -134,36 +134,24 @@ jobs:
         with:
           version: v3.17.0
 
-      - name: Lint chart (deployment mode)
+      - name: Lint chart
         run: |
           helm lint helm/capp-backend \
-            --set deployAs=deployment \
             --set config.clusters[0].name=test \
             --set config.clusters[0].credential.inline.apiServer=https://example.com
 
-      - name: Lint chart (capp mode)
-        run: |
-          helm lint helm/capp-backend \
-            --set deployAs=capp \
-            --set config.clusters[0].name=test \
-            --set config.clusters[0].credential.inline.apiServer=https://example.com
-
-      - name: Template chart (deployment mode)
+      - name: Template chart
         run: |
           helm template capp-backend helm/capp-backend \
-            --set deployAs=deployment \
             --set config.clusters[0].name=test \
             --set config.clusters[0].credential.inline.apiServer=https://example.com \
             --set secret.jwtSecretKey=test-secret \
             > /dev/null
 
-      - name: Template chart (capp mode)
+      - name: Template chart (observability enabled)
         run: |
           helm template capp-backend helm/capp-backend \
-            --set deployAs=capp \
-            --set config.clusters[0].name=test \
-            --set config.clusters[0].credential.inline.apiServer=https://example.com \
-            --set secret.jwtSecretKey=test-secret \
+            -f helm/capp-backend/ci/observability-values.yaml \
             > /dev/null
 
   # ── Docker: build check (no push) ────────────────────────────────────────────

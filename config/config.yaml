@@ -181,10 +181,37 @@ resources:
   capprevisions:
     enabled: true
 
-  # On-demand per-capp benchmarking. The backend creates a Job from image.
-  # The Job writes each sample to every vmURLs entry.
-  # benchmarks:
+  # Per-Capp metrics served at .../capps/{name}/metrics[/{metric}]. Callers
+  # pick a metric by name and never send PromQL. Set either query or series
+  # (at most 10) on each metric. Every query must contain
+  # $selector; it is replaced with matchers for the Capp's namespace and name
+  # (plus the cluster when clusterLabel is set, plus every entry in labels).
+  # Queries are parsed as PromQL, and every vector selector, including a bare
+  # metric name with no braces, must include $selector. clusterLabel is
+  # required on every metric when more than one cluster is configured.
+  # The caller must be able to read the Capp.
+  # observability:
   #   enabled: false
-  #   image: ""                       # e.g. "ghcr.io/dana-team/capp-benchmark-runner:0.1.0"
-  #   vmURLs: []                      # or CAPP_RESOURCES_BENCHMARKS_VMURLS=url1,url2
-  #   queryURL: ""                    # or CAPP_RESOURCES_BENCHMARKS_QUERYURL; can carry a token, e.g. https://vm.example.com?apikey=abc123
+  #   queryURL: ""          # or CAPP_RESOURCES_OBSERVABILITY_QUERYURL; can carry a token, e.g. https://vm.example.com?apikey=abc123
+  #   labels: {}            # extra matchers on every query, e.g. {env: prod}
+  #   metrics:
+  #     # series groups several lines on one chart; each has its own query.
+  #     - name: latency
+  #       description: Request duration measured by the queue-proxy
+  #       type: histogram
+  #       unit: seconds
+  #       series:
+  #         - legend: p50
+  #           query: histogram_quantile(0.50, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{$selector}[5m])))
+  #         - legend: p95
+  #           query: histogram_quantile(0.95, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{$selector}[5m])))
+  #       namespaceLabel: k8s_namespace_name
+  #       objectLabel: kn_service_name
+  #     # query is shorthand for a single line whose legend is the name.
+  #     - name: throughput
+  #       description: Requests per second
+  #       type: counter
+  #       unit: requests/s
+  #       query: sum(rate(kn_serving_invocation_duration_seconds_count{$selector}[1m]))
+  #       namespaceLabel: k8s_namespace_name
+  #       objectLabel: kn_service_name

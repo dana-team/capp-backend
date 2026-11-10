@@ -43,6 +43,7 @@ const (
 	CodeNamespaceDenied       = "NAMESPACE_DENIED"
 	CodeGitopsFailed          = "GITOPS_FAILED"
 	CodePrometheusQueryFailed = "PROMETHEUS_QUERY_FAILED"
+	CodePrometheusTimeout     = "PROMETHEUS_TIMEOUT"
 )
 
 // APIError is the canonical error type for all HTTP responses. It implements
@@ -180,6 +181,20 @@ func NewPrometheusQueryFailed(err error) *APIError {
 		Code:    CodePrometheusQueryFailed,
 		Message: "Prometheus query failed",
 		Status:  http.StatusBadGateway,
+		cause:   err,
+	}
+}
+
+// NewPrometheusQueryTimeout returns a 504 error when the configured
+// Prometheus-compatible server did not answer within the query timeout. It
+// is distinct from NewPrometheusQueryFailed so a slow upstream (which a
+// caller can retry) is never confused with a broken one in the response or
+// in metrics/alerts built on the error code.
+func NewPrometheusQueryTimeout(err error) *APIError {
+	return &APIError{
+		Code:    CodePrometheusTimeout,
+		Message: "Prometheus query timed out",
+		Status:  http.StatusGatewayTimeout,
 		cause:   err,
 	}
 }

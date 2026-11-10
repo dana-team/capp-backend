@@ -1,2 +1,4 @@
 bin/*
 .claude/*
+.superpowers/
+docs/superpowers/*
