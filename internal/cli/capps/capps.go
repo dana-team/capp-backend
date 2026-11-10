@@ -13,6 +13,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/root"
 	"github.com/dana-team/capp-backend/internal/cli/utils"
 	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 
 const (
@@ -739,7 +740,9 @@ func (h *handler) completeCappNames(cmd *cobra.Command, args []string, toComplet
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	c := client.New(ctx.Server, ctx.Token, false)
+	// Identify as cappctl, but print no upgrade warning: stderr output during
+	// shell completion corrupts the user's prompt.
+	c := client.New(ctx.Server, ctx.Token, false).WithClientVersion(clientversion.Cappctl, h.state.Version, nil)
 
 	var list apitypes.CappListResponse
 	var path string

@@ -6,9 +6,10 @@
 //  2. Logging    — records each request after completion
 //  3. Metrics    — records Prometheus counters and histograms after completion
 //  4. CORS       — sets Access-Control-* headers; short-circuits OPTIONS requests
-//  5. RateLimit  — token-bucket rate limiter per client IP
-//  6. Auth       — validates the Authorization header, attaches ClusterCredential
-//  7. Cluster    — resolves :cluster path param, builds scoped K8s client
+//  5. ClientVersion — warns known clients (cappctl) at least one minor release behind the backend
+//  6. RateLimit  — token-bucket rate limiter per client IP
+//  7. Auth       — validates the Authorization header, attaches ClusterCredential
+//  8. Cluster    — resolves :cluster path param, builds scoped K8s client
 //
 // Context keys are defined in keys.go so every middleware and handler can
 // reference them without importing the specific middleware package.

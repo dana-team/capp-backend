@@ -24,6 +24,15 @@ var (
 		Help:    "Latency distribution of HTTP requests handled by capp-backend.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "route"})
+
+	// outdatedClientRequests counts requests from known clients that are at
+	// least one minor release behind the backend (see ClientVersion). The
+	// version label comes from the caller's User-Agent, so versionLabel keeps
+	// it to a set bounded by the backend version.
+	outdatedClientRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "capp_backend_outdated_client_requests_total",
+		Help: "Requests from known clients at least one minor release behind capp-backend.",
+	}, []string{"client", "version"})
 )
 
 // Metrics returns a Gin middleware that records Prometheus counters and

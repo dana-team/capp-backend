@@ -22,6 +22,16 @@ go build -ldflags "-X main.version=v1.2.3" -o bin/cappctl ./cmd/cappctl/
 
 Add `bin/cappctl` to your `PATH`, or copy the binary to `/usr/local/bin/cappctl`.
 
+### Version warnings
+
+`cappctl` sends its version to the backend on every request (`User-Agent: cappctl/<version>`). When the CLI is at least one minor release behind the backend, for example `cappctl` v0.5.2 against backend v0.6.2, the command still runs, but `cappctl` prints this to stderr once:
+
+```
+warning: cappctl v0.5.2 is older than capp-backend v0.6.2; upgrade cappctl to v0.6 or later to avoid unexpected errors
+```
+
+The warning also appears when the request fails, since an outdated CLI is a likely cause. Patch-level differences, a newer CLI, and unversioned `dev` builds on either side produce no warning. Shell completion never prints it. The backend logs each outdated request as `outdated client` with the client name (`cappctl`), its version, the backend version and the response status. In OpenShift and LDAP modes the log also names the user; passthrough mode does not know who the user is.
+
 ---
 
 ## Configuration File

@@ -1,6 +1,7 @@
 package root
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/client"
 	"github.com/dana-team/capp-backend/internal/cli/config"
 	"github.com/dana-team/capp-backend/internal/cli/resource"
+	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 
 func TestMaybeRefreshLDAP(t *testing.T) {
@@ -40,7 +42,7 @@ func TestMaybeRefreshLDAP(t *testing.T) {
 				if !tc.unknown {
 					ctx.TokenExpiresAt = time.Now().Add(tc.offset)
 				}
-				token, err := maybeRefresh(&cobra.Command{}, &config.Config{}, "", &ctx, false)
+				token, err := maybeRefresh(&cobra.Command{}, &State{Cfg: &config.Config{}}, &ctx, false)
 				if tc.expired {
 					require.EqualError(t, err, "LDAP access token expired; run cappctl login again")
 					return
@@ -182,6 +184,47 @@ func TestNewOpenShiftRefresh(t *testing.T) {
 	assert.Equal(t, pair.AccessToken, ctx.Token)
 	assert.Equal(t, pair.RefreshToken, ctx.RefreshToken)
 	assert.Equal(t, pair.ExpiresAt, ctx.TokenExpiresAt)
+}
+
+func TestNewOutdatedCLIWarning(t *testing.T) {
+	const warning = "cappctl v0.5.2 is older than capp-backend v0.6.2; upgrade cappctl to v0.6 or later to avoid unexpected errors"
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		assert.Equal(t, "cappctl/v0.5.2", r.UserAgent())
+		w.Header().Set(clientversion.WarningHeader, warning)
+		if r.URL.Path == "/api/v1/auth/refresh" {
+			assert.NoError(t, json.NewEncoder(w).Encode(client.TokenPair{
+				AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := &config.Config{CurrentContext: "target", Contexts: []config.Context{{
+		Name: "target", Server: srv.URL, AuthMode: "openshift", Token: "old-access",
+		RefreshToken: "old-refresh", TokenExpiresAt: time.Now().Add(20 * time.Second),
+	}}}
+	cmd, state := newResourceCommand(t, cfg)
+	state.Version = "v0.5.2"
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	require.NoError(t, cmd.ExecuteContext(t.Context()))
+	assert.Equal(t, []string{"/api/v1/auth/refresh", "/resource"}, paths)
+	assert.Equal(t, "warning: "+warning+"\n", stderr.String(), "warning must be printed once per command")
+}
+
+func TestStatePrintsEachWarningOnce(t *testing.T) {
+	var stderr bytes.Buffer
+	state := &State{Stderr: &stderr}
+
+	state.printWarning("first")
+	state.printWarning("first")
+	state.printWarning("second")
+
+	assert.Equal(t, "warning: first\nwarning: second\n", stderr.String())
 }
 
 func newResourceCommand(t *testing.T, cfg *config.Config, flags ...string) (*cobra.Command, *State) {

@@ -8,6 +8,7 @@ on:
     paths:
       - "cmd/cappctl/**"
       - "internal/cli/**"
+      - "pkg/clientversion/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/test-cli.yaml"
@@ -16,6 +17,7 @@ on:
     paths:
       - "cmd/cappctl/**"
       - "internal/cli/**"
+      - "pkg/clientversion/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/test-cli.yaml"

@@ -15,7 +15,14 @@ make vet             # go vet
 make tidy            # go mod tidy
 make docker-build    # Build Docker image
 make build-cli       # Build cappctl CLI binary → bin/cappctl
+make build-capp-mcp  # Build capp-mcp binary → bin/capp-mcp
+make run-capp-mcp    # Run capp-mcp against a local backend on :8080
+make fetch-ui        # Re-download the embedded Scalar bundle (internal/server/ui/scalar.min.js)
+
+go test -race -run TestConvertCoverage ./internal/resources/namespaced/capps/   # single test
 ```
+
+`make build`/`run`/`build-cli`/`build-capp-mcp` run `fmt` and `vet` first. CI is split by path into three workflows: `test.yaml` (server; vets, lints and tests everything **except** `internal/cli`, `cmd/cappctl`, `internal/mcpserver`, `cmd/mcp`, plus `helm lint` and a `go mod tidy` diff check), `test-cli.yaml` (`./internal/cli/... ./cmd/cappctl/...`, also cross-builds Windows), and `test-capp-mcp.yaml` (`./internal/mcpserver/... ./cmd/mcp/...`). `make test` runs all of them locally.
 
 ## Architecture
 
@@ -23,19 +30,22 @@ Multi-cluster API gateway for Capp resources, built with **Go + Gin**.
 
 ### Request Flow
 ```
-Request → Recovery → Logging → Metrics → CORS → RateLimit → Auth → ClusterResolution → ResourceHandler
+Request → Recovery → Logging → Metrics → CORS → ClientVersion → RateLimit → Auth → ClusterResolution → ResourceHandler
 ```
 
 1. **Auth middleware** validates the token (mode-dependent) and attaches a credential to context
-2. **Cluster middleware** resolves `:cluster` param, checks health, builds a per-request scoped K8s client with the user's credential, validates namespace against allowed list
+2. **Cluster middleware** resolves `:cluster` param, checks health, builds a per-request scoped K8s client with the user's credential, validates namespace against allowed list. It also sets an admin client (`AdminK8sClientKey`, the cluster's own SA credential with no impersonation) for discovery-style listing such as namespaces. Context keys live in `internal/middleware/keys.go`.
 3. **Resource handler** performs the CRUD operation using the scoped client
+
+Handler tests use `internal/testutil` (fake controller-runtime clients with SAR allow/deny variants, `EngineHelper` for HTTP calls, and mock Auth/Cluster managers) instead of real clusters.
 
 ### API Routes
 
-> **Rule:** Every route change or addition must also update `api/openapi.yaml`. Use the `gin-openapi-sync` skill to regenerate it.
+> **Rule:** Every route change or addition must also update `api/openapi.yaml`. Use the `gin-openapi-sync` skill to regenerate it. No test checks the spec against the registered routes, so drift is only caught in review.
 
 ```
 /healthz, /readyz, /metrics, /docs, /openapi.yaml     (no auth)
+GET    /api/v1/sizes                                   (no auth) — t-shirt size presets from config `cappSizes`
 
 GET    /api/v1/auth/mode                               (no auth)
 POST   /api/v1/auth/login                              (no auth)
@@ -46,6 +56,9 @@ GET    /api/v1/clusters[/:cluster]                     (auth)
 
 GET    /api/v1/clusters/:cluster/namespaces            (auth + cluster) — lists CAPP-labeled namespaces, filtered by SelfSubjectAccessReview
 POST   /api/v1/clusters/:cluster/namespaces            (auth + cluster) — creates namespace with dana.io/capp-ns=true label; response includes canCreate field
+GET    /api/v1/clusters/:cluster/namespaces/:namespace (auth + cluster)
+PUT    /api/v1/clusters/:cluster/namespaces/:namespace (auth + cluster) — recreates the RoleBinding and ResourceQuota from the body (full replace)
+PATCH  /api/v1/clusters/:cluster/namespaces/:namespace (auth + cluster) — updates the RoleBinding only; allowed for anyone who can create Capps in the namespace
 DELETE /api/v1/clusters/:cluster/namespaces/:namespace (auth + cluster) — deletes empty namespace; 409 if Capps exist
 
 GET    /api/v1/clusters/:cluster/capps                 (auth + cluster) — list all capps across namespaces
@@ -64,11 +77,20 @@ GET    /api/v1/clusters/:cluster/namespaces/:namespace/configmaps/names     (aut
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/secrets/names         (auth + cluster) — list secret names only
 GET    /api/v1/clusters/:cluster/configmaps            (auth + cluster) — list all configmaps across namespaces (dana.io/capp-managed=true only)
 GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list all secrets across namespaces
+
+# benchmarks handler — routes exist only when resources.benchmarks.enabled (default false)
+POST|GET /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/benchmark          — trigger / status of the Capp's benchmark Job (running Job blocks a new trigger; finished Job is replaced)
+GET      /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/metrics/dashboards — preset PromQL for the Capp
+GET      /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/metrics/query[_range] — PromQL proxy to `queryURL` (its query params, e.g. `?apikey=`, are kept on every request)
 ```
 
 ### Key Patterns
 
-**ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `capprevisions`, `namespaces`, `configmaps`, `secrets`. To add a new resource type, implement the interface and register it in `cmd/server/main.go`.
+**ResourceHandler interface** (`internal/resources/registry.go`): Pluggable handlers register routes and are enabled/disabled via config. Current handlers: `capps`, `capprevisions`, `namespaces`, `configmaps`, `secrets`, `benchmarks`. To add a new resource type, implement the interface, register it in `cmd/server/main.go`, and add its name to the `enabledResources` map there (plus a `ResourcesConfig` field and default in `internal/config/config.go`). The registry skips only names explicitly set to `false`; a handler missing from the map is always mounted.
+
+**capp-mcp** (`cmd/mcp/`, `internal/mcpserver/`, `helm/capp-mcp/`): A separate binary that exposes the REST API as MCP tools over Streamable HTTP (`POST /mcp`, `GET /healthz`; flags `--port`/`CAPP_MCP_PORT` 8081, `--backend-url`/`CAPP_BACKEND_URL`, `--insecure`). It holds no credentials: `AuthMiddleware` puts the client's bearer token in the request context, and each tool calls capp-backend through the cappctl HTTP client (`internal/cli/client`) using that token, so backend RBAC still applies. Tools are grouped into `ToolSet`s (`tools_*.go`) registered in `server.go`: clusters, namespaces, capps, capprevisions, configmaps, secrets (read-only, metadata only). A new backend route that agents should reach needs a matching tool here.
+
+**Client version check** (`pkg/clientversion`, `internal/middleware/clientversion.go`): The server and cappctl both take their version from `-X main.version=<tag>` (release workflow, plus `ARG VERSION` in `deploy/Dockerfile`); local builds are `dev`, which disables the check. A client sends `User-Agent: <name>/<version>`, and the backend checks only clients in `clientversion.Known` (currently just cappctl), because other User-Agent versions use unrelated numbering. When a known client is at least one minor release behind the backend, the middleware sets `X-Client-Warning` and increments `capp_backend_outdated_client_requests_total{client,version}` before the chain (so 401/429 responses are covered), then logs `outdated client` after it with `status` and, on authenticated routes in openshift/ldap mode, `user` (`ClusterCredential.ImpersonateUser`; passthrough has only the token, which must never be logged); and cappctl prints that once to stderr. To check another client, declare it in `pkg/clientversion`, add it to `Known`, and have the client send its User-Agent and show the header; the middleware and comparison stay unchanged, and the middleware/server tests loop over `Known`. The metric's `version` label is major.minor, or `vN.x` for an older major, because the User-Agent is caller-controlled and checked before auth; never label it with the raw version. Build CLI clients with `root.State.NewClient`, not `client.New`, so they send the version and print the warning. capp-mcp and shell completion deliberately don't print it.
 
 **AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `PasswordLogin`, and `Refresh`. Passthrough mode forwards the caller's bearer token as-is. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. LDAP mode verifies passwords with directory search-and-bind, issues EdDSA access tokens, and verifies them locally for Kubernetes impersonation without a directory call on resource requests. `GET /api/v1/auth/mode` returns the active mode.
 
@@ -92,8 +114,11 @@ Default config: `config/config.yaml`. Key settings:
 - `auth.mode`: passthrough | openshift | ldap
 - `auth.ldap`: directory URL/CA, search DN/filter/attribute settings, login deadline, token lifetime, issuer/audience, and Ed25519 signing/trust keys; validated only in LDAP mode
 - `clusters[]`: array of cluster connections with credentials
-- `resources.<name>.enabled`: feature flags for resource handlers
+- `resources.<name>.enabled`: feature flags for resource handlers (all on by default except `benchmarks`, which also requires `image`, `vmURLs` (Job write targets) and `queryURL` (PromQL reads); inject via `CAPP_RESOURCES_BENCHMARKS_VMURLS` comma-separated and `CAPP_RESOURCES_BENCHMARKS_QUERYURL`)
+- `cappSizes`: small/medium/large resource presets served at `/api/v1/sizes` and passed to the capps and revisions handlers
+- `gitops`: optional Git sync; per-cluster `clusters[].gitOpsPath` nests under `gitops.pathPrefix`
 - `server.corsAllowedOrigins`: defaults to `localhost:3000` (capp-frontend dev server)
+- `tracing.*` is parsed, but no OTLP exporter is wired up in code
 
 `auth.ldap.url` accepts only `ldaps://` endpoints, with port 636 when omitted. Both directory connections verify certificates and hostnames before sending credentials. `auth.ldap.caCert` supplies a base64 PEM CA bundle; empty uses system roots. StartTLS is unsupported, and `ldap://` URLs fail startup validation.
 
@@ -107,7 +132,10 @@ OpenShift and LDAP require inline service-account tokens with users/groups imper
 cmd/
   server/main.go                # Server entry point, startup sequence
   cappctl/main.go               # CLI entry point
+  mcp/main.go                   # capp-mcp entry point
 internal/
+  mcpserver/                    # capp-mcp ToolSets, bearer-token middleware, backend client wrapper
+  testutil/                     # Fake K8s clients, Gin engine helpers, mock managers for handler tests
   server/                       # Gin engine setup, route registration, auth route handlers
   config/                       # Config structs, Viper loading, validation
   auth/                         # AuthManager implementations (passthrough, openshift, ldap)
@@ -116,8 +144,9 @@ internal/
   middleware/                   # Auth, cluster, logging, metrics, CORS, rate limit, recovery
   resources/                    # Resource handler registry
     cluster/
-      namespaces/               # Namespace list + create handler (with SelfSubjectAccessReview filtering)
+      namespaces/               # Namespace CRUD handler (SelfSubjectAccessReview filtering, RoleBinding/ResourceQuota)
     namespaced/
+      benchmarks/               # Benchmark Job trigger/status + PromQL dashboards/query proxy (opt-in)
       capps/                    # Capp CRUD, sync, migrate handler, DTO types, K8s conversion
         revisions/              # CappRevision list/get/rollback handler (reuses capps DTOs + BareFromK8s)
       configmaps/               # ConfigMap CRUD handler (dana.io/capp-managed=true filter on list)
@@ -133,10 +162,13 @@ internal/
     capprevisions/              # CappRevisions ResourceCommand: get only
   apierrors/                    # Canonical error types
 pkg/k8s/                        # Kubernetes scheme builder (CRD type registration)
+pkg/clientversion/              # backend↔client version check (known clients, User-Agent, warning header, minor comparison); no Gin/K8s imports
 api/openapi.yaml                # OpenAPI 3.1 spec (embedded in binary)
 helm/
-  capp-backend/                 # Helm chart for the server
+  capp-backend/                 # Helm chart for the server (deployAs=deployment|capp)
+  capp-mcp/                     # Helm chart for capp-mcp (deployed as a Knative-autoscaled Capp)
   capp-template/                # Generic Helm chart for deploying a single Capp resource
+deploy/                         # Dockerfiles (server, cappctl, capp-mcp) and reference manifests
 ```
 
 ### cappctl CLI
@@ -148,6 +180,7 @@ Binary at `cmd/cappctl/`. Built with Cobra. No Gin or K8s imports — pure Go + 
 cappctl login / logout
 cappctl context list | use <name> | current
 cappctl mcp-headers
+cappctl completion bash|zsh|fish|powershell
 cappctl get      capps [name]
 cappctl create   capps
 cappctl update   capps <name>

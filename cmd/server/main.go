@@ -38,6 +38,10 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// version is set at build time via -ldflags "-X main.version=vX.Y.Z". cappctl
+// clients at least one minor release behind it are warned to upgrade.
+var version = "dev"
+
 // cleanupStarter is implemented by auth managers that run background
 // cleanup tasks.
 type cleanupStarter interface {
@@ -69,6 +73,7 @@ func main() {
 	}
 
 	logger.Info("capp-backend starting",
+		zap.String("version", version),
 		zap.String("authMode", cfg.Auth.Mode),
 		zap.Int("clusters", len(cfg.Clusters)),
 	)
@@ -133,7 +138,7 @@ func main() {
 	registry.Register(secrethandler.New())
 	registry.Register(benchhandler.New(cfg.Resources.Benchmarks, logger))
 	// ── 8. Build and start HTTP server ────────────────────────────────────────
-	srv := server.New(cfg, authMgr, clusterMgr, registry, logger)
+	srv := server.New(cfg, version, authMgr, clusterMgr, registry, logger)
 
 	// Run in a goroutine so we can listen for signals concurrently.
 	serverErr := make(chan error, 1)
