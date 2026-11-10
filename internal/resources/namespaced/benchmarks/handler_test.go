@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
@@ -469,6 +470,101 @@ func TestStatus_Failed(t *testing.T) {
 	assert.Equal(t, StatusResponse{JobName: "bench-my-capp", Status: StatusFailed}, resp)
 }
 
+func TestStatus_Reason(t *testing.T) {
+	waiting := func(reason, message string) *corev1.PodStatus {
+		return &corev1.PodStatus{
+			Phase: corev1.PodPending,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "k6",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reason, Message: message}},
+			}},
+		}
+	}
+	unschedulable := &corev1.PodStatus{
+		Phase: corev1.PodPending,
+		Conditions: []corev1.PodCondition{{
+			Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Message: "0/3 nodes",
+		}},
+	}
+	running := &corev1.PodStatus{
+		Phase: corev1.PodRunning,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  "k6",
+			State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+		}},
+	}
+	failedCondition := &batchv1.JobCondition{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Message: "m"}
+
+	tests := []struct {
+		name      string
+		age       time.Duration
+		condition *batchv1.JobCondition
+		pod       *corev1.PodStatus
+		want      string
+	}{
+		{name: "image pull failure", age: time.Minute, pod: waiting("ImagePullBackOff", "m"), want: "ImagePullBackOff: m"},
+		{name: "container config error", age: time.Minute, pod: waiting("CreateContainerConfigError", "secret missing"), want: "CreateContainerConfigError: secret missing"},
+		{name: "container creating is normal startup", age: time.Minute, pod: waiting("ContainerCreating", ""), want: ""},
+		{name: "pod initializing is normal startup", age: time.Minute, pod: waiting("PodInitializing", ""), want: ""},
+		{name: "unschedulable pod", age: time.Minute, pod: unschedulable, want: "0/3 nodes"},
+		{name: "running pod", age: time.Minute, pod: running, want: ""},
+		{name: "no pod after grace period", age: 2 * time.Minute, want: "the pod was not created"},
+		{name: "no pod within grace period", age: 10 * time.Second, want: ""},
+		{name: "failed job reports its message", age: 2 * time.Minute, condition: failedCondition, want: "m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := benchmarkJob("bench-my-capp", "my-capp", "")
+			if tt.condition != nil {
+				job.Status.Conditions = []batchv1.JobCondition{*tt.condition}
+			}
+			job.CreationTimestamp = metav1.NewTime(time.Now().Add(-tt.age))
+			objects := []client.Object{job}
+			if tt.pod != nil {
+				objects = append(objects, benchmarkPod("bench-my-capp-x1", "bench-my-capp", *tt.pod))
+			}
+
+			w := engine(t, objects...).Get(benchmarkPath("my-capp"))
+			require.Equal(t, http.StatusOK, w.Code)
+
+			var resp StatusResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, tt.want, resp.Reason)
+		})
+	}
+}
+
+func TestStatus_PodListErrorKeepsStatus(t *testing.T) {
+	job := benchmarkJob("bench-my-capp", "my-capp", "")
+	job.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	k8sClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, isPods := list.(*corev1.PodList); isPods {
+				return errors.New("pods are forbidden")
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}, job)
+
+	w := clusterEngine(t, k8sClient, testSAToken).Get(benchmarkPath("my-capp"))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp StatusResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, StatusResponse{JobName: "bench-my-capp", Status: StatusRunning}, resp)
+}
+
+func benchmarkPod(name, jobName string, status corev1.PodStatus) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "ns1",
+			Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+		},
+		Status: status,
+	}
+}
+
 func TestStatus_IgnoresOtherCapp(t *testing.T) {
 	other := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -491,9 +587,10 @@ func TestStatus_IgnoresOtherCapp(t *testing.T) {
 func benchmarkJob(name, cappName string, condition batchv1.JobConditionType) *batchv1.Job {
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "ns1",
-			Labels:    map[string]string{LabelBenchmark: labelValueTrue},
+			Name:              name,
+			Namespace:         "ns1",
+			CreationTimestamp: metav1.Now(),
+			Labels:            map[string]string{LabelBenchmark: labelValueTrue},
 			Annotations: map[string]string{
 				AnnotationCappName: cappName,
 			},

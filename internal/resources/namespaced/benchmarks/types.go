@@ -106,6 +106,8 @@ type StatusResponse struct {
 	JobName string `json:"jobName"`
 	Status  string `json:"status"`
 	RunID   string `json:"runId"`
+	// Reason says why a running benchmark has not started. Empty when it is progressing normally.
+	Reason string `json:"reason,omitempty"`
 }
 
 // DashboardQuery is one PromQL series on a dashboard.

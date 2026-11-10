@@ -29,6 +29,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// podCreationGrace is how long a Job may run without a pod before the missing pod is reported.
+const podCreationGrace = 60 * time.Second
+
+// podNotCreatedReason is reported when the Job has no pod. A ResourceQuota rejection looks like this.
+// capp-user cannot read Events, so the Job's pods are the only source for the reason.
+const podNotCreatedReason = "the pod was not created"
+
+// jobNameLabel is set by the Job controller on every pod it creates.
+const jobNameLabel = "batch.kubernetes.io/job-name"
+
 // rolloutInFlightPhases are the phases in which the stable and candidate revisions both take traffic.
 var rolloutInFlightPhases = map[cappv1alpha1.RolloutPhase]bool{
 	cappv1alpha1.RolloutPhaseProgressing: true,
@@ -231,8 +241,63 @@ func (h *Handler) status(c *gin.Context) {
 		resp.JobName = job.Name
 		resp.Status = status
 		resp.RunID = job.Annotations[AnnotationRunID]
+		// A failed reason lookup must not hide the status, so it is only logged.
+		reason, err := jobProblem(c.Request.Context(), k8sClient, job, time.Now())
+		if err != nil {
+			h.logger.Warn("read benchmark pod status", zap.String("job", job.Name), zap.Error(err))
+		}
+		resp.Reason = reason
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// jobProblem explains why a running Job has not started, or why it failed.
+// It returns an empty string when the Job is progressing normally.
+func jobProblem(ctx context.Context, k8sClient client.Client, job *batchv1.Job, now time.Time) (string, error) {
+	for _, cond := range job.Status.Conditions {
+		if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
+			return cond.Message, nil
+		}
+	}
+	if _, finished := jobOutcome(job); finished {
+		return "", nil
+	}
+
+	var pods corev1.PodList
+	if err := k8sClient.List(ctx, &pods,
+		client.InNamespace(job.Namespace),
+		client.MatchingLabels{jobNameLabel: job.Name},
+	); err != nil {
+		return "", err
+	}
+	if len(pods.Items) == 0 {
+		if now.Sub(job.CreationTimestamp.Time) > podCreationGrace {
+			return podNotCreatedReason, nil
+		}
+		return "", nil
+	}
+	return podProblem(&pods.Items[0]), nil
+}
+
+// podProblem explains why a pod is stuck before its containers run.
+// ContainerCreating and PodInitializing are normal startup and give no reason.
+func podProblem(pod *corev1.Pod) string {
+	for _, cs := range pod.Status.ContainerStatuses {
+		waiting := cs.State.Waiting
+		if waiting == nil || waiting.Reason == "ContainerCreating" || waiting.Reason == "PodInitializing" {
+			continue
+		}
+		if waiting.Message == "" {
+			return waiting.Reason
+		}
+		return waiting.Reason + ": " + waiting.Message
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse {
+			return cond.Message
+		}
+	}
+	return ""
 }
 
 // newRunID returns an ID that is unique enough to tell two runs of the same Capp apart.

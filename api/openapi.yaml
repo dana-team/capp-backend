@@ -1238,7 +1238,7 @@ components:
 
     BenchmarkTriggerResponse:
       type: object
-      required: [cappName, jobName, type]
+      required: [cappName, jobName, type, runId]
       properties:
         cappName:
           type: string
@@ -1250,10 +1250,14 @@ components:
           type: string
           enum: [latency, throughput, scale]
           example: latency
+        runId:
+          type: string
+          description: Identifies this run in its metrics and summary.
+          example: 1762646400-x7k2p
 
     BenchmarkStatusResponse:
       type: object
-      required: [jobName, status]
+      required: [jobName, status, runId]
       properties:
         jobName:
           type: string
@@ -1266,6 +1270,18 @@ components:
             A finished Job remains until its TTL elapses or a new benchmark replaces it.
           enum: ["", running, completed, failed]
           example: running
+        runId:
+          type: string
+          description: Run ID of the benchmark Job. Empty when none exists.
+          example: 1762646400-x7k2p
+        reason:
+          type: string
+          description: |
+            Why a running benchmark has not started, or why a failed one failed.
+            Absent when the run is progressing normally. Set to
+            "the pod was not created" when no pod exists 60 seconds after the Job was created.
+            Otherwise it is the waiting reason and message of the pod, or the scheduling message.
+          example: "ImagePullBackOff: Back-off pulling image"
 
     PrometheusResponse:
       type: object
@@ -2595,8 +2611,9 @@ paths:
       tags: [benchmarks]
       summary: Get the benchmark status for a Capp
       description: |
-        Returns the benchmark Job name and status (`running`, `completed`, or
-        `failed`). Both fields are empty when no Job exists. Registered only
+        Returns the benchmark Job name, status (`running`, `completed`, or
+        `failed`), run ID, and, when there is a problem, a reason. Job name,
+        status, and run ID are empty when no Job exists. Registered only
         when `resources.benchmarks.enabled` is true.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
@@ -2604,7 +2621,7 @@ paths:
         - $ref: '#/components/parameters/objectNameParam'
       responses:
         "200":
-          description: Benchmark status. Both fields are empty when no Job exists.
+          description: Benchmark status. Job name, status, and run ID are empty when no Job exists.
           content:
             application/json:
               schema:
