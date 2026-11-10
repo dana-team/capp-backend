@@ -1283,6 +1283,112 @@ components:
             Otherwise it is the waiting reason and message of the pod, or the scheduling message.
           example: "ImagePullBackOff: Back-off pulling image"
 
+    Run:
+      type: object
+      required: [runId, type, path, revision, mixed, result, startedAt, endedAt, stats]
+      properties:
+        runId:
+          type: string
+          description: Identifies the run. Matches the run ID in the Job and its metrics.
+          example: 1762646400-x7k2p
+        type:
+          type: string
+          enum: [latency, throughput, scale]
+          example: latency
+        path:
+          type: string
+          description: Path the run requested on the Capp, without its query string.
+          example: /api/orders
+        revision:
+          type: string
+          description: |
+            Revision that served the run. Two revisions, separated by a comma,
+            when the run happened during a staged rollout.
+          example: c-00007
+        mixed:
+          type: boolean
+          description: True when the run happened during a staged rollout, so two revisions took traffic.
+        result:
+          type: string
+          description: Outcome of the run, `passed` or `failed`.
+          enum: [passed, failed]
+          example: passed
+        reason:
+          type: string
+          description: Why the run failed. Absent when the run passed.
+          example: "ImagePullBackOff: Back-off pulling image"
+        startedAt:
+          type: integer
+          format: int64
+          description: Start of the run, Unix seconds.
+          example: 1762646400
+        endedAt:
+          type: integer
+          format: int64
+          description: End of the run, Unix seconds.
+          example: 1762646430
+        stats:
+          type: object
+          description: |
+            Every stat the run recorded, except its start and end. Keys are stat
+            names such as `p95_seconds`, `error_ratio`, or `max_pods`. Which keys
+            appear depends on the run type and what was measured.
+          additionalProperties:
+            type: number
+          example:
+            p95_seconds: 0.39
+
+    RunListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: Up to 50 runs from the last 30 days, newest first. Empty when there are none.
+          items:
+            $ref: '#/components/schemas/Run'
+
+    RunChart:
+      type: object
+      required: [title, unit, points]
+      properties:
+        title:
+          type: string
+          example: Latency p95
+        unit:
+          type: string
+          example: seconds
+        points:
+          type: array
+          description: |
+            `[unix seconds, value]` pairs over the run's own window. Empty when
+            there is no data for the run.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: number
+          example: [[1762646400, 0.31], [1762646415, 0.39]]
+
+    RunDetailResponse:
+      type: object
+      required: [runId, type, path, revision, mixed, result, startedAt, endedAt, stats, chart]
+      allOf:
+        - $ref: '#/components/schemas/Run'
+        - type: object
+          required: [chart]
+          properties:
+            previous:
+              description: |
+                The most recent earlier run of the same type and path on this Capp.
+                Absent when there is none. Searched across every run in the lookback
+                window, not only the listed ones.
+              allOf:
+                - $ref: '#/components/schemas/Run'
+            chart:
+              $ref: '#/components/schemas/RunChart'
+
     PrometheusResponse:
       type: object
       description: |
@@ -2630,6 +2736,86 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/benchmark/runs:
+    get:
+      tags: [benchmarks]
+      summary: List benchmark runs for a Capp
+      description: |
+        Returns the Capp's benchmark runs from the last 30 days, newest first,
+        read from VictoriaMetrics and filtered to this cluster, namespace, and
+        Capp. Returns at most 50 runs. A run without a start or end time is
+        left out. The Capp must exist. Registered only when
+        `resources.benchmarks.enabled` is true.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Runs for the Capp, newest first. Empty when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunListResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "502":
+          description: VictoriaMetrics could not be reached, or it returned a server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/benchmark/runs/{run}:
+    get:
+      tags: [benchmarks]
+      summary: Get one benchmark run for a Capp
+      description: |
+        Returns one run with the most recent earlier run of the same type and
+        path, and the run's chart over its own window. The chart is latency
+        p95 for latency runs, requests per second for throughput runs, and
+        ready pods for scale runs. Searches the same 30 days as the list. The
+        Capp must exist. Registered only when `resources.benchmarks.enabled`
+        is true.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - name: run
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Run ID, from the run list or the benchmark status.
+          example: 1762646400-x7k2p
+      responses:
+        "200":
+          description: The run, its previous run when there is one, and its chart.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunDetailResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "502":
+          description: VictoriaMetrics could not be reached, or it returned a server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         "500":
           $ref: '#/components/responses/InternalError'
 

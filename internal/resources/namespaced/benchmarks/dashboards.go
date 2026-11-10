@@ -52,11 +52,7 @@ func (h *Handler) dashboards(c *gin.Context) {
 // meant for query_range. The Capp name is the Knative service name. The cluster
 // label keeps Capps with the same name on different clusters apart.
 func dashboardsFor(clusterName, namespace, cappName string) []Dashboard {
-	sel := fmt.Sprintf(`%s="%s",%s="%s",%s="%s"`,
-		labelCluster, promQLString(clusterName),
-		labelNamespace, promQLString(namespace),
-		labelService, promQLString(cappName),
-	)
+	sel := cappSelector(clusterName, namespace, cappName)
 	latency := metricInvocation + "_bucket{" + sel + "}"
 	requests := metricInvocation + "_count{" + sel + "}"
 	return []Dashboard{
@@ -90,6 +86,15 @@ func dashboardsFor(clusterName, namespace, cappName string) []Dashboard {
 			},
 		},
 	}
+}
+
+// cappSelector returns the label matchers that select one Capp's Knative series.
+func cappSelector(clusterName, namespace, cappName string) string {
+	return fmt.Sprintf(`%s="%s",%s="%s",%s="%s"`,
+		labelCluster, promQLString(clusterName),
+		labelNamespace, promQLString(namespace),
+		labelService, promQLString(cappName),
+	)
 }
 
 func histogramQuantile(q float64, bucketSelector string) string {

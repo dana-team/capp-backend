@@ -129,3 +129,40 @@ type Dashboard struct {
 type DashboardsResponse struct {
 	Dashboards []Dashboard `json:"dashboards"`
 }
+
+// Run is one benchmark run, read back from its stored summary.
+type Run struct {
+	RunID    string `json:"runId"`
+	Type     Type   `json:"type"`
+	Path     string `json:"path"`
+	Revision string `json:"revision"`
+	// Mixed is true when the run happened during a staged rollout, when two revisions took traffic.
+	Mixed     bool   `json:"mixed"`
+	Result    string `json:"result"`
+	Reason    string `json:"reason,omitempty"`
+	StartedAt int64  `json:"startedAt"`
+	EndedAt   int64  `json:"endedAt"`
+	// Stats holds every stat except start_seconds and end_seconds.
+	Stats map[string]float64 `json:"stats"`
+}
+
+// RunListResponse is returned by GET .../benchmark/runs. Newest run first.
+type RunListResponse struct {
+	Items []Run `json:"items"`
+}
+
+// RunChart is the time series for one run. Points are [unix seconds, value].
+type RunChart struct {
+	Title  string       `json:"title"`
+	Unit   string       `json:"unit"`
+	Points [][2]float64 `json:"points"`
+}
+
+// RunDetailResponse is returned by GET .../benchmark/runs/:run.
+// Previous is the most recent earlier run of the same type and path, and is
+// omitted when there is none.
+type RunDetailResponse struct {
+	Run
+	Previous *Run     `json:"previous,omitempty"`
+	Chart    RunChart `json:"chart"`
+}

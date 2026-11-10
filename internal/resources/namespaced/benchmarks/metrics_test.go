@@ -106,6 +106,12 @@ func TestMetricsEndpoint_InvalidURLDoesNotExposeToken(t *testing.T) {
 	}
 }
 
+func TestQuery_InvalidQueryURLIsServerError(t *testing.T) {
+	w := metricsEngine(t, "vm.example.com?apikey=abc123").Get(metricsPath("my-capp") + "/query?query=up")
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NotContains(t, w.Body.String(), "abc123")
+}
+
 func TestQuery_SendsNoAuthorizationHeader(t *testing.T) {
 	var gotAuth string
 	vm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

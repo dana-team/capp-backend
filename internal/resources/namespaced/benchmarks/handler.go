@@ -3,6 +3,8 @@
 // another trigger. A finished Job is replaced. Status reports that Job.
 // Dashboards returns the preset PromQL for a Capp. Query and query_range
 // proxy those expressions to the configured query URL.
+// Runs lists a Capp's stored run summaries and reads one run back with its
+// previous run and chart. Both read VictoriaMetrics through the query URL.
 // Routes are registered only when benchmarks are enabled.
 package benchmarks
 
@@ -70,6 +72,8 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	bench := rg.Group("/namespaces/:namespace/capps/:name/benchmark")
 	bench.POST("", h.trigger)
 	bench.GET("", h.status)
+	bench.GET("/runs", h.listRuns)
+	bench.GET("/runs/:run", h.getRun)
 
 	metrics := rg.Group("/namespaces/:namespace/capps/:name/metrics")
 	metrics.GET("/dashboards", h.dashboards)

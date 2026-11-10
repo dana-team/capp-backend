@@ -65,6 +65,8 @@ GET    /api/v1/clusters/:cluster/namespaces/:namespace/configmaps/names     (aut
 GET    /api/v1/clusters/:cluster/namespaces/:namespace/secrets/names         (auth + cluster) — list secret names only
 GET    /api/v1/clusters/:cluster/configmaps            (auth + cluster) — list all configmaps across namespaces (dana.io/capp-managed=true only)
 GET    /api/v1/clusters/:cluster/secrets               (auth + cluster) — list all secrets across namespaces
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/benchmark/runs            (auth + cluster) — benchmark runs from VictoriaMetrics, newest first, last 30 days, max 50
+GET    /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/benchmark/runs/:run      (auth + cluster) — one run with its previous same-type/path run and chart; 404 if unknown
 ```
 
 ### Key Patterns

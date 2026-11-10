@@ -1,6 +1,7 @@
 package benchmarks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -91,43 +92,44 @@ func (h *Handler) proxyPromQL(c *gin.Context, path string, values url.Values) {
 		return
 	}
 
+	status, body, err := h.fetchPromQL(ctx, path, values)
+	if err != nil {
+		h.failQuery(c, cappName, namespace, err)
+		return
+	}
+	c.Data(status, "application/json", body)
+}
+
+// fetchPromQL sends one request to the query URL and returns the response
+// status and body. It fails on transport errors, oversized bodies, redirects,
+// and 5xx responses. Errors never include the query URL.
+func (h *Handler) fetchPromQL(ctx context.Context, path string, values url.Values) (int, []byte, error) {
 	endpoint, err := metricsEndpoint(h.cfg.QueryURL, path, values)
 	if err != nil {
-		apierrors.Respond(c, apierrors.NewInternal(err))
-		return
+		return 0, nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		apierrors.Respond(c, apierrors.NewInternal(withoutURL(err)))
-		return
+		return 0, nil, withoutURL(err)
 	}
 
 	resp, err := h.vmHTTP().Do(req)
 	if err != nil {
-		h.failQuery(c, cappName, namespace, err)
-		return
+		return 0, nil, withoutURL(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxVMResponseBytes+1))
 	if err != nil {
-		h.failQuery(c, cappName, namespace, err)
-		return
+		return 0, nil, withoutURL(err)
 	}
 	if len(body) > maxVMResponseBytes {
-		h.failQuery(c, cappName, namespace, fmt.Errorf("response exceeds %d bytes", maxVMResponseBytes))
-		return
+		return 0, nil, fmt.Errorf("response exceeds %d bytes", maxVMResponseBytes)
 	}
 	if resp.StatusCode >= 500 || (resp.StatusCode >= 300 && resp.StatusCode < 400) {
-		h.failQuery(c, cappName, namespace, fmt.Errorf("status %d", resp.StatusCode))
-		return
+		return 0, nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
-
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/json"
-	}
-	c.Data(resp.StatusCode, contentType, body)
+	return resp.StatusCode, body, nil
 }
 
 func (h *Handler) failQuery(c *gin.Context, cappName, namespace string, err error) {
@@ -137,6 +139,10 @@ func (h *Handler) failQuery(c *gin.Context, cappName, namespace string, err erro
 		zap.String("namespace", namespace),
 		zap.Error(err),
 	)
+	if errors.Is(err, errInvalidQueryURL) {
+		apierrors.Respond(c, apierrors.NewInternal(err))
+		return
+	}
 	apierrors.Respond(c, apierrors.NewPrometheusQueryFailed(err))
 }
 
@@ -156,13 +162,17 @@ func newVMClient() *http.Client {
 	}
 }
 
+// errInvalidQueryURL means the configured query URL cannot be used. That is a
+// server configuration error, not an upstream failure.
+var errInvalidQueryURL = errors.New("invalid Prometheus query URL")
+
 // metricsEndpoint adds path and values to queryURL, keeping any query
 // parameters it already has, such as an API key.
 func metricsEndpoint(queryURL, path string, values url.Values) (string, error) {
 	base, err := url.Parse(strings.TrimSpace(queryURL))
 	if err != nil || base.Host == "" {
 		// url.Parse errors quote the URL, which can carry a token.
-		return "", errors.New("invalid Prometheus query URL")
+		return "", errInvalidQueryURL
 	}
 	endpoint := base.JoinPath(path)
 	query := endpoint.Query()
