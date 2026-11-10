@@ -47,7 +47,7 @@ type namespaceDeleteOutput struct {
 type namespaceAddUsersInput struct {
 	Cluster   string   `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string   `json:"namespace" jsonschema:"the namespace to add users to"`
-	Users     []string `json:"users" jsonschema:"usernames to grant the capp-user role in this namespace; existing users are kept, not replaced"`
+	Users     []string `json:"users" jsonschema:"usernames to grant the capp-user role in Kubernetes authorization mode or direct editor access in backend-policy mode; existing grants are kept"`
 }
 
 func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
@@ -68,7 +68,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "namespace_get",
-		Description: "Get a CAPP-enabled namespace's details, including its resource quota and list of users granted the capp-user role.",
+		Description: "Get a CAPP-enabled namespace's details and resource quota. Users lists capp-user RoleBinding users in Kubernetes authorization mode, or direct editors in backend-policy mode, which also returns full policy bindings when available.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceAddUsersInput) (*mcp.CallToolResult, ns.NamespaceItem, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -83,7 +83,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 	})
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "namespace_create",
-		Description: "Create a CAPP-enabled namespace, optionally with a resource quota and an initial set of users granted the capp-user role. Requires the caller to have permission to create namespaces on the cluster.",
+		Description: "Create a CAPP-enabled namespace with optional quota and membership. Kubernetes authorization mode grants users the capp-user role and requires namespace creation permission. Backend-policy mode requires a configured operator; supply users for direct editor grants or bindings for explicit User/Group viewer/editor grants, never both.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceCreateInput) (*mcp.CallToolResult, ns.NamespaceItem, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -99,7 +99,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "namespace_delete",
-		Description: "Delete a CAPP-enabled namespace. The namespace must be empty — if it still contains Capps, the server rejects the request with a conflict error. This is irreversible.",
+		Description: "Delete a CAPP-enabled namespace. If it still contains Capps, the server rejects the request with a conflict error. Backend-policy mode requires a configured operator and also cleans up the owned policy; retries while the namespace is terminating can finish policy cleanup. Namespace deletion is irreversible.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceDeleteInput) (*mcp.CallToolResult, namespaceDeleteOutput, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -114,7 +114,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "namespace_update",
-		Description: "Replace a namespace's resource quota and/or user list. This is a full replace, not additive: a provided users list replaces the existing one entirely, and quota decreases below current usage are rejected. Use namespace_add_users to append users without replacing the list.",
+		Description: "Update a namespace's quota and membership; omitted fields stay unchanged and quota decreases below usage are rejected. Kubernetes authorization mode replaces capp-user RoleBinding users. Backend-policy mode requires a configured operator: users replaces only direct editors, preserving viewers and Group grants; bindings replaces all grants. Supply users or bindings, never both; policyResourceVersion detects stale policy edits. Use namespace_add_users to append users.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceUpdateInput) (*mcp.CallToolResult, ns.NamespaceItem, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -130,7 +130,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "namespace_add_users",
-		Description: "Add users to a namespace's existing capp-user RoleBinding without disturbing users already granted access. The RoleBinding must already exist (created via namespace_create) or this fails with a not-found error.",
+		Description: "Add users without removing existing grants. Kubernetes authorization mode requires an existing capp-user RoleBinding. Backend-policy mode requires a configured operator and an existing valid policy, and adds direct editor grants. Use namespace_update to initialize missing membership or repair an invalid policy with full bindings in backend-policy mode.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceAddUsersInput) (*mcp.CallToolResult, ns.NamespaceItem, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
