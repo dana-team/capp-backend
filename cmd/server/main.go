@@ -26,7 +26,6 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/gitops"
 	"github.com/dana-team/capp-backend/internal/resources"
-	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	benchhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/benchmarks"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	revhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
@@ -131,14 +130,16 @@ func main() {
 		"benchmarks":    cfg.Resources.Benchmarks.Enabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
-	registry.Register(nshandler.New(logger))
 	registry.Register(capphandler.New(cfg.GitOps.Enabled, gitopsClient, clusterMgr, cfg.Sizes))
 	registry.Register(revhandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
 	registry.Register(cmhandler.New())
 	registry.Register(secrethandler.New())
 	registry.Register(benchhandler.New(cfg.Resources.Benchmarks, logger))
 	// ── 8. Build and start HTTP server ────────────────────────────────────────
-	srv := server.New(cfg, version, authMgr, clusterMgr, registry, logger)
+	srv, err := server.New(cfg, version, authMgr, clusterMgr, registry, logger)
+	if err != nil {
+		logger.Fatal("failed to initialise server", zap.Error(err))
+	}
 
 	// Run in a goroutine so we can listen for signals concurrently.
 	serverErr := make(chan error, 1)

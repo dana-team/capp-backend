@@ -9,7 +9,6 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources"
-	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/benchmarks"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
@@ -27,9 +26,13 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 			t.Run(fmt.Sprintf("%s optional=%t", mode, optional), func(t *testing.T) {
 				cfg := &config.Config{}
 				cfg.Auth.Mode = mode
+				cfg.Resources.Namespaces.Enabled = true
 				cfg.Metrics.Enabled, cfg.Metrics.Path = optional, "/monitoring/custom"
 				registry := policyRegistry(optional)
-				srv := New(cfg, "dev", &testutil.MockAuthManager{}, &testutil.MockClusterManager{}, registry, zap.NewNop())
+				srv, err := New(cfg, "dev", &testutil.MockAuthManager{}, &testutil.MockClusterManager{}, registry, zap.NewNop())
+				if err != nil {
+					t.Fatal(err)
+				}
 				engine, ok := srv.httpServer.Handler.(*gin.Engine)
 				require.True(t, ok)
 				metricsPath := ""
@@ -59,7 +62,6 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 
 func policyRegistry(optional bool) *resources.Registry {
 	r := resources.NewRegistry(map[string]bool{"benchmarks": optional, "configmaps": optional, "secrets": optional})
-	r.Register(nshandler.New(zap.NewNop()))
 	r.Register(capps.New(false, nil, nil, config.CappSizes{}))
 	r.Register(revisions.New(false, nil, config.CappSizes{}))
 	r.Register(configmaps.New())

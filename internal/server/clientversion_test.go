@@ -32,7 +32,8 @@ func TestNewWarnsOutdatedKnownClients(t *testing.T) {
 	cfg.Auth.RateLimit.MaxIPTracked = len(clientversion.Known) + 10
 	cfg.Metrics.Enabled = true
 	cfg.Metrics.Path = "/metrics"
-	s := New(cfg, "v0.6.2", &testutil.MockAuthManager{}, &testutil.MockClusterManager{}, &resources.Registry{}, zap.NewNop())
+	s, err := New(cfg, "v0.6.2", &testutil.MockAuthManager{}, &testutil.MockClusterManager{}, &resources.Registry{}, zap.NewNop())
+	require.NoError(t, err)
 
 	serve := func(ip, userAgent, path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -94,7 +95,8 @@ func TestNewLogsOutdatedClientUser(t *testing.T) {
 				},
 			}
 			cfg := &config.Config{Auth: config.AuthConfig{Mode: tc.mode}}
-			s := New(cfg, "v0.6.2", authMgr, &testutil.MockClusterManager{}, &resources.Registry{}, zap.New(core))
+			s, err := New(cfg, "v0.6.2", authMgr, &testutil.MockClusterManager{}, &resources.Registry{}, zap.New(core))
+			require.NoError(t, err)
 
 			for _, client := range clientversion.Known {
 				req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)

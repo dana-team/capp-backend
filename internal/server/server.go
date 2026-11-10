@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -13,7 +14,9 @@ import (
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources"
+	"github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	"github.com/dana-team/capp-backend/internal/server/ui"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
 	"github.com/gin-gonic/gin"
@@ -23,13 +26,15 @@ import (
 
 // Server wraps the http.Server and exposes a clean Start/Stop API.
 type Server struct {
-	httpServer *http.Server
-	logger     *zap.Logger
+	httpServer    *http.Server
+	logger        *zap.Logger
+	authorization *authorizationRuntime
 }
 
-// New builds the Gin engine, registers all middleware and routes, and returns
-// a Server ready to call Start on. version is the backend build version; it is
-// compared with the version of each known client (see middleware.ClientVersion).
+// New builds the Gin engine and starts authorization observation when enabled.
+// The backend version is compared with known client versions by middleware.ClientVersion.
+// Namespace handlers are assembled here; registry supplies the other resources.
+// Call Stop to release workers, even when Start has not been called.
 func New(
 	cfg *config.Config,
 	version string,
@@ -37,7 +42,25 @@ func New(
 	clusterMgr cluster.ClusterManager,
 	registry *resources.Registry,
 	logger *zap.Logger,
-) *Server {
+) (*Server, error) {
+	var authorization *authorizationRuntime
+	var rules *policy.Routes
+	if cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy {
+		metricsPath := ""
+		if cfg.Metrics.Enabled {
+			metricsPath = cfg.Metrics.Path
+		}
+		var err error
+		rules, err = policy.NewRoutes(metricsPath)
+		if err != nil {
+			return nil, err
+		}
+		authorization, err = newAuthorization(cfg, clusterMgr)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// In production, suppress Gin's default debug output — our logging
 	// middleware handles structured request logging.
 	gin.SetMode(gin.ReleaseMode)
@@ -58,9 +81,13 @@ func New(
 		))
 	}
 
+	if authorization != nil {
+		engine.Use(policy.New(authMgr, clusterMgr, rules, authorization.targets, logger))
+	}
+
 	// ── Observability endpoints (no auth required) ────────────────────────────
 	engine.GET("/healthz", healthz)
-	engine.GET("/readyz", readyz(clusterMgr))
+	engine.GET("/readyz", readyz(clusterMgr, authorization))
 
 	if cfg.Metrics.Enabled {
 		engine.GET(cfg.Metrics.Path, gin.WrapH(promhttp.Handler()))
@@ -88,17 +115,33 @@ func New(
 
 	// ── Cluster endpoints (listing only — no cluster middleware needed) ────────
 	clusterListGroup := engine.Group("/api/v1/clusters")
-	clusterListGroup.Use(middleware.Auth(authMgr))
+	if authorization == nil {
+		clusterListGroup.Use(middleware.Auth(authMgr))
+	}
 	clusterListGroup.GET("", listClusters(clusterMgr))
 	clusterListGroup.GET("/:cluster", getCluster(clusterMgr))
 
-	// ── Resource endpoints (auth + cluster middleware) ────────────────────────
+	// ── Resource endpoints ───────────────────────────────────────────────────
 	// All resource routes live under /api/v1/clusters/:cluster and require
-	// both authentication and cluster resolution.
+	// both authentication and cluster resolution. Kubernetes mode uses the group
+	// middleware below; backend-policy mode uses the global policy chain.
 	resourceGroup := engine.Group("/api/v1/clusters/:cluster")
-	resourceGroup.Use(middleware.Auth(authMgr))
-	resourceGroup.Use(middleware.Cluster(clusterMgr))
+	if authorization == nil {
+		resourceGroup.Use(middleware.Auth(authMgr))
+		resourceGroup.Use(middleware.Cluster(clusterMgr))
+	}
+	if cfg.Resources.Namespaces.Enabled {
+		if authorization != nil {
+			registry.Register(namespaces.NewWithAdministration(logger, authorization.administration))
+		} else {
+			registry.Register(namespaces.New(logger))
+		}
+	}
 	registry.Mount(resourceGroup)
+
+	if authorization != nil {
+		authorization.start(logger)
+	}
 
 	return &Server{
 		httpServer: &http.Server{
@@ -108,8 +151,9 @@ func New(
 			WriteTimeout: time.Duration(cfg.Server.WriteTimeoutSeconds) * time.Second,
 			IdleTimeout:  time.Duration(cfg.Server.IdleTimeoutSeconds) * time.Second,
 		},
-		logger: logger,
-	}
+		logger:        logger,
+		authorization: authorization,
+	}, nil
 }
 
 // Start begins listening for HTTP requests. It blocks until the server is
@@ -117,7 +161,12 @@ func New(
 // http.ErrServerClosed is suppressed (it is the expected error on graceful shutdown).
 func (s *Server) Start() error {
 	s.logger.Info("starting HTTP server", zap.String("addr", s.httpServer.Addr))
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if s.authorization != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			err = errors.Join(err, s.authorization.stop(ctx))
+		}
 		return fmt.Errorf("server: listen: %w", err)
 	}
 	return nil
@@ -127,7 +176,11 @@ func (s *Server) Start() error {
 // The provided context controls the maximum drain timeout.
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.Info("shutting down HTTP server")
-	return s.httpServer.Shutdown(ctx)
+	err := s.httpServer.Shutdown(ctx)
+	if s.authorization != nil {
+		err = errors.Join(err, s.authorization.stop(ctx))
+	}
+	return err
 }
 
 // ── Built-in handlers ─────────────────────────────────────────────────────────
@@ -137,18 +190,27 @@ func healthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// readyz is the readiness probe. Returns 200 only when at least one cluster
-// is healthy. The frontend / load balancer should not send traffic until
-// the backend is ready.
-func readyz(clusterMgr cluster.ClusterManager) gin.HandlerFunc {
+// readyz requires a healthy target and, in backend-policy mode, completed
+// initial observations on that same target. Transient watch failures do not
+// discard previously synchronized state.
+func readyz(clusterMgr cluster.ClusterManager, authorization *authorizationRuntime) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if clusterMgr.IsAnyHealthy() {
+		var ready bool
+		var reason string
+		if authorization != nil {
+			ready = authorization.ready(clusterMgr)
+			reason = "no healthy synchronized clusters available"
+		} else {
+			ready = clusterMgr.IsAnyHealthy()
+			reason = "no healthy clusters available"
+		}
+		if ready {
 			c.JSON(http.StatusOK, gin.H{"status": "ready"})
 			return
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not ready",
-			"reason": "no healthy clusters available",
+			"reason": reason,
 		})
 	}
 }

@@ -28,7 +28,7 @@ type GitOpsSyncer interface {
 
 // Handler implements resources.ResourceHandler for the rcs.dana.io/v1alpha1
 // Capp custom resource. It provides full CRUD over Capps through the
-// per-request scoped Kubernetes client injected by the cluster middleware.
+// per-request scoped Kubernetes client prepared by the active authorization middleware.
 type Handler struct {
 	gitopsEnabled bool
 	gitops        GitOpsSyncer

@@ -1,4 +1,25 @@
-{{- if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
+{{- if eq .Values.config.authorization.mode "backend-policy" }}
+{{- $local := false }}
+{{- range .Values.config.clusters }}
+{{- if eq .credential.inline.apiServer "https://kubernetes.default.svc" }}
+{{- $local = true }}
+{{- end }}
+{{- end }}
+{{- if $local }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "capp-backend.fullname" . }}-role
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "capp-backend.fullname" . }}-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.namespace }}
+{{- end }}
+{{- else if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

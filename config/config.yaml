@@ -27,6 +27,10 @@ server:
     # - "https://console.example.com"
 
 # ── Authentication ────────────────────────────────────────────────────────────
+authorization:
+  mode: kubernetes
+  restrictedBindingNamePrefixes: ["system:"]
+
 auth:
   # mode controls how incoming requests are authenticated. Options:
   #
@@ -43,7 +47,7 @@ auth:
   #
   #   ldap
   #     POST /api/v1/auth/login verifies directory credentials over TLS and
-  #     issues an access JWT for Kubernetes impersonation. No refresh, ADFS SSO,
+  #     issues an access JWT for backend authentication. No refresh, ADFS SSO,
   #     MFA, or OAuth browser flow.
   mode: "passthrough"
 
@@ -64,7 +68,8 @@ auth:
 
   # LDAP example: set mode to ldap and uncomment ldap below (under auth).
   # Requires HTTPS for API password login and an inline service-account token
-  # with users/groups impersonation permissions on every managed cluster.
+  # on every managed cluster. Users/groups impersonation permissions are required
+  # only in Kubernetes authorization mode.
   # ldap:
   #   url: "ldaps://directory.example.com:636" # verified LDAPS only
   #   caCert: ""              # base64 PEM CA bundle; empty uses system roots
@@ -87,7 +92,8 @@ auth:
   #   verificationKeys: {}    # additional key ID -> PEM Ed25519 public key
   # The active public key is derived from the private key. Distribute a new
   # public key before activating it; retain old public keys until tokens expire.
-  # Use matching canonical User/Group RoleBindings; the default group filter
+  # Match canonical User/Group names in Kubernetes RoleBindings or backend-policy
+  # bindings, according to authorization mode. The default group filter
   # covers direct membership, not guaranteed nested or primary membership.
   # See README.md for HTTPS integration, key rotation, and lockout ownership.
 
@@ -158,8 +164,15 @@ clusters:
         apiServer: "https://127.0.0.1:45883"
         # caCert: ""        # base64-encoded PEM CA. Omit to skip TLS verification.
         token: ""           # inject via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
-    # allowedNamespaces restricts which namespaces are visible through this
-    # cluster entry. Empty list means all namespaces are accessible.
+    # policyNamespace is required in backend-policy mode;
+    # the lists are optional.
+    authorization:
+      policyNamespace: capp-platform-system
+      protectedNamespaces: [capp-platform-system]
+      operatorUsers: []
+      operatorGroups: []
+    # allowedNamespaces restricts which namespaces are visible through this cluster entry.
+    # An empty list adds no namespace restriction; authorization checks still apply.
     allowedNamespaces: []
 
   # Production cluster example (comment out above and fill in below):

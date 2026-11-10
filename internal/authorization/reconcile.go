@@ -62,6 +62,12 @@ func NewReconciler(client kubernetes.Interface, store *Store) (*Reconciler, erro
 	return r, nil
 }
 
+// Close releases the queue, including when startup fails before Run is called.
+// It is safe to call more than once. Cancel Run's context to stop a running reconciler.
+func (r *Reconciler) Close() {
+	r.queue.ShutDown()
+}
+
 // Run processes namespace changes and retries failures with bounded backoff until
 // cancellation, joining all workers before returning. A reconciler is single-use.
 func (r *Reconciler) Run(ctx context.Context) error {
@@ -87,7 +93,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		}
 	})
 	<-ctx.Done()
-	r.queue.ShutDown()
+	r.Close()
 	workers.Wait()
 	return nil
 }
