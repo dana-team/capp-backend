@@ -20,7 +20,6 @@ import (
 	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	nshandler "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/benchmarks"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -105,17 +104,19 @@ func TestBackendPolicyDeniedAPIs(t *testing.T) {
 	r := policyRouter(t, policyIdentity("editor"), mgr, requestpolicy.Target{ExecutionClient: &clientThatMustNotRun{t: t}}, zap.NewNop())
 	group := r.Group("/api/v1/clusters/:cluster")
 	nshandler.New(zap.NewNop()).RegisterRoutes(group)
-	benchmarks.New(config.BenchmarkConfig{VMURLs: []string{prometheus.URL}}, zap.NewNop()).RegisterRoutes(group)
+	newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{
+		Enabled:  true,
+		QueryURL: prometheus.URL,
+		Metrics:  []config.MetricsQuery{{Name: "cpu", Type: "gauge", Query: "up{$selector}", NamespaceLabel: "namespace", ObjectLabel: "capp"}},
+	}).RegisterRoutes(group)
 	for _, tt := range []struct{ method, path string }{
 		{http.MethodPost, "/namespaces"},
 		{http.MethodPut, "/namespaces/team-a"},
 		{http.MethodPatch, "/namespaces/team-a"},
 		{http.MethodDelete, "/namespaces/team-a"},
-		{http.MethodGet, "/namespaces/team-a/capps/app/benchmark"},
-		{http.MethodPost, "/namespaces/team-a/capps/app/benchmark"},
-		{http.MethodGet, "/namespaces/team-a/capps/app/metrics/dashboards"},
-		{http.MethodGet, "/namespaces/team-a/capps/app/metrics/query?query=up"},
-		{http.MethodGet, "/namespaces/team-a/capps/app/metrics/query_range?query=up&start=1&end=2&step=1"},
+		{http.MethodGet, "/namespaces/team-a/capps/app/metrics"},
+		{http.MethodGet, "/namespaces/team-a/capps/app/metrics/cpu"},
+		{http.MethodGet, "/namespaces/team-a/capps/app/metrics/cpu?start=1&end=2&step=1"},
 	} {
 		t.Run(tt.method+tt.path, func(t *testing.T) {
 			w := policyRequest(r, tt.method, "/api/v1/clusters/c1"+tt.path, "{}")

@@ -63,7 +63,7 @@ Here `C` is `/api/v1/clusters/:cluster` and `N` is `C/namespaces/:namespace`.
 | POST resource collections; PUT/DELETE resource objects | editor |
 | Capp revision rollback, Git sync/unsync, including Git effects in update/delete | editor; feature settings still apply |
 | Capp migration | editor at source **and** destination, even for copy-only or same-cluster requests |
-| Capp benchmark and Capp metrics/dashboard/query APIs | Denied, even for operators/editors; no Prometheus calls |
+| Capp metrics APIs (`.../capps/:name/metrics[/:metric]`) | Denied, even for operators/editors; no Prometheus calls |
 
 Viewer reads include **Secret payloads** exposed by the existing API. There is no per-object ACL or field redaction. Disabling a resource route does not disable supporting operations of another enabled API: migration still copies managed Secrets and ConfigMaps. Review these compound operations before adoption.
 
@@ -200,7 +200,7 @@ Directory account/group changes affect newly issued JWTs; existing JWT identitie
 
 ## Manual cutover and rollback
 
-1. Compare required allows and denies against the API map, especially viewer Secret reads, editor workload creation, compound Git effects, both migration endpoints, operator-only administration and excluded benchmark/metrics features. Stay on Kubernetes mode if this model cannot preserve the reviewed access boundaries.
+1. Compare required allows and denies against the API map, especially viewer Secret reads, editor workload creation, compound Git effects, both migration endpoints, operator-only administration and excluded Capp metrics features. Stay on Kubernetes mode if this model cannot preserve the reviewed access boundaries.
 2. Review existing direct user tokens/RoleBindings and workload service accounts/admission restrictions. Remove or restrict unrelated access explicitly where necessary: application policies neither revoke direct Kubernetes access nor remove privileges available to a workload. Keep backend identities and signing keys inaccessible to user workloads.
 3. Provision protected storage, backend credentials and consolidated grants on every target. Label intended namespaces, create policies and configure operator/allowlist/restriction settings consistently.
 4. Validate the chosen build in a deployment before routing traffic: test role/target denials despite sufficient execution permissions, operator recovery, token rotation, observation convergence on every replica, and ordinary resource/Git/migration workflows.

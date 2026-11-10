@@ -98,12 +98,9 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 		declaration{method: http.MethodPost, path: cappPath + "/sync", rule: write},
 		declaration{method: http.MethodDelete, path: cappPath + "/sync", rule: write},
 		declaration{method: http.MethodPost, path: cappPath + "/migrate", rule: Rule{Category: Migration, AllowedRoles: write.AllowedRoles}},
-		declaration{method: http.MethodGet, path: cappPath + "/benchmark", rule: Rule{Category: Denied}},
-		declaration{method: http.MethodPost, path: cappPath + "/benchmark", rule: Rule{Category: Denied}},
+		declaration{method: http.MethodGet, path: cappPath + "/metrics", rule: Rule{Category: Denied}},
+		declaration{method: http.MethodGet, path: cappPath + "/metrics/:metric", rule: Rule{Category: Denied}},
 	)
-	for _, path := range []string{"dashboards", "query", "query_range"} {
-		declarations = append(declarations, declaration{method: http.MethodGet, path: cappPath + "/metrics/" + path, rule: Rule{Category: Denied}})
-	}
 	if metricsPath != "" {
 		if err := config.ValidateMetricsPath(metricsPath); err != nil {
 			return nil, err

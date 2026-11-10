@@ -1,0 +1,31 @@
+# Used by CI to render the chart with observability enabled.
+config:
+  clusters:
+    - name: test
+      credential:
+        inline:
+          apiServer: https://example.com
+  resources:
+    observability:
+      enabled: true
+      labels:
+        env: ci
+      metrics:
+        - name: latency
+          type: histogram
+          unit: seconds
+          namespaceLabel: k8s_namespace_name
+          objectLabel: kn_service_name
+          series:
+            - legend: p50
+              query: histogram_quantile(0.50, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{$selector}[5m])))
+            - legend: p95
+              query: histogram_quantile(0.95, sum by (le) (rate(kn_serving_invocation_duration_seconds_bucket{$selector}[5m])))
+        - name: throughput
+          type: counter
+          unit: requests/s
+          namespaceLabel: k8s_namespace_name
+          objectLabel: kn_service_name
+          query: sum(rate(kn_serving_invocation_duration_seconds_count{$selector}[1m]))
+secret:
+  observabilityQueryURL: http://vm-query.monitoring.svc:8428

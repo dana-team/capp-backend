@@ -14,7 +14,6 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
 	"github.com/dana-team/capp-backend/internal/testutil"
@@ -281,7 +280,7 @@ func aggregateRouter(t *testing.T, target requestpolicy.Target, caller string, a
 	}}
 	r := policyRouter(t, am, policyManager(t, cc), target, logger)
 	group := r.Group("/api/v1/clusters/:cluster")
-	capps.New(false, nil, nil, config.CappSizes{}).RegisterRoutes(group)
+	newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
 	configmaps.New().RegisterRoutes(group)
 	secrets.New().RegisterRoutes(group)
 	return r

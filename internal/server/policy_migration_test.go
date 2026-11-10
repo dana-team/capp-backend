@@ -228,7 +228,7 @@ func migrationRouter(t *testing.T, targets map[string]requestpolicy.Target, sour
 	require.NoError(t, err)
 	r := gin.New()
 	r.Use(requestpolicy.New(policyIdentity("editor"), mgr, rules, targets, logger))
-	capps.New(false, nil, mgr, config.CappSizes{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
+	newCappsHandler(t, false, nil, mgr, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
 	return r
 }
 
