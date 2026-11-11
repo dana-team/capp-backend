@@ -210,6 +210,12 @@ type CappRequest struct {
 
 	// EventSourcesSpec lists Knative Eventing sources to attach to the Capp. Optional.
 	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
+
+	// ReloadOnBoundResourceChange restarts the Capp when a Secret or ConfigMap
+	// it references is updated through this API. Stored as the
+	// rcs.dana.io/rollout-on-bound-resource-change annotation. Optional;
+	// omitting it on update turns it off.
+	ReloadOnBoundResourceChange bool `json:"reloadOnBoundResourceChange,omitempty"`
 }
 
 // ── Event source types ────────────────────────────────────────────────────────
@@ -330,10 +336,11 @@ type BareCappResponse struct {
 	LogSpec       *LogSpec      `json:"logSpec,omitempty"`
 	NFSVolumes    []NFSVolume   `json:"nfsVolumes,omitempty"`
 
-	SecretVolumes    []SecretVolume    `json:"secretVolumes,omitempty"`
-	ConfigMapVolumes []ConfigMapVolume `json:"configMapVolumes,omitempty"`
-	ImagePullSecrets []string          `json:"imagePullSecrets,omitempty"`
-	EventSourcesSpec *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
+	SecretVolumes               []SecretVolume    `json:"secretVolumes,omitempty"`
+	ConfigMapVolumes            []ConfigMapVolume `json:"configMapVolumes,omitempty"`
+	ImagePullSecrets            []string          `json:"imagePullSecrets,omitempty"`
+	EventSourcesSpec            *EventSourcesSpec `json:"eventSourcesSpec,omitempty"`
+	ReloadOnBoundResourceChange bool              `json:"reloadOnBoundResourceChange,omitempty"`
 }
 
 // CappResponse is returned by all read and write endpoints.

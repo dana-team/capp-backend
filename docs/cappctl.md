@@ -395,6 +395,7 @@ Without a name: lists all Capps. With a name: fetches a single Capp (requires `-
 | Flag               | Description                          |
 |--------------------|--------------------------------------|
 | `-A`, `--all-namespaces` | List across all namespaces (no --namespace needed) |
+| `--bound-to` | List the Capps that reference a Secret or ConfigMap: `secret/<name>` or `configmap/<name>` (`cm/<name>`). Requires `--namespace`; cannot be combined with a name or `-A` |
 
 **Examples:**
 
@@ -410,10 +411,15 @@ cappctl get capps my-app --cluster prod --namespace my-team
 
 # JSON output
 cappctl get capps --cluster prod -A -o json
+
+# Which Capps use a Secret, and which of them restart when it changes
+cappctl get capps --cluster prod --namespace my-team --bound-to secret/db-creds
 ```
 
 Table columns: `NAME`, `NAMESPACE`, `IMAGE`, `STATE`, `METRIC`, `AGE`
-Wide adds: `UID`
+Wide adds: `UID`, `ROLLOUT`, `RELOAD-ON-CHANGE`
+
+With `--bound-to` the table is `NAME`, `RELOADS`; `-o json|yaml` prints `{boundCapps, toReload}`. A Secret or ConfigMap cannot be deleted through capp-backend while any Capp references it.
 
 ### Create
 
@@ -433,6 +439,7 @@ cappctl create capps [flags]
 | `--scale-delay-seconds` | Delay before scaling down to zero                       |
 | `--container-name`      | Container name                                          |
 | `--env`                 | Environment variable `KEY=VALUE` (repeatable)           |
+| `--reload-on-bound-change` | Restart the Capp when a Secret or ConfigMap it uses (env, envFrom, volumes, imagePullSecrets) is updated through capp-backend. On update, `--reload-on-bound-change=false` turns it off; omitting the flag keeps the current setting |
 
 **Example:**
 

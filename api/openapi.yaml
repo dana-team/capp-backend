@@ -532,6 +532,30 @@ components:
           description: Total count of Secrets.
           example: 2
 
+    BoundCappsResponse:
+      type: object
+      required: [boundCapps, toReload]
+      properties:
+        boundCapps:
+          type: array
+          items:
+            type: string
+          description: |
+            Capps in the namespace that reference the resource: env, envFrom,
+            volumes and projected volumes, plus for Secrets imagePullSecrets,
+            logSpec.passwordSecret and Kafka source secretRef. Deleting the
+            resource is refused while this list is non-empty.
+          example: [web, worker]
+        toReload:
+          type: array
+          items:
+            type: string
+          description: |
+            Subset of boundCapps restarted when the resource's data changes:
+            Capps with reloadOnBoundResourceChange enabled that use it in their
+            pod template. Log and Kafka references never trigger a restart.
+          example: [web]
+
     # ── Resource sizing ─────────────────────────────────────────────────────────
     ResourceQuantitiesDTO:
       type: object
@@ -915,6 +939,14 @@ components:
           example: [ghcr-pull-secret]
         eventSourcesSpec:
           $ref: '#/components/schemas/EventSourcesSpec'
+        reloadOnBoundResourceChange:
+          type: boolean
+          description: |
+            Restart the Capp when a Secret or ConfigMap it references is updated
+            through this API. Stored as the
+            rcs.dana.io/rollout-on-bound-resource-change annotation. Omitting it
+            on update turns it off.
+          example: true
 
     ConditionResponse:
       type: object
@@ -1147,6 +1179,9 @@ components:
           example: [ghcr-pull-secret]
         eventSourcesSpec:
           $ref: '#/components/schemas/EventSourcesSpec'
+        reloadOnBoundResourceChange:
+          type: boolean
+          description: Whether the Capp restarts when a referenced Secret or ConfigMap is updated.
 
     CappResponse:
       allOf:
@@ -2093,6 +2128,13 @@ paths:
       description: |
         Replaces the ConfigMap spec. The backend fetches the current `resourceVersion`
         before applying the update to avoid optimistic-concurrency conflicts.
+        Every Capp that references the ConfigMap and has reloadOnBoundResourceChange
+        enabled is restarted once per ConfigMap resourceVersion: the backend records
+        the version in the capp.dana.io/bound-resource-versions annotation,
+        which makes the operator roll out a new revision. Each change restarts
+        the Capps; repeating a PUT with the same data restarts only Capps that
+        have not been restarted for the current version, so retrying after a
+        500 is safe.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -2122,6 +2164,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+        "500":
+          description: The ConfigMap was updated, but restarting one or more bound Capps failed. Retry the same PUT to restart the remaining Capps.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     delete:
       tags: [configmaps]
@@ -2133,6 +2181,38 @@ paths:
       responses:
         "204":
           description: ConfigMap deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: The ConfigMap is still referenced by one or more Capps; the message lists them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/{name}/bound:
+    get:
+      tags: [configmaps]
+      summary: List Capps bound to a ConfigMap
+      description: |
+        Returns the Capps in the namespace that reference the ConfigMap, and the
+        subset that restart when it is updated. Returns 404 if the ConfigMap
+        lacks the managed label.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Bound Capps.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoundCappsResponse'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -2296,6 +2376,13 @@ paths:
         Replaces the Secret's data. The backend fetches the current object first
         to preserve metadata and satisfy Kubernetes optimistic concurrency control.
         Returns 404 if the secret lacks the managed label.
+        Every Capp that references the Secret and has reloadOnBoundResourceChange
+        enabled is restarted once per Secret resourceVersion: the backend records
+        the version in the capp.dana.io/bound-resource-versions annotation,
+        which makes the operator roll out a new revision. Each change restarts
+        the Capps; repeating a PUT with the same data restarts only Capps that
+        have not been restarted for the current version, so retrying after a
+        500 is safe.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -2325,6 +2412,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+        "500":
+          description: The Secret was updated, but restarting one or more bound Capps failed. Retry the same PUT to restart the remaining Capps.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     delete:
       tags: [secrets]
@@ -2338,6 +2431,38 @@ paths:
       responses:
         "204":
           description: Secret deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: The Secret is still referenced by one or more Capps; the message lists them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets/{name}/bound:
+    get:
+      tags: [secrets]
+      summary: List Capps bound to a Secret
+      description: |
+        Returns the Capps in the namespace that reference the Secret, and the
+        subset that restart when it is updated. Returns 404 if the Secret
+        lacks the managed label.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Bound Capps.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoundCappsResponse'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":

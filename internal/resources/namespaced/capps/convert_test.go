@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -881,6 +882,25 @@ func TestToK8s_UpdateClearsImagePullSecretsWhenNotProvided(t *testing.T) {
 	capp, err := ToK8s(minimalRequest(), existing, "ns1", minimalSizes())
 	require.NoError(t, err)
 	assert.Empty(t, capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets)
+}
+
+func TestToK8s_ReloadOnBoundResourceChange(t *testing.T) {
+	existing := minimalCapp()
+	req := minimalRequest()
+	req.ReloadOnBoundResourceChange = true
+	capp, err := ToK8s(req, existing, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Equal(t, "true", capp.Annotations[consts.BoundResourceRolloutAnnotation])
+}
+
+func TestToK8s_ReloadOnBoundResourceChange_ClearsWhenFalse(t *testing.T) {
+	existing := minimalCapp()
+	existing.Annotations = map[string]string{consts.BoundResourceRolloutAnnotation: "true"}
+	req := minimalRequest()
+	req.ReloadOnBoundResourceChange = false
+	capp, err := ToK8s(req, existing, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.NotContains(t, capp.Annotations, consts.BoundResourceRolloutAnnotation)
 }
 
 func TestFromK8s_ImagePullSecrets(t *testing.T) {
