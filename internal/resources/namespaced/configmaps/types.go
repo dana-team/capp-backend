@@ -1,36 +1,13 @@
 package configmaps
 
-type ConfigMapRequest struct {
-	// Name is the Kubernetes config map name.
-	Name string `json:"name" binding:"required"`
+import api "github.com/dana-team/capp-backend/pkg/api/configmaps"
 
-	// Data is the key-value data stored in the config map.
-	Data map[string]string `json:"data"`
-}
-
-type ConfigMapUpdateRequest struct {
-	// Data is the key-value data stored in the config map.
-	Data map[string]string `json:"data"`
-}
-
-type ConfigMapResponse struct {
-	Name            string            `json:"name"`
-	Namespace       string            `json:"namespace"`
-	CreatedAt       string            `json:"createdAt,omitempty"`
-	UID             string            `json:"uid,omitempty"`
-	ResourceVersion string            `json:"resourceVersion,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	Annotations     map[string]string `json:"annotations,omitempty"`
-	Data            map[string]string `json:"data"`
-}
-
-type ConfigMapListResponse struct {
-	Items []ConfigMapResponse `json:"items"`
-	Total int                 `json:"total"`
-}
-
-// ConfigMapNameListResponse is the response body for the names-only list endpoint.
-type ConfigMapNameListResponse struct {
-	Items []string `json:"items"`
-	Total int      `json:"total"`
-}
+// The DTOs live in pkg/api/configmaps so clients can import them without this
+// package's dependencies; these aliases keep the handler code unchanged.
+type (
+	ConfigMapRequest          = api.ConfigMapRequest
+	ConfigMapUpdateRequest    = api.ConfigMapUpdateRequest
+	ConfigMapResponse         = api.ConfigMapResponse
+	ConfigMapListResponse     = api.ConfigMapListResponse
+	ConfigMapNameListResponse = api.ConfigMapNameListResponse
+)

@@ -100,7 +100,7 @@ LDAP clients submit passwords over HTTPS, retain access tokens securely, and log
 
 **ClusterManager** (`internal/cluster/manager.go`): Holds connections to all configured clusters, runs health checks every 30s, and creates per-request scoped clients.
 
-**DTO conversion** (`internal/resources/namespaced/capps/convert.go`): Converts between API request/response types and Kubernetes Capp resources. The CLI (`internal/cli/capps/capps.go`) imports these same types directly — no duplication. `TestConvertCoverage` (`drift_test.go`) fails when a new `CappRequest` field is not populated in `fullCappRequest()` and round-tripped through `ToK8s`/`FromK8s`, so every new field must be wired both ways.
+**DTO conversion** (`internal/resources/namespaced/capps/convert.go`): Converts between API request/response types and Kubernetes Capp resources. The DTOs themselves live in import-free `pkg/api/<resource>` packages (`capps`, `namespaces`, `configmaps`, `secrets`, `clusters` for `ClusterMeta`); the handler packages alias them in their `types.go`, so handler code uses them unqualified. cappctl and capp-mcp import `pkg/api/*` directly, never a handler package: that keeps them at ~250 packages instead of the server's ~1,460 (cold build ~5s vs ~25s). A depguard rule (`light-clients` in `.golangci.yml`) rejects client-go, controller-runtime, Gin, the operator API, `internal/resources` and `internal/cluster` imports in `internal/cli`, `internal/mcpserver`, `cmd/cappctl`, `cmd/mcp` and `pkg/api`. Add new DTO types to `pkg/api/<resource>` plus an alias. `TestConvertCoverage` (`drift_test.go`) fails when a new `CappRequest` field is not populated in `fullCappRequest()` and round-tripped through `ToK8s`/`FromK8s`, so every new field must be wired both ways.
 
 List fields are full-replace on update (`PUT`): `env`, `volumeMounts`, `secretVolumes`, `configMapVolumes`, `nfsVolumes` and `imagePullSecrets` are rebuilt from the request, so omitting one clears it. `imagePullSecrets` (`[]string` of Secret names) maps to the pod spec's `imagePullSecrets`; names are validated as DNS-1123 subdomains and must be unique, but Secret existence/type is not checked (same as env and volume refs).
 
@@ -161,6 +161,7 @@ internal/
     capps/                      # Capps ResourceCommand: get/list/create/update/delete/sync/migrate/rollback/rollout
     capprevisions/              # CappRevisions ResourceCommand: get only
   apierrors/                    # Canonical error types
+pkg/api/                        # REST API DTOs (capps, namespaces, configmaps, secrets, clusters); no imports, shared by server, cappctl and capp-mcp
 pkg/k8s/                        # Kubernetes scheme builder (CRD type registration)
 pkg/clientversion/              # backend↔client version check (known clients, User-Agent, warning header, minor comparison); no Gin/K8s imports
 api/openapi.yaml                # OpenAPI 3.1 spec (embedded in binary)
@@ -173,7 +174,7 @@ deploy/                         # Dockerfiles (server, cappctl, capp-mcp) and re
 
 ### cappctl CLI
 
-Binary at `cmd/cappctl/`. Built with Cobra. No Gin or K8s imports — pure Go + stdlib.
+Binary at `cmd/cappctl/`. Built with Cobra. No Gin or K8s imports (enforced by depguard) — pure Go + stdlib.
 
 **Command tree:**
 ```

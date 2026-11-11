@@ -13,7 +13,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/cli/client"
 	"github.com/dana-team/capp-backend/internal/cli/root"
-	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	apitypes "github.com/dana-team/capp-backend/pkg/api/capps"
 )
 
 // newGetCmd builds a minimal get cobra tree wired to a test HTTP server.
