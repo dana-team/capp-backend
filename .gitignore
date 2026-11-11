@@ -1,2 +1,5 @@
 bin/*
 .claude/*
+dist/
+cappctl-linux-amd64
+cappctl-windows-amd64.exe

@@ -1,0 +1,33 @@
+# Set up Go with a module + build cache keyed per job.
+#
+# setup-go's built-in cache uses one key (go.sum hash) for every job, so the
+# first job to finish saves its build cache and every other job (with different
+# packages, -race, or GOOS) restores a cache that does not match what it builds.
+# A key per job keeps each job's compiled packages warm. Entries from the
+# default branch are restorable by PRs and release tags.
+name: Set up Go (cached)
+description: setup-go plus a per-job Go module and build cache
+
+inputs:
+  cache-key:
+    description: Unique name for this job's cache (e.g. server-test)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+        cache: false
+
+    - name: Cache Go modules and build cache
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: go-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('go.mod', 'go.sum') }}
+        restore-keys: |
+          go-${{ runner.os }}-${{ inputs.cache-key }}-
