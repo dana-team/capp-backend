@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	ns "github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
+	ns "github.com/dana-team/capp-backend/pkg/api/namespaces"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

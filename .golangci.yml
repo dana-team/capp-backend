@@ -5,6 +5,7 @@ linters:
   default: none
   enable:
     - copyloopvar
+    - depguard
     - dupl
     - dupword
     - errcheck
@@ -30,6 +31,31 @@ linters:
     - usetesting
     - whitespace
   settings:
+    depguard:
+      rules:
+        # cappctl, capp-mcp and the shared DTOs must stay free of the server's
+        # Kubernetes/Gin dependency tree; importing a handler package for its
+        # types made both clients compile ~1,300 packages instead of ~250.
+        light-clients:
+          files:
+            - "**/internal/cli/**"
+            - "**/internal/mcpserver/**"
+            - "**/cmd/cappctl/**"
+            - "**/cmd/mcp/**"
+            - "**/pkg/api/**"
+          deny:
+            - pkg: "k8s.io/client-go"
+              desc: use the REST API DTOs in pkg/api instead
+            - pkg: "sigs.k8s.io/controller-runtime"
+              desc: use the REST API DTOs in pkg/api instead
+            - pkg: "github.com/gin-gonic/gin"
+              desc: clients must not depend on the server framework
+            - pkg: "github.com/dana-team/container-app-operator"
+              desc: use the REST API DTOs in pkg/api instead
+            - pkg: "github.com/dana-team/capp-backend/internal/resources"
+              desc: import the DTOs from pkg/api/<resource>
+            - pkg: "github.com/dana-team/capp-backend/internal/cluster"
+              desc: import ClusterMeta from pkg/api/clusters
     goconst:
       # "status" is a JSON key, a metric label and a log field — unrelated
       # uses that a shared constant would wrongly couple.
