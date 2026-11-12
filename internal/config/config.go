@@ -270,38 +270,106 @@ type ResourceToggle struct {
 // Disabling a resource removes its routes entirely at startup — no 404s,
 // no handler overhead.
 type ResourcesConfig struct {
-	Namespaces    ResourceToggle  `mapstructure:"namespaces"`
-	Capps         ResourceToggle  `mapstructure:"capps"`
-	Capprevisions ResourceToggle  `mapstructure:"capprevisions"`
-	Configmaps    ResourceToggle  `mapstructure:"configmaps"`
-	Secrets       ResourceToggle  `mapstructure:"secrets"`
-	Benchmarks    BenchmarkConfig `mapstructure:"benchmarks"`
+	Namespaces    ResourceToggle `mapstructure:"namespaces"`
+	Capps         ResourceToggle `mapstructure:"capps"`
+	Capprevisions ResourceToggle `mapstructure:"capprevisions"`
+	Configmaps    ResourceToggle `mapstructure:"configmaps"`
+	Secrets       ResourceToggle `mapstructure:"secrets"`
+
+	// Observability configures the Capp metrics endpoints served by the
+	// capps handler. It is not a handler toggle of its own.
+	Observability ObservabilityConfig `mapstructure:"observability"`
 }
 
-// BenchmarkConfig controls on-demand per-capp benchmarking. The backend
-// creates a Job from Image. The Job writes samples to VMURLs, and PromQL queries
-// read from QueryURL.
-type BenchmarkConfig struct {
-	// Enabled toggles the benchmark endpoints. Default: false.
+// MetricsSelectorPlaceholder is replaced in every MetricsQuery.Query with the
+// label matchers that scope the query to one Capp, for example
+// `namespace="team-a",capp="web"`. It goes inside a vector selector's braces:
+// `rate(http_requests_total{$selector}[5m])`.
+const MetricsSelectorPlaceholder = "$selector"
+
+// ObservabilityConfig configures the per-Capp metrics endpoints. Callers
+// pick a metric by name; they never send PromQL.
+type ObservabilityConfig struct {
+	// Enabled toggles the metrics endpoints. Default: false.
 	Enabled bool `mapstructure:"enabled"`
-
-	// Image is the benchmark runner image. The image contains the benchmark
-	// scripts. Required when enabled.
-	// Example: "ghcr.io/dana-team/capp-benchmark-runner:0.1.0".
-	Image string `mapstructure:"image"`
-
-	// VMURLs are Prometheus-compatible base URLs. The monitoring stack has two
-	// instances, and each sample is written to all of them. The Job appends
-	// /api/v1/import/prometheus and
-	// /api/v1/write to each entry. Required when enabled. Inject via
-	// CAPP_RESOURCES_BENCHMARKS_VMURLS as a comma-separated list.
-	VMURLs []string `mapstructure:"vmURLs"`
 
 	// QueryURL is the Prometheus-compatible base URL that PromQL queries read
 	// from. Any query parameters, such as an optional ?apikey=..., are kept on
 	// every request, which is how a token reaches the server.
-	// Required when enabled. Inject via CAPP_RESOURCES_BENCHMARKS_QUERYURL.
+	// Required when enabled. Inject via CAPP_RESOURCES_OBSERVABILITY_QUERYURL.
 	QueryURL string `mapstructure:"queryURL"`
+
+	// Metrics are the queries served at
+	// .../namespaces/{namespace}/capps/{name}/metrics/{metric}. At least one
+	// is required when enabled.
+	Metrics []MetricsQuery `mapstructure:"metrics"`
+
+	// Labels are extra label matchers added to every query's selector, for
+	// example to pin a Prometheus shared by several environments.
+	Labels map[string]string `mapstructure:"labels"`
+}
+
+// MaxMetricSeries caps MetricsQuery.Series, because each entry is a separate
+// Prometheus query run for one request.
+const MaxMetricSeries = 10
+
+// MetricsQuery is one named chart. It holds either a single Query or a list
+// of Series drawn together, such as p50 and p95 latency.
+type MetricsQuery struct {
+	// Name identifies the metric in the API path. Must be a DNS-1123 label
+	// and unique.
+	Name string `mapstructure:"name"`
+
+	// Description explains what the metric measures. Returned to clients.
+	Description string `mapstructure:"description"`
+
+	// Type is "gauge", "counter" or "histogram". Returned to clients as a
+	// display hint.
+	Type string `mapstructure:"type"`
+
+	// Unit is the y-axis unit returned to clients, such as "seconds" or
+	// "requests/s". Optional.
+	Unit string `mapstructure:"unit"`
+
+	// Query is a single PromQL expression, shorthand for one series whose
+	// legend is Name. Set either Query or Series.
+	Query string `mapstructure:"query"`
+
+	// Series are several PromQL expressions shown as separate lines on the
+	// same chart. Set either Query or Series. At most MaxMetricSeries.
+	Series []MetricSeries `mapstructure:"series"`
+
+	// ClusterLabel is the Prometheus label holding the cluster name. The
+	// value matched is the cluster name from the request path. Required when
+	// more than one cluster is configured, because QueryURL is shared by all
+	// of them. With a single cluster it may be left empty; pin a shared
+	// Prometheus with ObservabilityConfig.Labels instead.
+	ClusterLabel string `mapstructure:"clusterLabel"`
+
+	// NamespaceLabel is the Prometheus label holding the namespace. Required.
+	NamespaceLabel string `mapstructure:"namespaceLabel"`
+
+	// ObjectLabel is the Prometheus label holding the Capp name. Required.
+	ObjectLabel string `mapstructure:"objectLabel"`
+}
+
+// MetricSeries is one line of a MetricsQuery.
+type MetricSeries struct {
+	// Legend labels the line. Required and unique within the metric.
+	Legend string `mapstructure:"legend"`
+
+	// Query is the PromQL expression. It must contain
+	// MetricsSelectorPlaceholder in every vector selector.
+	Query string `mapstructure:"query"`
+}
+
+// AllSeries returns the metric's lines, turning a single Query into one
+// series whose legend is the metric name.
+func (m MetricsQuery) AllSeries() []MetricSeries {
+	if len(m.Series) > 0 {
+		return m.Series
+	}
+	return []MetricSeries{{Legend: m.Name, Query: m.Query}}
 }
 
 // GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
@@ -390,8 +458,11 @@ func Load(path string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	var raw map[string]any
 	if path != "" {
-		if err := readConfigFile(v, path); err != nil {
+		var err error
+		raw, err = readConfigFile(v, path)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -399,6 +470,13 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
+	}
+
+	// Viper lowercases every map key it unmarshals, but Prometheus label
+	// names are case-sensitive. Recover the original casing from the raw
+	// decoded file instead of the lowercased map produced above.
+	if labels := rawStringMap(raw, "resources.observability.labels"); labels != nil {
+		cfg.Resources.Observability.Labels = labels
 	}
 
 	for i := range cfg.Clusters {
@@ -420,57 +498,93 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	// Viper's Unmarshal does not apply this variable when vmURLs is absent from
-	// the config file. The Helm chart injects the list only through the
-	// environment, as a comma-separated string. Env overrides a file value.
-	cfg.Resources.Benchmarks.VMURLs = compactVMURLs(cfg.Resources.Benchmarks.VMURLs)
-	if raw := os.Getenv("CAPP_RESOURCES_BENCHMARKS_VMURLS"); raw != "" {
-		cfg.Resources.Benchmarks.VMURLs = compactVMURLs(strings.Split(raw, ","))
-	}
-	cfg.Resources.Benchmarks.QueryURL = strings.TrimSpace(cfg.Resources.Benchmarks.QueryURL)
-	if queryURL := strings.TrimSpace(os.Getenv("CAPP_RESOURCES_BENCHMARKS_QUERYURL")); queryURL != "" {
-		cfg.Resources.Benchmarks.QueryURL = queryURL
-	}
+	cfg.Resources.Observability.QueryURL = strings.TrimSpace(cfg.Resources.Observability.QueryURL)
 
 	return &cfg, nil
 }
 
-func readConfigFile(v *viper.Viper, path string) error {
+// readConfigFile loads path into v and returns the file decoded into a plain
+// map, with its original key casing intact (viper's own ReadConfig/Unmarshal
+// path lowercases every map key, which loses information for values such as
+// LDAP key IDs or Prometheus label names that are case-sensitive).
+func readConfigFile(v *viper.Viper, path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	v.SetConfigFile(path)
 	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
-		return err
-	}
-	if v.GetString("auth.mode") != AuthModeLDAP {
-		return nil
+		return nil, err
 	}
 
-	// Viper normalizes map keys, so check IDs against the original bytes before
-	// accepting the loaded configuration. Reuse its decoder for the file format.
 	decoder, err := viper.NewCodecRegistry().Decoder(strings.TrimPrefix(filepath.Ext(path), "."))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	raw := make(map[string]any)
 	if err := decoder.Decode(data, raw); err != nil {
-		return err
+		return nil, err
 	}
-	return validateLDAPFileKeyIDs(raw, "auth.ldap.verificationkeys")
-}
 
-// compactVMURLs drops blank entries and trims surrounding space.
-func compactVMURLs(urls []string) []string {
-	out := make([]string, 0, len(urls))
-	for _, u := range urls {
-		u = strings.TrimSpace(u)
-		if u != "" {
-			out = append(out, u)
+	if v.GetString("auth.mode") == AuthModeLDAP {
+		if err := validateLDAPFileKeyIDs(raw, "auth.ldap.verificationkeys"); err != nil {
+			return nil, err
 		}
 	}
-	return out
+	return raw, nil
+}
+
+// rawStringMap navigates raw (as decoded by readConfigFile) through the
+// dot-separated path, matching each segment case-insensitively, and returns
+// the map found at that path with its original key casing. Returns nil if
+// the path does not lead to a map.
+func rawStringMap(raw map[string]any, path string) map[string]string {
+	var cur any = raw
+	for segment := range strings.SplitSeq(path, ".") {
+		m, ok := asStringKeyedMap(cur)
+		if !ok {
+			return nil
+		}
+		found := false
+		for key, value := range m {
+			if strings.EqualFold(key, segment) {
+				cur = value
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
+
+	m, ok := asStringKeyedMap(cur)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]string, len(m))
+	for key, value := range m {
+		result[key] = fmt.Sprint(value)
+	}
+	return result
+}
+
+// asStringKeyedMap normalizes the two map shapes a YAML/JSON decoder can
+// produce (map[string]any, and map[any]any for some YAML decoders) into a
+// single map[string]any view.
+func asStringKeyedMap(v any) (map[string]any, bool) {
+	switch m := v.(type) {
+	case map[string]any:
+		return m, true
+	case map[any]any:
+		out := make(map[string]any, len(m))
+		for key, value := range m {
+			out[fmt.Sprint(key)] = value
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 // setDefaults registers Viper default values for every config key.
@@ -535,8 +649,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gitops.pathPrefix", "sites")
 	v.SetDefault("gitops.timeoutSeconds", 20)
 
-	// Benchmarks — disabled by default
-	v.SetDefault("resources.benchmarks.enabled", false)
+	// Observability — disabled by default
+	v.SetDefault("resources.observability.enabled", false)
+	v.SetDefault("resources.observability.queryURL", "")
 
 	// Capp t-shirt sizes
 	v.SetDefault("cappSizes.small.requests.cpu", "250m")

@@ -1,4 +1,3 @@
-{{- if eq .Values.deployAs "capp" }}
 # Deploys capp-backend as a rcs.dana.io/v1alpha1 Capp resource.
 # The CAPP operator handles:
 #   - Autoscaling via Knative (scale-to-zero enabled by default)
@@ -25,8 +24,12 @@ spec:
         labels:
           {{- include "capp-backend.selectorLabels" . | nindent 10 }}
       spec:
-        {{- if .Values.serviceAccount.name }}
+        {{- if and (or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap")) .Values.serviceAccount.name }}
         serviceAccountName: {{ .Values.serviceAccount.name }}
+        {{- end }}
+        {{- with .Values.imagePullSecrets }}
+        imagePullSecrets:
+          {{- toYaml . | nindent 10 }}
         {{- end }}
         containers:
           - name: capp-backend
@@ -71,17 +74,12 @@ spec:
                     name: {{ include "capp-backend.secretName" . }}
                     key: gitopsToken
               {{- end }}
-              {{- if (dig "resources" "benchmarks" "enabled" false .Values.config) }}
-              - name: CAPP_RESOURCES_BENCHMARKS_VMURLS
+              {{- if (dig "resources" "observability" "enabled" false .Values.config) }}
+              - name: CAPP_RESOURCES_OBSERVABILITY_QUERYURL
                 valueFrom:
                   secretKeyRef:
                     name: {{ include "capp-backend.secretName" . }}
-                    key: benchmarkVmURLs
-              - name: CAPP_RESOURCES_BENCHMARKS_QUERYURL
-                valueFrom:
-                  secretKeyRef:
-                    name: {{ include "capp-backend.secretName" . }}
-                    key: benchmarkQueryURL
+                    key: observabilityQueryURL
               {{- end }}
             volumeMounts:
               - name: config
@@ -134,4 +132,3 @@ spec:
     passwordSecret: {{ .Values.capp.log.passwordSecret | quote }}
     passwordKey: {{ .Values.capp.log.passwordKey | quote }}
   {{- end }}
-{{- end }}

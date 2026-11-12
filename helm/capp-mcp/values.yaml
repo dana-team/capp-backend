@@ -15,7 +15,7 @@ imagePullSecrets: []
 # MCP client supplies, forwarded as-is to this URL. capp-backend performs all
 # real authentication and authorization.
 backend:
-  url: "http://capp-backend-svc.capp-platform-system.svc:8080"
+  url: "http://capp-backend.capp-platform-system.svc:8080"
   insecure: false
 
 # ── Server ────────────────────────────────────────────────────────────────────

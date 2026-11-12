@@ -131,7 +131,7 @@ func TestValidateRolloutAction_StaleRevisionNamesCandidate(t *testing.T) {
 
 func TestRolloutAction_SetsAnnotation(t *testing.T) {
 	k8sClient := testutil.FakeClient(t, rollingOutCapp(cappv1alpha1.RolloutPhaseProgressing))
-	e := testutil.NewEngineHelper(t, k8sClient, New(false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
 
 	w := e.PostJSON(rolloutPath, RolloutActionRequest{Action: "promote", Revision: "app-00002"})
 
@@ -170,7 +170,7 @@ func TestRolloutAction_Conflict(t *testing.T) {
 				return k8serrors.NewConflict(gr, "app1", errors.New("changed"))
 			},
 		}).Build()
-	e := testutil.NewEngineHelper(t, k8sClient, New(false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
 
 	w := e.PostJSON(rolloutPath, RolloutActionRequest{Action: "promote", Revision: "app-00002"})
 
@@ -191,7 +191,7 @@ func TestRolloutAction_GitSynced_NoGitWrite(t *testing.T) {
 
 func TestRemoveRolloutStrategy_Success(t *testing.T) {
 	k8sClient := testutil.FakeClient(t, rollingOutCapp(cappv1alpha1.RolloutPhaseProgressing))
-	e := testutil.NewEngineHelper(t, k8sClient, New(false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
 
 	w := e.Delete(rolloutPath + "/strategy")
 
@@ -203,7 +203,7 @@ func TestRemoveRolloutStrategy_Success(t *testing.T) {
 
 func TestRemoveRolloutStrategy_NoStrategy(t *testing.T) {
 	// Writes fail on this client, so a 200 proves the handler did not write.
-	e := testutil.NewEngineHelper(t, failWrites(t, makeCapp("app1", "ns1")), New(false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, failWrites(t, makeCapp("app1", "ns1")), mustHandler(t, false, nil, nil, makeSizes()))
 
 	w := e.Delete(rolloutPath + "/strategy")
 
