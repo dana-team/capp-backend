@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/go-ldap/ldap/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"k8s.io/apimachinery/pkg/api/validation"
 )
 
 // validAuthModes is the set of accepted values for AuthConfig.Mode.
@@ -35,23 +38,29 @@ var validGitOpsAuthMethods = map[string]struct{}{
 func Validate(cfg *Config) error {
 	var errs []error
 
+	errs = append(errs, validateAuthorization(cfg)...)
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 	errs = append(errs, validateBenchmarks(&cfg.Resources.Benchmarks)...)
 
+	if cfg.Metrics.Enabled {
+		if err := ValidateMetricsPath(cfg.Metrics.Path); err != nil {
+			errs = append(errs, fmt.Errorf("config: metrics.path: %w", err))
+		}
+	}
+
 	if cfg.GitOps.Enabled {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
 	}
 
-	// In impersonation modes every cluster must have an inline token (SA token)
-	// because the backend uses impersonation instead of forwarding user tokens.
+	// LDAP and OpenShift require an inline system credential in either authorization mode.
 	if cfg.Auth.Mode == AuthModeOpenShift || cfg.Auth.Mode == AuthModeLDAP {
 		for i, c := range cfg.Clusters {
 			if c.Credential.Inline == nil || c.Credential.Inline.Token == "" {
 				errs = append(errs, fmt.Errorf(
 					"config: clusters[%d] (%q): credential.inline.token is required when auth.mode is '%s' "+
-						"(used as the service-account token for K8s impersonation)",
+						"(used as the system credential for cluster access)",
 					i, c.Name, cfg.Auth.Mode,
 				))
 			}
@@ -59,6 +68,29 @@ func Validate(cfg *Config) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// ValidateMetricsPath requires a nonempty, absolute, literal, canonical path
+// outside the reserved /api subtree. Callers decide whether metrics are enabled.
+func ValidateMetricsPath(metricsPath string) error {
+	if metricsPath == "" {
+		return errors.New("metrics path is required when metrics are enabled")
+	}
+	if !strings.HasPrefix(metricsPath, "/") || strings.ContainsAny(metricsPath, ":*?#") {
+		return errors.New("metrics path must be an absolute literal path")
+	}
+	// Gin cleans registered paths but preserves a single trailing slash.
+	canonicalPath := path.Clean(metricsPath)
+	if strings.HasSuffix(metricsPath, "/") && canonicalPath != "/" {
+		canonicalPath += "/"
+	}
+	if metricsPath != canonicalPath {
+		return fmt.Errorf("metrics path must be canonical: use %q", canonicalPath)
+	}
+	if metricsPath == "/api" || strings.HasPrefix(metricsPath, "/api/") {
+		return errors.New("metrics path must not use the reserved /api subtree")
+	}
+	return nil
 }
 
 // validateClusters checks that at least one cluster is defined, that every
@@ -449,6 +481,44 @@ func validateGitOpsPaths(clusters []ClusterConfig) []error {
 				"config: clusters[%d] (%q): gitOpsPath %q must not contain slashes or spaces",
 				i, c.Name, p,
 			))
+		}
+	}
+	return errs
+}
+
+func validateAuthorization(cfg *Config) []error {
+	switch cfg.Authorization.Mode {
+	case "", AuthorizationModeKubernetes:
+		return nil
+	case AuthorizationModeBackendPolicy:
+	default:
+		return []error{errors.New("config: authorization.mode must be kubernetes or backend-policy")}
+	}
+	var errs []error
+	if cfg.Auth.Mode != AuthModeLDAP {
+		errs = append(errs, errors.New("config: backend-policy requires auth.mode ldap"))
+	}
+	if cfg.Authorization.RestrictedBindingNamePrefixes == nil {
+		errs = append(errs, errors.New("config: authorization.restrictedBindingNamePrefixes must be explicitly supplied and non-null"))
+	} else if err := authorization.ValidateBindingNamePrefixes(cfg.Authorization.RestrictedBindingNamePrefixes); err != nil {
+		errs = append(errs, fmt.Errorf("config: authorization.restrictedBindingNamePrefixes: %w", err))
+	}
+	for i, c := range cfg.Clusters {
+		a := c.Authorization
+		if len(validation.ValidateNamespaceName(a.PolicyNamespace, false)) != 0 {
+			errs = append(errs, fmt.Errorf("config: clusters[%d].authorization.policyNamespace must be a valid namespace", i))
+		}
+		for _, ns := range a.ProtectedNamespaces {
+			if len(validation.ValidateNamespaceName(ns, false)) != 0 {
+				errs = append(errs, fmt.Errorf("config: clusters[%d].authorization.protectedNamespaces contains an invalid namespace", i))
+			}
+		}
+		for _, identities := range [][]string{a.OperatorUsers, a.OperatorGroups} {
+			for _, identity := range identities {
+				if strings.TrimSpace(identity) == "" {
+					errs = append(errs, fmt.Errorf("config: clusters[%d].authorization operator lists must not contain blank entries", i))
+				}
+			}
 		}
 	}
 	return errs

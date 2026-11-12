@@ -227,7 +227,10 @@ func TestNew(t *testing.T) {
 				calls++
 				return auth.TokenPair{}, auth.ErrBadCredentials
 			}}
-			s := New(cfg, "dev", mgr, &testutil.MockClusterManager{}, &resources.Registry{}, zap.NewNop())
+			s, err := New(cfg, "dev", mgr, &testutil.MockClusterManager{}, &resources.Registry{}, zap.NewNop())
+			if err != nil {
+				t.Fatal(err)
+			}
 			for i := range 2 {
 				w := httptest.NewRecorder()
 				s.httpServer.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"Alice","password":"secret"}`)))

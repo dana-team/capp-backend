@@ -33,13 +33,21 @@ Multi-cluster API gateway for Capp resources, built with **Go + Gin**.
 Request → Recovery → Logging → Metrics → CORS → ClientVersion → RateLimit → Auth → ClusterResolution → ResourceHandler
 ```
 
+The flow below describes Kubernetes authorization mode (the default).
+
 1. **Auth middleware** validates the token (mode-dependent) and attaches a credential to context
 2. **Cluster middleware** resolves `:cluster` param, checks health, builds a per-request scoped K8s client with the user's credential, validates namespace against allowed list. It also sets an admin client (`AdminK8sClientKey`, the cluster's own SA credential with no impersonation) for discovery-style listing such as namespaces. Context keys live in `internal/middleware/keys.go`.
 3. **Resource handler** performs the CRUD operation using the scoped client
 
 Handler tests use `internal/testutil` (fake controller-runtime clients with SAR allow/deny variants, `EngineHelper` for HTTP calls, and mock Auth/Cluster managers) instead of real clusters.
 
+Backend-policy mode (LDAP only) installs a global chain from `internal/middleware/policy`: classify the registered method/route, authenticate nonpublic requests, authorize the operation/target, then prepare execution. It does not run Kubernetes-mode Auth/Cluster groups or install a generic admin client. Ordinary operations receive a namespace-bound execution client; aggregate/migration paths authorize each namespace separately. Missing authorization context must deny rather than fall back.
+
+`internal/authorization` owns strict assignments, per-cluster namespace/policy observations and metadata-only UID association. `internal/server/authorization.go` owns startup/readiness/shutdown; HTTP work drains before workers stop. The namespace handler's narrow administration component owns system-client policy/quota/lifecycle access. Operator users OR groups authorize administration without granting ordinary resource access. See [backend-policy operations](docs/backend-policy.md) for contracts and recovery; implementation does not establish a shipped release or deployment validation.
+
 ### API Routes
+
+> The `auth + cluster` annotations and permission-review descriptions below describe Kubernetes authorization mode. Backend-policy uses the global classification/role table, operator-only namespace mutations, and policy-filtered discovery. Benchmark and Capp metrics APIs are denied in that mode.
 
 > **Rule:** Every route change or addition must also update `api/openapi.yaml`. Use the `gin-openapi-sync` skill to regenerate it. No test checks the spec against the registered routes, so drift is only caught in review.
 
@@ -93,7 +101,7 @@ GET      /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/metrics/que
 
 **Client version check** (`pkg/clientversion`, `internal/middleware/clientversion.go`): The server and cappctl both take their version from `-X main.version=<tag>` (release workflow, plus `ARG VERSION` in `deploy/Dockerfile`); local builds are `dev`, which disables the check. A client sends `User-Agent: <name>/<version>`, and the backend checks only clients in `clientversion.Known` (currently just cappctl), because other User-Agent versions use unrelated numbering. When a known client is at least one minor release behind the backend, the middleware sets `X-Client-Warning` and increments `capp_backend_outdated_client_requests_total{client,version}` before the chain (so 401/429 responses are covered), then logs `outdated client` after it with `status` and, on authenticated routes in openshift/ldap mode, `user` (`ClusterCredential.ImpersonateUser`; passthrough has only the token, which must never be logged); and cappctl prints that once to stderr. To check another client, declare it in `pkg/clientversion`, add it to `Known`, and have the client send its User-Agent and show the header; the middleware and comparison stay unchanged, and the middleware/server tests loop over `Known`. The metric's `version` label is major.minor, or `vN.x` for an older major, because the User-Agent is caller-controlled and checked before auth; never label it with the raw version. Build CLI clients with `root.State.NewClient`, not `client.New`, so they send the version and print the warning. capp-mcp and shell completion deliberately don't print it.
 
-**AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `PasswordLogin`, and `Refresh`. Passthrough mode forwards the caller's bearer token as-is. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. LDAP mode verifies passwords with directory search-and-bind, issues EdDSA access tokens, and verifies them locally for Kubernetes impersonation without a directory call on resource requests. `GET /api/v1/auth/mode` returns the active mode.
+**AuthManager interface** (`internal/auth/manager.go`): Factory selects implementation based on `auth.mode` config. Each mode implements `Authenticate`, `Login`, `PasswordLogin`, and `Refresh`. Passthrough mode forwards the caller's bearer token as-is. OpenShift mode is fully stateless — it validates tokens via TokenReview and impersonates users on managed clusters. LDAP mode verifies passwords with directory search-and-bind, issues EdDSA access tokens, and verifies them locally without a directory call on resource requests. Authorization mode selects Kubernetes impersonation or backend policy checks. `GET /api/v1/auth/mode` returns the active mode.
 
 **LDAP contracts:** `POST /api/v1/auth/login` accepts `username`/`password` and returns the existing `TokenPair` with an empty `refreshToken` and `Cache-Control: no-store`. Verified LDAPS protects both the search-account connection and the separate target-user bind; complete group resolution is required before issuance. Unknown/ambiguous users and rejected user passwords return 401 / `UNAUTHORIZED` / `invalid credentials`; directory failures return sanitized 503 / `INTERNAL_ERROR` / `directory service unavailable`. Missing/invalid bearer tokens return 401 / `UNAUTHORIZED` / `request is not authenticated`; expired tokens return 401 / `UNAUTHORIZED` / `token has expired`. Raw-token login is unsupported, refresh returns 501 / `NOT_SUPPORTED` without parsing a body, and OAuth routes remain OpenShift-only. Preserve existing-mode behavior and never log credentials, tokens, keys, or raw directory diagnostics.
 
@@ -114,6 +122,10 @@ List fields are full-replace on update (`PUT`): `env`, `volumeMounts`, `secretVo
 Loaded from YAML file (`--config` flag) + environment variable overrides with `CAPP_` prefix and `_` separators (e.g., `CAPP_AUTH_MODE=openshift`). Priority: env vars > YAML > code defaults.
 
 Default config: `config/config.yaml`. Key settings:
+- `authorization.mode`: kubernetes (default) | backend-policy (LDAP only)
+- `authorization.restrictedBindingNamePrefixes`: explicit non-null list required in backend-policy; `[]` means unrestricted prefixes, no Go default
+- `clusters[].authorization`: policyNamespace, protectedNamespaces, operatorUsers/operatorGroups; YAML/Helm only, restart all replicas after changes
+- `clusters[].allowedNamespaces`: outer boundary for users/operators in both modes; empty adds no name restriction
 - `auth.mode`: passthrough | openshift | ldap
 - `auth.ldap`: directory URL/CA, search DN/filter/attribute settings, login deadline, token lifetime, issuer/audience, and Ed25519 signing/trust keys; validated only in LDAP mode
 - `clusters[]`: array of cluster connections with credentials
@@ -127,7 +139,7 @@ Default config: `config/config.yaml`. Key settings:
 
 LDAP passwords and PEM private keys come from `CAPP_AUTH_LDAP_BINDPASSWORD` and `CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY`; Helm supplies them from `secret.ldapBindPassword` and `secret.ldapSigningPrivateKey`. Supply public `auth.ldap.verificationKeys` maps through mounted YAML, not JSON environment variables. Key IDs use lowercase ASCII letters/digits, `-`, and `_`. All replicas need consistent issuer/audience and signing/trust configuration plus synchronized clocks. Distribute a new public key before activating its private key, and retain retiring keys until their tokens expire. Directory account/password/group changes do not revoke issued tokens; removing a signing key fleet-wide invalidates all its tokens after rollout.
 
-OpenShift and LDAP require inline service-account tokens with users/groups impersonation permissions for every managed cluster. Canonical usernames/groups must match User/Group RoleBindings; the default LDAP filter resolves direct membership only, without guaranteed nested/primary groups. Keep required Projects access for namespace listing. Helm grants TokenReview permissions and OAuth annotations only in OpenShift mode. Directory operators own AD lockout policy/recovery, platform operators own distributed gateway controls, and automation must stop on rejected credentials rather than retry. The optional backend rate limiter is per IP and per instance.
+OpenShift and LDAP require inline system tokens for every managed cluster. Users/groups impersonation permissions apply in Kubernetes authorization mode; backend-policy uses one backend credential and a consolidated ClusterRole/ClusterRoleBinding per target for observation, administration and authorized resource operations. Canonical usernames/groups must match User/Group RoleBindings in Kubernetes mode or application bindings in backend-policy mode; the default LDAP filter resolves direct membership only, without guaranteed nested/primary groups. Keep required Projects access for Kubernetes-mode namespace listing. Helm grants TokenReview permissions and OAuth annotations only in OpenShift mode. Directory operators own AD lockout policy/recovery, platform operators own distributed gateway controls, and automation must stop on rejected credentials rather than retry. The optional backend rate limiter is per IP and per instance.
 
 ### Project Layout
 
@@ -142,12 +154,14 @@ internal/
   server/                       # Gin engine setup, route registration, auth route handlers
   config/                       # Config structs, Viper loading, validation
   auth/                         # AuthManager implementations (passthrough, openshift, ldap)
+  authorization/                # Policy parsing, snapshots, observation and UID association
   cluster/                      # ClusterManager, health checks, credential loading
   gitops/                       # GitOps client: clone, commit, push per-capp values files to a remote repo
   middleware/                   # Auth, cluster, logging, metrics, CORS, rate limit, recovery
+    policy/                     # Global API classification, authorization and scoped execution
   resources/                    # Resource handler registry
     cluster/
-      namespaces/               # Namespace CRUD handler (SelfSubjectAccessReview filtering, RoleBinding/ResourceQuota)
+      namespaces/               # Mode-specific reads, membership, quota and namespace lifecycle
     namespaced/
       benchmarks/               # Benchmark Job trigger/status + PromQL dashboards/query proxy (opt-in)
       capps/                    # Capp CRUD, sync, migrate handler, DTO types, K8s conversion
@@ -220,5 +234,5 @@ cappctl get      capprevisions --capp <name> [revision]
 5. Create AuthManager (based on auth.mode) → start background cleanup (if the auth manager implements it)
 6. Create GitOps client (if `gitops.enabled`) → clone remote repo
 7. Build resource handler registry
-8. Create Gin server → listen on :8080
+8. Create Gin server; in backend-policy mode construct stores/administration, and start namespace/policy observers and UID workers → listen on :8080
 9. Graceful shutdown on SIGTERM/SIGINT (30s drain)
