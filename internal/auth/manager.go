@@ -20,7 +20,8 @@
 //
 //	ldap        — authenticates passwords through LDAP search-and-bind and
 //	              issues backend access tokens. Tokens are verified locally,
-//	              and their identities are used for Kubernetes impersonation.
+//	              and their identities are used for Kubernetes impersonation
+//	              or backend-policy authorization, according to authorization.mode.
 package auth
 
 import (
@@ -59,24 +60,25 @@ var (
 
 // ── Core types ────────────────────────────────────────────────────────────────
 
-// ClusterCredential holds the information needed to authenticate and authorize
-// a Kubernetes API request on behalf of an incoming user.
+// ClusterCredential holds the caller credential or verified identity used by
+// the configured authorization mode.
 //
 // In passthrough mode BearerToken is taken directly from the Authorization
 // header.
 //
 // In openshift and ldap modes BearerToken is empty and the ImpersonateUser/Groups
-// fields are set. The cluster's service-account token is used for
-// authentication while impersonation headers enforce the user's RBAC identity.
+// fields are set. Kubernetes authorization uses these fields for impersonation
+// with the cluster's service-account token. Backend-policy authorization checks
+// the identity locally and uses the backend credential without impersonation.
 type ClusterCredential struct {
 	BearerToken string
 
-	// ImpersonateUser is the username to impersonate via the
-	// Impersonate-User header. Set in openshift and ldap auth modes.
+	// ImpersonateUser is the verified username in openshift and ldap auth modes.
+	// Kubernetes mode sends it as Impersonate-User; backend-policy matches it locally.
 	ImpersonateUser string
 
-	// ImpersonateGroups are the groups to impersonate via
-	// Impersonate-Group headers. Set in openshift and ldap auth modes.
+	// ImpersonateGroups are the verified groups in openshift and ldap auth modes.
+	// Kubernetes mode sends Impersonate-Group headers; backend-policy matches locally.
 	ImpersonateGroups []string
 }
 
@@ -100,8 +102,8 @@ type TokenPair struct {
 // auth.mode config value. All methods must be safe for concurrent use.
 type AuthManager interface {
 	// Authenticate validates the incoming request and returns the
-	// ClusterCredential that the cluster middleware will use to build a scoped
-	// Kubernetes client for the named cluster.
+	// ClusterCredential used for Kubernetes client construction or backend-policy
+	// authorization, according to the configured authorization mode.
 	//
 	// Returns ErrUnauthenticated if the request carries no valid credential.
 	// In ldap mode, returns ErrTokenExpired for an expired access token.

@@ -80,6 +80,16 @@ LDAP contexts store the access token, expiry, and context metadata only. They ne
 
 ---
 
+## Backend-policy deployments
+
+Authorization mode is selected by the server, independently of the CLI's authentication mode. For a backend-policy deployment, use normal LDAP login (`cappctl login --server https://capp.example.com --context prod --auth-mode ldap`) and log in again when the access token expires. No end-user Kubernetes token or RoleBinding is needed. `GET /api/v1/auth/mode` reports authentication mode, not authorization mode.
+
+Viewer/editor grants control reads; editor is required for mutations and Git sync. Operator status alone grants no Capp access. All-namespace lists contain only authorized namespaces inside the cluster allowlist. Migration requires editor at both endpoints, including copy-only requests. A 403 policy denial is not fixed by supplying a Kubernetes token; a 503 policy-unavailable response can reflect initial synchronization or pending namespace association.
+
+Use the namespace HTTP API for operator membership/quota workflows and full bindings/revision handling. See [backend-policy operations](backend-policy.md#existing-namespace-api) for examples, recovery and deployment prerequisites. Kubernetes-mode CLI usage remains unchanged.
+
+---
+
 ## Global Flags
 
 These flags apply to every command.
@@ -174,7 +184,7 @@ cappctl login --server https://capp.example.com --context ldap-ci \
 
 The secret store supplies the mounted file; `cappctl` does not create or persist a password file. The resource command runs only after login succeeds. Stop automation on rejected credentials and rotate stale secrets rather than retrying bad passwords. Never log passwords or tokens.
 
-Before running automation, ensure the account's canonical username or resolved groups match Kubernetes User/Group RoleBindings granting the required permissions; directory search privileges alone grant no Capp permissions. Directory operators own account-lockout policy and recovery. Platform operators must configure distributed login-abuse controls at the gateway: the backend's optional per-IP, per-instance limiter cannot prevent account lockout from attempts across clients or replicas. LDAP provides no ADFS SSO or MFA.
+Before running automation, ensure the account's canonical username or resolved groups match the required Kubernetes User/Group RoleBindings (Kubernetes mode) or application role bindings (backend-policy mode); directory search privileges alone grant no Capp permissions. Directory operators own account-lockout policy and recovery. Platform operators must configure distributed login-abuse controls at the gateway: the backend's optional per-IP, per-instance limiter cannot prevent account lockout from attempts across clients or replicas. LDAP provides no ADFS SSO or MFA.
 
 Stdin rules:
 

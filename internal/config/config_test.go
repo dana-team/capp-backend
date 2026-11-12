@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -169,6 +170,35 @@ func TestLoad_InvalidFile(t *testing.T) {
 }
 
 // ── Validate tests ───────────────────────────────────────────────────────────
+
+func TestValidateMetrics(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		enabled   bool
+		path      string
+		wantError string
+	}{
+		{name: "disabled with empty path"},
+		{name: "disabled with unused invalid path", path: "/api/v1/clusters/prod"},
+		{name: "enabled with empty path", enabled: true, wantError: "required"},
+		{name: "API route overlap", enabled: true, path: "/api/v1/clusters/prod", wantError: "reserved /api"},
+		{name: "noncanonical path", enabled: true, path: "/monitor/../metrics", wantError: "canonical"},
+		{name: "custom path", enabled: true, path: "/monitor/metrics"},
+		{name: "similar prefix outside API", enabled: true, path: "/api-metrics"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Metrics = MetricsConfig{Enabled: tc.enabled, Path: tc.path}
+			err := Validate(cfg)
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, "config: metrics.path:")
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
 
 func TestValidate_Happy(t *testing.T) {
 	assert.NoError(t, Validate(passthroughConfig()))
@@ -893,4 +923,80 @@ func ldapSigningKeys(t *testing.T) (privatePEM, publicPEM string) {
 	require.NoError(t, err)
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
 		string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}))
+}
+
+func TestLoadAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, prefixes string
+		wantNil, wantError   bool
+	}{
+		{name: "omitted", wantNil: true, wantError: true},
+		{name: "null", prefixes: "restrictedBindingNamePrefixes: null", wantNil: true, wantError: true},
+		{name: "unrestricted", prefixes: "restrictedBindingNamePrefixes: []"},
+		{name: "custom", prefixes: "restrictedBindingNamePrefixes: [custom:]"},
+		{name: "empty prefix", prefixes: "restrictedBindingNamePrefixes: ['']", wantError: true},
+		{name: "inactive", mode: "kubernetes", wantNil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mode := tc.mode
+			if mode == "" {
+				mode = AuthorizationModeBackendPolicy
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			data := "authorization:\n  mode: " + mode + "\n  " + tc.prefixes + "\nauth:\n  mode: ldap\nclusters:\n- name: one\n  authorization:\n    policyNamespace: policies\n"
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Authorization.RestrictedBindingNamePrefixes == nil; got != tc.wantNil {
+				t.Fatalf("nil prefixes = %t, want %t", got, tc.wantNil)
+			}
+			if errs := validateAuthorization(cfg); (len(errs) != 0) != tc.wantError {
+				t.Fatalf("validation = %v, want error %t", errs, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Config)
+	}{
+		{"unsupported mode", func(c *Config) { c.Authorization.Mode = "unknown" }},
+		{"non LDAP", func(c *Config) { c.Auth.Mode = AuthModeOpenShift }},
+		{"missing namespace", func(c *Config) { c.Clusters[0].Authorization.PolicyNamespace = "" }},
+		{"invalid protected namespace", func(c *Config) { c.Clusters[0].Authorization.ProtectedNamespaces = []string{"bad/name"} }},
+		{"blank user", func(c *Config) { c.Clusters[0].Authorization.OperatorUsers = []string{" "} }},
+		{"blank group", func(c *Config) { c.Clusters[0].Authorization.OperatorGroups = []string{"\t"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Authorization: AuthorizationConfig{Mode: AuthorizationModeBackendPolicy, RestrictedBindingNamePrefixes: []string{}}, Auth: AuthConfig{Mode: AuthModeLDAP}, Clusters: []ClusterConfig{{Authorization: ClusterAuthorizationConfig{PolicyNamespace: "policies"}}}}
+			tc.change(cfg)
+			if errs := validateAuthorization(cfg); len(errs) == 0 {
+				t.Fatal("expected invalid authorization settings to fail")
+			}
+			cfg.Authorization.Mode = AuthorizationModeKubernetes
+			if errs := validateAuthorization(cfg); len(errs) != 0 {
+				t.Fatalf("inactive settings: %v", errs)
+			}
+		})
+	}
+}
+
+func TestLoadAuthorizationModeEnvironment(t *testing.T) {
+	t.Setenv("CAPP_AUTHORIZATION_MODE", AuthorizationModeBackendPolicy)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Authorization.Mode != AuthorizationModeBackendPolicy {
+		t.Fatalf("mode = %q", cfg.Authorization.Mode)
+	}
+	if cfg.Authorization.RestrictedBindingNamePrefixes != nil {
+		t.Fatal("prefix restrictions must not have a compiled default")
+	}
 }

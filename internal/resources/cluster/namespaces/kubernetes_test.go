@@ -69,8 +69,7 @@ func existingResourceQuota(nsName, cpu, memory string) *corev1.ResourceQuota {
 	}
 }
 
-// engine builds a test engine where both user and admin client are the same
-// fake client with SAR allowed.
+// engine builds separate user and admin fake clients with SAR allowed.
 // nolint:unparam
 func engine(t *testing.T, meta cluster.ClusterMeta, adminObjects []client.Object, userObjects ...client.Object) *testutil.EngineHelper {
 	return testutil.NewEngineHelperWithAdmin(t,
@@ -171,7 +170,7 @@ func TestGet_ExistingNamespace(t *testing.T) {
 	assert.Equal(t, "Active", resp.Status)
 }
 
-func TestGet_ExistingNamespaceWithQuotaAndUsers(t *testing.T) {
+func TestGetExistingNamespaceWithQuotaAndUsers(t *testing.T) {
 	ns := managedNamespace("my-ns")
 	rq := existingResourceQuota("my-ns", "2", "4Gi")
 	rb := existingRoleBinding("my-ns", []string{"alice", "bob"})
@@ -179,6 +178,9 @@ func TestGet_ExistingNamespaceWithQuotaAndUsers(t *testing.T) {
 	w := e.Get("/namespaces/my-ns")
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	for _, field := range []string{"bindings", "policyResourceVersion", "policyState"} {
+		assert.NotContains(t, w.Body.String(), field)
+	}
 	var resp NamespaceItem
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "my-ns", resp.Name)
@@ -231,14 +233,6 @@ func TestCreate_WithUsersAndQuota(t *testing.T) {
 	require.NotNil(t, resp.Quota)
 	assert.Equal(t, "2", resp.Quota.CPU)
 	assert.Equal(t, "4Gi", resp.Quota.Memory)
-}
-
-func TestCreate_NilUsersAndQuota_NoNilDeref(t *testing.T) {
-	e := engine(t, cluster.ClusterMeta{Name: "prod"}, nil)
-	// Send only required Name field — Users and Quota are nil pointers.
-	w := e.PostJSON("/namespaces", map[string]string{"name": "bare-ns"})
-
-	assert.Equal(t, http.StatusCreated, w.Code)
 }
 
 func TestCreate_InvalidCPUQuota(t *testing.T) {

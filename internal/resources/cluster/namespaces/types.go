@@ -1,5 +1,7 @@
 package namespaces
 
+import "github.com/dana-team/capp-backend/internal/authorization"
+
 // NamespaceListResponse is the response envelope for the list endpoint.
 type NamespaceListResponse struct {
 	Items     []NamespaceItem `json:"items"`
@@ -34,9 +36,14 @@ type NamespaceItem struct {
 	// Nil when no ResourceQuota exists for the namespace.
 	Quota *QuotaInfo `json:"quota,omitempty"`
 
-	// Users is the list of users with access to the namespace.
-	// Nil when no RoleBinding exists for the namespace.
+	// Users contains Kubernetes-mode RoleBinding users or direct backend-policy editors.
+	// Nil when membership is unavailable, including an invalid policy.
 	Users *[]string `json:"users,omitempty"`
+
+	// Bindings and policy metadata are present only in backend-policy mode.
+	Bindings              *[]authorization.Binding `json:"bindings,omitempty"`
+	PolicyResourceVersion string                   `json:"policyResourceVersion,omitempty"`
+	PolicyState           string                   `json:"policyState,omitempty"`
 
 	// CanEdit is true when the authenticated user has admin-level permission
 	// to modify the namespace's quota and full user list (via PUT).
@@ -50,16 +57,21 @@ type resourceQuota struct {
 }
 
 type CreateNamespaceRequest struct {
-	Name  string         `json:"name" binding:"required"`
-	Users *[]string      `json:"users,omitempty"`
-	Quota *resourceQuota `json:"quota,omitempty"`
+	Bindings *[]authorization.Binding `json:"bindings,omitempty"`
+	Name     string                   `json:"name" binding:"required"`
+	Users    *[]string                `json:"users,omitempty"`
+	Quota    *resourceQuota           `json:"quota,omitempty"`
 }
 
 type UpdateNamespaceRequest struct {
-	Users *[]string      `json:"users,omitempty"`
-	Quota *resourceQuota `json:"quota,omitempty"`
+	Bindings              *[]authorization.Binding `json:"bindings,omitempty"`
+	PolicyResourceVersion *string                  `json:"policyResourceVersion,omitempty"`
+	Users                 *[]string                `json:"users,omitempty"`
+	Quota                 *resourceQuota           `json:"quota,omitempty"`
 }
 
 type PatchNamespaceRequest struct {
-	Users *[]string `json:"users,omitempty"`
+	Bindings              *[]authorization.Binding `json:"bindings,omitempty"`
+	PolicyResourceVersion *string                  `json:"policyResourceVersion,omitempty"`
+	Users                 *[]string                `json:"users,omitempty"`
 }
