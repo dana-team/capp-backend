@@ -260,15 +260,6 @@ func (h *Handler) delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// SyncResponse is the JSON body returned by the sync endpoints. Exported so
-// non-Gin clients (e.g. cappctl, the MCP server) can decode it directly
-// instead of duplicating the shape.
-type SyncResponse struct {
-	Enabled   bool   `json:"enabled"`
-	CommitSHA string `json:"commitSha,omitempty"`
-	Path      string `json:"path,omitempty"`
-}
-
 // sync handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync
 // It enables Git sync (adds the backup label) and pushes the current values.
 func (h *Handler) sync(c *gin.Context) {

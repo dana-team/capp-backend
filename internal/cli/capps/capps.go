@@ -12,7 +12,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/resource"
 	"github.com/dana-team/capp-backend/internal/cli/root"
 	"github.com/dana-team/capp-backend/internal/cli/utils"
-	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	apitypes "github.com/dana-team/capp-backend/pkg/api/capps"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 

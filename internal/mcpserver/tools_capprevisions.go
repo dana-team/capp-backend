@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	"github.com/dana-team/capp-backend/pkg/api/capps"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
