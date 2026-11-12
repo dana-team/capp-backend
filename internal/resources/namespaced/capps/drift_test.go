@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,11 +51,12 @@ func fullCappRequest() CappRequest {
 				ProgressDeadline: "10m0s",
 			},
 		},
-		LogSpec:          &LogSpec{Type: "elastic", Host: "es.example.com", Target: "logs", User: "admin", PasswordSecret: "pw", PasswordKey: "password"},
-		NFSVolumes:       []NFSVolume{{Name: "nfs1", Server: "nfs.local", Path: "/export", Capacity: "10Gi"}},
-		SecretVolumes:    []SecretVolume{{Name: "sec-vol", SecretName: "my-secret", MountPath: "/secrets"}},
-		ConfigMapVolumes: []ConfigMapVolume{{Name: "cm-vol", ConfigMapName: "my-cm", MountPath: "/config"}},
-		ImagePullSecrets: []string{"ghcr-pull-secret"},
+		LogSpec:                     &LogSpec{Type: "elastic", Host: "es.example.com", Target: "logs", User: "admin", PasswordSecret: "pw", PasswordKey: "password"},
+		NFSVolumes:                  []NFSVolume{{Name: "nfs1", Server: "nfs.local", Path: "/export", Capacity: "10Gi"}},
+		SecretVolumes:               []SecretVolume{{Name: "sec-vol", SecretName: "my-secret", MountPath: "/secrets"}},
+		ConfigMapVolumes:            []ConfigMapVolume{{Name: "cm-vol", ConfigMapName: "my-cm", MountPath: "/config"}},
+		ImagePullSecrets:            []string{"ghcr-pull-secret"},
+		ReloadOnBoundResourceChange: true,
 		EventSourcesSpec: &EventSourcesSpec{Sources: []SourceConfig{
 			{
 				Name:             "ping1",
@@ -125,6 +127,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.NFSVolumes[0].Path, capp.Spec.VolumesSpec.NFSVolumes[0].Path, "NFSVolumes.Path not written by ToK8s")
 		assert.Len(t, capp.Spec.ConfigurationSpec.Template.Spec.Volumes, len(req.SecretVolumes)+len(req.ConfigMapVolumes), "SecretVolumes/ConfigMapVolumes not written by ToK8s")
 		assert.Len(t, capp.Spec.EventSourcesSpec.Sources, 2, "EventSourcesSpec.Sources not written by ToK8s")
+		assert.Equal(t, "true", capp.Annotations[consts.BoundResourceRolloutAnnotation], "ReloadOnBoundResourceChange not written by ToK8s")
 	})
 
 	// Verify FromK8s reads fields correctly from the Capp object.
@@ -162,6 +165,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Len(t, resp.ConfigMapVolumes, 1, "ConfigMapVolumes not read by FromK8s")
 		assert.Equal(t, req.ConfigMapVolumes[0].ConfigMapName, resp.ConfigMapVolumes[0].ConfigMapName, "ConfigMapVolumes.ConfigMapName not read by FromK8s")
 		require.NotNil(t, resp.EventSourcesSpec, "EventSourcesSpec not read by FromK8s")
+		assert.Equal(t, req.ReloadOnBoundResourceChange, resp.ReloadOnBoundResourceChange, "ReloadOnBoundResourceChange not read by FromK8s")
 		assert.Len(t, resp.EventSourcesSpec.Sources, 2, "EventSourcesSpec.Sources not read by FromK8s")
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -57,6 +58,8 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 		capp.Namespace = namespace
 		capp.Spec = *existing.Spec.DeepCopy()
 	}
+
+	setReloadOnBoundResourceChange(capp, req.ReloadOnBoundResourceChange)
 
 	capp.Spec.State = req.State
 
@@ -557,6 +560,8 @@ func BareFromK8s(meta metav1.ObjectMeta, spec cappv1alpha1.CappSpec, sizes confi
 		State: spec.State,
 	}
 
+	resp.ReloadOnBoundResourceChange = meta.Annotations[consts.BoundResourceRolloutAnnotation] == consts.BoundResourceRolloutEnabled
+
 	if !meta.CreationTimestamp.IsZero() {
 		resp.CreatedAt = meta.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z")
 	}
@@ -709,6 +714,19 @@ func buildStatus(capp *cappv1alpha1.Capp) CappStatusResponse {
 		StateStatus:    stateStatus,
 		Rollout:        rolloutStatusFromK8s(capp.Status.Rollout),
 	}
+}
+
+// setReloadOnBoundResourceChange sets or removes the opt-in annotation that
+// makes Secret/ConfigMap updates restart the Capp.
+func setReloadOnBoundResourceChange(capp *cappv1alpha1.Capp, enabled bool) {
+	if !enabled {
+		delete(capp.Annotations, consts.BoundResourceRolloutAnnotation)
+		return
+	}
+	if capp.Annotations == nil {
+		capp.Annotations = map[string]string{}
+	}
+	capp.Annotations[consts.BoundResourceRolloutAnnotation] = consts.BoundResourceRolloutEnabled
 }
 
 // filterAnnotations removes internal Kubernetes annotations (kubectl.kubernetes.io/*)

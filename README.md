@@ -419,8 +419,8 @@ The server exposes `POST /mcp` (Streamable HTTP transport) and `GET /healthz` (l
 | `clusters` | `cluster_list`, `cluster_get` | Discover valid `cluster` values for every other tool |
 | `namespaces` | `namespace_list`, `namespace_create`, `namespace_update`, `namespace_add_users` | `namespace_update` is a full replace; use `namespace_add_users` to append without disturbing existing users |
 | `capps` | `capp_list`, `capp_get`, `capp_create`, `capp_update`, `capp_delete`, `capp_sync`, `capp_sync_disable`, `capp_rollout`, `capp_rollout_strategy_remove` | `capp_update` is a full replace, not a patch — call `capp_get` first and send back the full desired state. The exception is `routeSpec.rolloutStrategy`, which only `capp_rollout_strategy_remove` removes, and that moves live traffic |
-| `configmaps` | `configmap_list`, `configmap_get`, `configmap_create`, `configmap_update`, `configmap_delete` | Only ConfigMaps labeled `dana.io/capp-managed=true` are visible |
-| `secrets` | `secret_list`, `secret_get` | **Read-only.** Returns metadata only (name, type, labels, data key names) — secret values are never exposed |
+| `configmaps` | `configmap_list`, `configmap_get`, `configmap_create`, `configmap_update`, `configmap_delete`, `configmap_bound` | Only ConfigMaps labeled `dana.io/capp-managed=true` are visible. `configmap_bound` lists the Capps that reference one (deletion is refused while any do) and which of them restart on update |
+| `secrets` | `secret_list`, `secret_get`, `secret_bound` | **Read-only.** Returns metadata only (name, type, labels, data key names) — secret values are never exposed. `secret_bound` lists the Capps that reference a Secret and which of them restart on update |
 
 ### Docker & Helm
 

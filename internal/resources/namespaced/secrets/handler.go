@@ -6,12 +6,16 @@
 package secrets
 
 import (
+	"bytes"
 	"fmt"
+	"maps"
 	"net/http"
+	"strings"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
+	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,6 +44,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	s.GET("/:name", h.get)
 	s.PUT("/:name", h.update)
 	s.DELETE("/:name", h.delete)
+	s.GET("/:name/bound", h.bound)
 }
 
 func (h *Handler) listAll(c *gin.Context) {
@@ -102,6 +107,34 @@ func (h *Handler) listNames(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, SecretNameListResponse{Items: names, Total: len(names)})
+}
+
+// bound handles GET /api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name/bound.
+func (h *Handler) bound(c *gin.Context) {
+	k8sClient := namespaced.ExtractClient(c)
+	if k8sClient == nil {
+		return
+	}
+
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	secret := &corev1.Secret{}
+	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, secret); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
+		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
+		return
+	}
+
+	resp, err := boundcapps.Find(c.Request.Context(), k8sClient, namespace, boundcapps.KindSecret, name)
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) create(c *gin.Context) {
@@ -221,10 +254,27 @@ func (h *Handler) update(c *gin.Context) {
 	for k, v := range req.Data {
 		data[k] = []byte(v)
 	}
-	secret.Data = data
 
-	if err := k8s.Update(c.Request.Context(), secret); err != nil {
-		apierrors.Respond(c, err)
+	// Skip the write when nothing changed so the resourceVersion, which keys
+	// Capp restarts, stays the same.
+	if !maps.EqualFunc(secret.Data, data, bytes.Equal) {
+		secret.Data = data
+		if err := k8s.Update(c.Request.Context(), secret); err != nil {
+			apierrors.Respond(c, err)
+			return
+		}
+	}
+
+	// Restart opted-in Capps that have not yet been restarted for this
+	// resourceVersion. This is not gated on the data changing: an unchanged
+	// PUT keeps the resourceVersion, so it restarts only Capps a previous
+	// attempt failed to restart, which makes retrying a failed PUT safe.
+	bound, err := boundcapps.Find(c.Request.Context(), k8s, namespace, boundcapps.KindSecret, name)
+	if err == nil {
+		err = boundcapps.TriggerRollouts(c.Request.Context(), k8s, namespace, bound.ToReload, boundcapps.KindSecret, name, secret.ResourceVersion)
+	}
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("secret updated, but restarting bound Capps failed: %w", err)))
 		return
 	}
 
@@ -258,6 +308,16 @@ func (h *Handler) delete(c *gin.Context) {
 
 	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
 		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
+		return
+	}
+
+	bound, err := boundcapps.Find(c.Request.Context(), k8sClient, namespace, boundcapps.KindSecret, name)
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	if len(bound.BoundCapps) > 0 {
+		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf("secret %s is still in use by Capps: %s", name, strings.Join(bound.BoundCapps, ", "))))
 		return
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -104,5 +105,21 @@ func (SecretToolSet) Register(s *mcp.Server, be *Backend) {
 			return nil, secretMeta{}, err
 		}
 		return nil, toSecretMeta(raw), nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "secret_bound",
+		Description: "List the Capps that reference a capp-managed Secret (env, envFrom, volumes, imagePullSecrets, log shipping password, Kafka source credentials). boundCapps blocks deleting it; toReload is the subset restarted when its data changes (Capps with reloadOnBoundResourceChange enabled that use it in their pods).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in secretGetInput) (*mcp.CallToolResult, boundcapps.Response, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, boundcapps.Response{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/secrets/%s/bound", in.Cluster, in.Namespace, in.Name)
+		var out boundcapps.Response
+		if err := c.Get(ctx, path, &out); err != nil {
+			return nil, boundcapps.Response{}, err
+		}
+		return nil, out, nil
 	})
 }

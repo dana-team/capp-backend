@@ -3,6 +3,7 @@ package capps
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/resource"
 	"github.com/dana-team/capp-backend/internal/cli/root"
 	"github.com/dana-team/capp-backend/internal/cli/utils"
+	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
 	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
@@ -37,6 +39,20 @@ var tableCols = []output.Column[apitypes.CappResponse]{
 		}
 		return c.Status.Rollout.Phase
 	}, Wide: true},
+	{Header: "RELOAD-ON-CHANGE", Value: func(c apitypes.CappResponse) string {
+		return fmt.Sprintf("%t", c.ReloadOnBoundResourceChange)
+	}, Wide: true},
+}
+
+// boundRow is one row of `get capps --bound-to`.
+type boundRow struct {
+	Name   string
+	Reload bool
+}
+
+var boundCols = []output.Column[boundRow]{
+	{Header: "NAME", Value: func(r boundRow) string { return r.Name }},
+	{Header: "RELOADS", Value: func(r boundRow) string { return fmt.Sprintf("%t", r.Reload) }},
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -53,7 +69,10 @@ func (h *handler) Name() string      { return "capps" }
 func (h *handler) Aliases() []string { return []string{"capp", "ca"} }
 
 func (h *handler) RegisterGetCommand(parent *cobra.Command) {
-	var allNamespaces bool
+	var (
+		allNamespaces bool
+		boundTo       string
+	)
 	cmd := &cobra.Command{
 		Use:     "capps [name]",
 		Aliases: h.Aliases(),
@@ -65,6 +84,16 @@ func (h *handler) RegisterGetCommand(parent *cobra.Command) {
 				return fmt.Errorf("--cluster is required (or set it in your context)")
 			}
 			ns := h.state.Namespace
+
+			if boundTo != "" {
+				if len(args) == 1 || allNamespaces {
+					return fmt.Errorf("--bound-to cannot be combined with a Capp name or --all-namespaces")
+				}
+				if ns == "" {
+					return fmt.Errorf("--namespace is required with --bound-to")
+				}
+				return h.getBound(cmd, cluster, ns, boundTo)
+			}
 
 			if len(args) == 1 {
 				if ns == "" {
@@ -94,6 +123,7 @@ func (h *handler) RegisterGetCommand(parent *cobra.Command) {
 		},
 	}
 	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "list across all namespaces")
+	cmd.Flags().StringVar(&boundTo, "bound-to", "", "list Capps that reference a Secret or ConfigMap: secret/<name> or configmap/<name> (requires --namespace)")
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }
@@ -120,6 +150,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 		rolloutStages     []string
 		rolloutAutoRB     bool
 		rolloutDeadline   string
+		reloadOnChange    bool
 	)
 
 	cmd := &cobra.Command{
@@ -181,6 +212,8 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 				State:         cappState,
 				ContainerName: containerName,
 				Env:           envVars,
+
+				ReloadOnBoundResourceChange: reloadOnChange,
 			}
 			if hasCustom {
 				req.CustomResources = buildCustomResources(cpuRequest, cpuLimit, memoryRequest, memoryLimit)
@@ -225,6 +258,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	cmd.Flags().BoolVar(&routeTLSEnabled, "tls-enabled", false, "enable TLS for the Capp route (requires --hostname)")
 	cmd.Flags().Int64Var(&routeTimeoutSecs, "timeout-seconds", 0, "maximum request duration for the Capp route, in seconds")
 	addRolloutFlags(cmd, &rolloutStages, &rolloutAutoRB, &rolloutDeadline)
+	addReloadOnChangeFlag(cmd, &reloadOnChange)
 	parent.AddCommand(cmd)
 }
 
@@ -249,6 +283,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		rolloutStages     []string
 		rolloutAutoRB     bool
 		rolloutDeadline   string
+		reloadOnChange    bool
 	)
 
 	cmd := &cobra.Command{
@@ -296,6 +331,8 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				ConfigMapVolumes: current.ConfigMapVolumes,
 				ImagePullSecrets: current.ImagePullSecrets,
 				EventSourcesSpec: current.EventSourcesSpec,
+
+				ReloadOnBoundResourceChange: current.ReloadOnBoundResourceChange,
 			}
 
 			if cmd.Flags().Changed("image") {
@@ -318,6 +355,9 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 			}
 			if cmd.Flags().Changed("container-name") {
 				req.ContainerName = containerName
+			}
+			if cmd.Flags().Changed(reloadOnChangeFlag) {
+				req.ReloadOnBoundResourceChange = reloadOnChange
 			}
 			if cmd.Flags().Changed("env") {
 				envVars, err := parseEnvPairs(envPairs)
@@ -370,6 +410,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().BoolVar(&routeTLSEnabled, "tls-enabled", false, "enable TLS for the Capp route (requires --hostname, existing or new)")
 	cmd.Flags().Int64Var(&routeTimeoutSecs, "timeout-seconds", 0, "maximum request duration for the Capp route, in seconds")
 	addRolloutFlags(cmd, &rolloutStages, &rolloutAutoRB, &rolloutDeadline)
+	addReloadOnChangeFlag(cmd, &reloadOnChange)
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }
@@ -626,6 +667,60 @@ func (h *handler) render(w io.Writer, items []apitypes.CappResponse, raw any) er
 		output.PrintTable(w, tableCols, items, false)
 	}
 	return nil
+}
+
+// reloadOnChangeFlag is the create/update flag for reloadOnBoundResourceChange.
+const reloadOnChangeFlag = "reload-on-bound-change"
+
+func addReloadOnChangeFlag(cmd *cobra.Command, v *bool) {
+	cmd.Flags().BoolVar(v, reloadOnChangeFlag, false,
+		"restart the Capp when a Secret or ConfigMap it references is updated through capp-backend (use =false to turn off)")
+}
+
+// getBound handles `get capps --bound-to kind/name`.
+func (h *handler) getBound(cmd *cobra.Command, cluster, ns, boundTo string) error {
+	collection, name, err := parseBoundTo(boundTo)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/%s/%s/bound", cluster, ns, collection, name)
+	var resp boundcapps.Response
+	if err := h.state.Client.Get(cmd.Context(), path, &resp); err != nil {
+		return err
+	}
+
+	switch h.state.OutputFmt {
+	case outputJSON:
+		return output.PrintJSON(cmd.OutOrStdout(), resp)
+	case outputYAML:
+		return output.PrintYAML(cmd.OutOrStdout(), resp)
+	}
+	reload := make(map[string]bool, len(resp.ToReload))
+	for _, n := range resp.ToReload {
+		reload[n] = true
+	}
+	rows := make([]boundRow, 0, len(resp.BoundCapps))
+	for _, n := range resp.BoundCapps {
+		rows = append(rows, boundRow{Name: n, Reload: reload[n]})
+	}
+	output.PrintTable(cmd.OutOrStdout(), boundCols, rows, false)
+	return nil
+}
+
+// parseBoundTo splits "secret/<name>" or "configmap/<name>" into the API
+// collection path segment and the object name.
+func parseBoundTo(v string) (collection, name string, err error) {
+	kind, name, ok := strings.Cut(v, "/")
+	if !ok || name == "" || strings.Contains(name, "/") {
+		return "", "", fmt.Errorf("--bound-to must be secret/<name> or configmap/<name>, got %q", v)
+	}
+	switch strings.ToLower(kind) {
+	case "secret", "secrets":
+		return "secrets", name, nil
+	case "configmap", "configmaps", "cm":
+		return "configmaps", name, nil
+	}
+	return "", "", fmt.Errorf("--bound-to kind must be secret or configmap, got %q", kind)
 }
 
 // buildCustomResources assembles a ResourceSpec from individual CLI flag values.

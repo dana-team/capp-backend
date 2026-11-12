@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -105,7 +106,7 @@ func (ConfigMapToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "configmap_update",
-		Description: "Replace a ConfigMap's data. This is a full replace of the data map, not a merge — keys you omit are removed.",
+		Description: "Replace a ConfigMap's data. This is a full replace of the data map, not a merge — keys you omit are removed. Each data change restarts every Capp that references the ConfigMap and has reloadOnBoundResourceChange enabled (a new revision is rolled out); call configmap_bound first to see which. If the call fails while restarting Capps, repeat it with the same data to restart the remaining ones.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in configMapUpdateInput) (*mcp.CallToolResult, configmaps.ConfigMapResponse, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -121,7 +122,7 @@ func (ConfigMapToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "configmap_delete",
-		Description: "Delete a ConfigMap. This is irreversible.",
+		Description: "Delete a ConfigMap. This is irreversible. The backend refuses (409) while any Capp still references it; call configmap_bound to see which.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in configMapDeleteInput) (*mcp.CallToolResult, configMapDeleteOutput, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -132,5 +133,21 @@ func (ConfigMapToolSet) Register(s *mcp.Server, be *Backend) {
 			return nil, configMapDeleteOutput{}, err
 		}
 		return nil, configMapDeleteOutput{Deleted: true, Cluster: in.Cluster, Namespace: in.Namespace, Name: in.Name}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "configmap_bound",
+		Description: "List the Capps that reference a ConfigMap (env, envFrom, volumes). boundCapps blocks deleting it; toReload is the subset restarted when its data changes (Capps with reloadOnBoundResourceChange enabled).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in configMapGetInput) (*mcp.CallToolResult, boundcapps.Response, error) {
+		c, err := be.Client(ctx)
+		if err != nil {
+			return nil, boundcapps.Response{}, err
+		}
+		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/configmaps/%s/bound", in.Cluster, in.Namespace, in.Name)
+		var out boundcapps.Response
+		if err := c.Get(ctx, path, &out); err != nil {
+			return nil, boundcapps.Response{}, err
+		}
+		return nil, out, nil
 	})
 }
