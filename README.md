@@ -4,22 +4,22 @@
 
 ## Features
 
-- **Pluggable authentication** — Three modes: `passthrough`, `openshift` (OpenShift OAuth), and `ldap` (directory password login with backend-issued access tokens). OpenShift and LDAP use Kubernetes impersonation.
+- **Pluggable authentication** — Three modes: `passthrough`, `openshift` (OpenShift OAuth), and `ldap` (directory password login with backend-issued access tokens). OpenShift uses Kubernetes impersonation; LDAP supports Kubernetes impersonation or backend-policy authorization.
 - **Multi-cluster support** — Configure any number of clusters; each is health-checked every 30 seconds.
 - **Capp CRUD** — Full create / read / update / delete for `Capp` resources across namespaces.
-- **Namespace listing** — Returns the namespaces visible to each cluster's credentials.
+- **Namespace listing** — Returns namespaces according to the active authorization mode and configured namespace boundary.
 - **Interactive API docs** — Embedded [Scalar](https://scalar.com/) UI served at `/docs` alongside a raw OpenAPI 3.1 spec at `/openapi.yaml`. Both work in air-gapped environments (assets are compiled into the binary).
 - **Observability** — Structured JSON logging (zap), Prometheus metrics (`/metrics`), and optional OTLP tracing.
 - **Rate limiting** — Token-bucket rate limiter on all endpoints (configurable; on by default).
 - **cappctl CLI** — Command-line client for the API. Supports passthrough, OpenShift, and LDAP authentication, named contexts, OpenShift token refresh, LDAP expiry checks, and `table`/`wide`/`json`/`yaml` output. See [docs/cappctl.md](docs/cappctl.md).
-- **capp-mcp server** — Exposes the REST API as [MCP](https://modelcontextprotocol.io/) tools over Streamable HTTP, so LLM agents can inspect and manage clusters, namespaces, Capps, ConfigMaps, and (read-only) Secret metadata. Every tool call runs with the caller's own bearer token against capp-backend, so results are scoped by the same RBAC the API already enforces.
+- **capp-mcp server** — Exposes the REST API as [MCP](https://modelcontextprotocol.io/) tools over Streamable HTTP, so LLM agents can inspect and manage clusters, namespaces, Capps, ConfigMaps, and (read-only) Secret metadata. Every tool call runs with the caller's own bearer token against capp-backend, so results are scoped by the same authorization rules the API enforces.
 
 ## Prerequisites
 
 - **Go** 1.25 or later (for building from source)
 - One or more Kubernetes/OpenShift clusters with the [`container-app-operator`](https://github.com/dana-team/container-app-operator) installed (provides the `rcs.dana.io/v1alpha1` API group)
 - For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered, and a service account with `impersonate` permissions on each managed cluster
-- For `ldap` auth mode: direct LDAPS directory access, a search account, support for binding as the target user, Ed25519 signing keys, and a service account with `impersonate` permissions on each managed cluster
+- For `ldap` auth mode: direct LDAPS directory access, a search account, support for binding as the target user, Ed25519 signing keys, and per-cluster system credentials (impersonation permissions in Kubernetes mode; consolidated backend permissions in backend-policy mode)
 
 ## Getting Started
 
@@ -47,6 +47,10 @@ docker run -p 8080:8080 -v $(pwd)/config/config.yaml:/etc/capp/config.yaml capp-
 ## Configuration
 
 Configuration is loaded from a YAML file specified with the `--config` flag (e.g. `--config config/config.yaml`). Scalar fields can be overridden by an environment variable — replace dots with underscores and prefix with `CAPP_` (e.g. `auth.mode` → `CAPP_AUTH_MODE`). Supply `auth.ldap.verificationKeys` through mounted YAML; a JSON map in an environment variable is not supported. If `--config` is omitted, no config file is read and only environment variables and built-in defaults are used.
+
+### Authorization mode
+
+`authorization.mode` defaults to `kubernetes`. With LDAP, `backend-policy` uses application viewer/editor assignments and configured namespace operators, with one backend credential per cluster and no user impersonation. See the [adoption and operations guide](docs/backend-policy.md) for configuration, Secret-read access, infrastructure permissions, namespace API examples, and manual cutover/rollback. This describes the implementation in this source tree, not release availability or completed deployment validation.
 
 ### Full reference
 
@@ -98,6 +102,10 @@ auth:
     requestsPerSecond: 20
     burst: 40
 
+authorization:
+  mode: kubernetes  # kubernetes | backend-policy (LDAP only)
+  restrictedBindingNamePrefixes: ["system:"]  # Required in backend-policy; [] disables prefix restrictions
+
 logging:
   level: info       # debug | info | warn | error
   format: json      # json | console
@@ -126,7 +134,7 @@ gitops:
 clusters:
   - name: "local"                 # Used as path parameter in /api/v1/clusters/:cluster
     displayName: "Local Cluster"  # Human-readable label for the UI
-    allowedNamespaces: []         # Empty = all namespaces allowed
+    allowedNamespaces: []         # Empty = no extra name filter; mode-specific authorization still applies
     gitOpsPath: ""                # Sub-path within gitops.pathPrefix for this cluster
     credential:
       # Option A: kubeconfig file
@@ -168,7 +176,7 @@ Requires `auth.openshift.apiServer`, `auth.openshift.clientId`, `auth.openshift.
 
 ### `ldap`
 
-Authenticates a username and password through directory search-and-bind. The search account finds exactly one user, then a separate TLS-protected connection verifies that user's password. Only after successful group resolution does the backend issue an EdDSA access JWT. Resource requests verify the token locally without contacting LDAP and impersonate its canonical username and groups using each cluster's configured service-account token. The user's access token is never forwarded to Kubernetes.
+Authenticates a username and password through directory search-and-bind. The search account finds exactly one user, then a separate TLS-protected connection verifies that user's password. Only after successful group resolution does the backend issue an EdDSA access JWT. Resource requests verify the token locally without contacting LDAP. Kubernetes authorization mode impersonates its canonical username and groups using each cluster's configured service-account token; backend-policy mode checks application assignments and uses the configured backend service-account token. The user's access token is never forwarded to Kubernetes.
 
 **API and web integration:** Send credentials over HTTPS to `POST /api/v1/auth/login`. For example, this illustrative request uses placeholder credentials:
 
@@ -201,11 +209,11 @@ LDAP has no refresh sessions, OAuth browser routes, ADFS SSO, or MFA. `POST /api
 | Token issuance/internal failure | 500 / `INTERNAL_ERROR` | `internal server error` |
 | Kubernetes denies a resource operation | 403 | Existing authorization error response |
 
-**Directory and RBAC prerequisites:** Use an `ldaps://` endpoint; the default port is 636 when omitted. Certificates and hostnames are verified; StartTLS and plaintext connections are unsupported. `caCert` is a base64 PEM CA bundle; leaving it empty uses system roots. Configure valid search DNs and filters with exactly one `{username}` or `{userDN}` placeholder respectively. Both timeouts and token lifetimes must be positive. The returned username and group attributes must be unambiguous, preserve the case used in Kubernetes bindings, and contain neither surrounding whitespace nor reserved `system:` identities.
+**Directory and RBAC prerequisites:** Use an `ldaps://` endpoint; the default port is 636 when omitted. Certificates and hostnames are verified; StartTLS and plaintext connections are unsupported. `caCert` is a base64 PEM CA bundle; leaving it empty uses system roots. Configure valid search DNs and filters with exactly one `{username}` or `{userDN}` placeholder respectively. Both timeouts and token lifetimes must be positive. The returned username and group attributes must be unambiguous, preserve the case used in Kubernetes or application policy bindings, and contain neither surrounding whitespace nor reserved `system:` identities.
 
 **Search bases and referrals:** User or group searches returning LDAP referrals are rejected with HTTP 503 (`directory service unavailable`). AD domain-root searches can return referrals, so choose `userBaseDN` and `groupBaseDN` OU/container bases that cover the required users and groups without returning referrals.
 
-The default group filter covers direct membership only. Nested and primary-group membership are not guaranteed; configure directory-supported filters for the required coverage. An empty group result is valid and does not remove user-based or implicit `system:authenticated` grants. Operators must create matching User/Group RoleBindings on each managed cluster. Every cluster needs `credential.inline.token` with impersonation permissions; kubeconfig-only credentials are not accepted in LDAP mode. The chart's `capp-user` role includes Projects access used by namespace listing, but operators still choose which identities receive that role.
+The default group filter covers direct membership only. Nested and primary-group membership are not guaranteed; configure directory-supported filters for the required coverage. An empty group result is valid. In Kubernetes authorization mode, user-based or implicit `system:authenticated` grants still apply, and operators must create matching User/Group RoleBindings on each managed cluster. Every LDAP cluster needs `credential.inline.token`; kubeconfig-only credentials are not accepted. That token needs impersonation permissions only in Kubernetes authorization mode. In backend-policy mode, configure the consolidated backend role and binding as described in the [guide](docs/backend-policy.md). The chart's `capp-user` role includes Projects access used by namespace listing, but operators still choose which identities receive that role.
 
 **Keys and rotation:** All replicas need consistent issuer, audience, signing/trust configuration, and synchronized clocks. Use PEM Ed25519 keys and key IDs containing only lowercase ASCII letters, digits, `-`, or `_`. The active public key is derived from the private key. `verificationKeys` maps additional key IDs to public PEM keys in mounted YAML; a conflicting active key is rejected at startup. Tokens identify the signing key with `kid` and include `iss`, `aud`, canonical `sub`, `groups` (including an empty array), `iat`, `exp`, and `token_use: access`. Verification uses only configured local keys and allows no clock-skew leeway.
 
@@ -219,7 +227,7 @@ AD account, password, and group changes affect newly issued tokens. Existing tok
 
 ### Adding Clusters (openshift and ldap modes)
 
-To add a new managed cluster in `openshift` or `ldap` mode:
+The steps below apply to **Kubernetes authorization mode** with `openshift` or `ldap` authentication. For backend-policy, use [infrastructure onboarding](docs/backend-policy.md#infrastructure-onboarding-and-rotation).
 
 1. **Create a ServiceAccount** on the target cluster with impersonation permissions:
    ```yaml
@@ -301,7 +309,7 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Update a Secret |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Delete a Secret |
 | `GET` | `/healthz` | — | Liveness probe |
-| `GET` | `/readyz` | — | Readiness probe (healthy when ≥1 cluster is reachable) |
+| `GET` | `/readyz` | — | Readiness probe (≥1 healthy cluster; backend-policy also requires its initial policy/namespace sync) |
 | `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
 
 ### Pulling images from a private registry

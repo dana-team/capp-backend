@@ -16,6 +16,14 @@ The target is specified in the request body.
 
 ---
 
+## Authorization
+
+In backend-policy mode, migration requires an eligible **editor** assignment at both source and destination, including copy-only (`deleteSource=false`) and same-cluster requests. Each endpoint must pass its own cluster's `allowedNamespaces` boundary. Operator status alone grants no migration authority. The backend checks both endpoints before dependent resource reads or writes and uses each target's configured backend credential without impersonation or credential fallback.
+
+Destination authorization failures return the same 403 (`error.details.reason: POLICY_DENIED`) status and body for unknown clusters, insufficient roles, excluded namespaces, missing or unsynchronized policy observations, and pending UID association. This conceals destination existence and readiness until access is established; legitimate callers must retry after policy readiness recovers. Destination health is checked only after policy authorization and the namespace boundary pass, so an authorized unhealthy destination still returns 503 (`CLUSTER_UNHEALTHY`). Source policy unavailability retains 503 (`POLICY_UNAVAILABLE`). Backend authorization does not guarantee Kubernetes infrastructure permissions or transactional migration. Existing cleanup and partial-failure behavior below still applies. Kubernetes authorization mode retains its caller credential/RBAC checks. See [backend-policy adoption](backend-policy.md) before switching modes.
+
+---
+
 ## Request
 
 ```json
@@ -86,11 +94,11 @@ hostname.
 | Status | Condition |
 |---|---|
 | 400 | Invalid request body, same cluster and namespace as source, or invalid `targetHostname` (missing on copy with hostname, same as source on copy, or set when source has no hostname) |
-| 403 | Target namespace denied, user lacks RBAC, or target webhook rejected the Capp |
-| 404 | Source Capp not found, target cluster not configured, or target namespace missing |
+| 403 | Endpoint allowlist/policy denial, Kubernetes-mode RBAC denial, execution permission failure, or target webhook rejection. Backend-policy also returns `POLICY_DENIED` for unknown destinations and missing, unsynchronized, or pending destination policy state. |
+| 404 | Source Capp not found; Kubernetes-mode destination validation also returns this for an unknown target cluster or missing target namespace |
 | 409 | Capp, Secret, or ConfigMap already exists on the target |
 | 500 | Internal server error |
-| 503 | Target cluster is unhealthy |
+| 503 | Source policy state is unavailable (`POLICY_UNAVAILABLE`), or a cluster is unhealthy (`CLUSTER_UNHEALTHY`). Backend-policy checks destination health only after destination authorization succeeds. |
 
 **Webhook rejections (403):** The target cluster may reject the Capp due to
 hostname pattern mismatch, scale limit violations, or Kafka consumer limits.

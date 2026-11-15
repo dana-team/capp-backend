@@ -18,6 +18,10 @@ data:
       corsAllowedOrigins:
         {{- toYaml .Values.config.server.corsAllowedOrigins | nindent 8 }}
 
+    authorization:
+      mode: {{ .Values.config.authorization.mode | quote }}
+      restrictedBindingNamePrefixes: {{ toJson .Values.config.authorization.restrictedBindingNamePrefixes }}
+
     auth:
       mode: {{ .Values.config.auth.mode | quote }}
       {{- if eq .Values.config.auth.mode "openshift" }}
@@ -97,6 +101,10 @@ data:
             token: ""
             {{- end }}
           {{- end }}
+        {{- with $cluster.authorization }}
+        authorization:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         allowedNamespaces:
           {{- toYaml $cluster.allowedNamespaces | nindent 10 }}
       {{- end }}

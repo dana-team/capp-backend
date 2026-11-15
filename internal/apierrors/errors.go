@@ -45,6 +45,9 @@ const (
 	CodePrometheusQueryFailed = "PROMETHEUS_QUERY_FAILED"
 )
 
+// ReasonPolicyDenied is the public reason for an authorization policy denial.
+const ReasonPolicyDenied = "POLICY_DENIED"
+
 // APIError is the canonical error type for all HTTP responses. It implements
 // the error interface so it can be passed through normal Go error handling
 // paths and detected with errors.As.

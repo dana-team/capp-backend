@@ -1,4 +1,31 @@
-{{- if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
+{{- if eq .Values.config.authorization.mode "backend-policy" }}
+# Application policy checks authorize users; this role grants backend infrastructure access.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "capp-backend.fullname" . }}-role
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["rcs.dana.io"]
+    resources: ["capps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["rcs.dana.io"]
+    resources: ["capprevisions"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "create", "update"]
+{{- else if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

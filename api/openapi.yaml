@@ -18,10 +18,55 @@ info:
 
     Use `GET /api/v1/auth/mode` to discover which mode the server is running.
     All resource endpoints require the `Authorization: Bearer <token>` header.
-    LDAP tokens are verified locally and authorize Kubernetes impersonation;
-    they are not forwarded to Kubernetes. LDAP has no refresh sessions, OAuth
-    browser routes, ADFS SSO, or MFA. Web clients must retain tokens securely and
-    return to login on expiry.
+    LDAP tokens are verified locally and are not forwarded to Kubernetes.
+    Authorization mode selects impersonation or backend policy checks. LDAP has
+    no refresh sessions, OAuth browser routes, ADFS SSO, or MFA. Web clients must
+    retain tokens securely and return to login on expiry.
+
+    ## Authorization
+
+    `authorization.mode` defaults to `kubernetes`, retaining caller RBAC and
+    impersonation behavior. `backend-policy` supports LDAP only and checks
+    application User/Group viewer/editor assignments before using the target's
+    backend credential, without user impersonation or user RoleBindings.
+    Observation, administration and authorized resource operations share this credential.
+
+    In backend-policy mode, ordinary Capp/ConfigMap/Secret reads, names-only
+    lists and revision reads require viewer or editor. Reads include Secret
+    payloads without field redaction. Mutations, rollback and Git sync/unsync
+    (including Git effects in update/delete) require editor. Migration requires
+    editor at both endpoints, even for copy-only and same-cluster requests.
+    Benchmark and Capp metrics/dashboard/query APIs are denied for every role.
+    Disabled features remain disabled; no grant is implied for other operations.
+
+    Namespace POST/PUT/PATCH/DELETE requires a configured operator user OR group,
+    matched exactly. Operators can discover administrative targets and read
+    namespace detail without ready policy observations, but gain no implicit
+    ordinary resource access. Namespace detail otherwise requires eligible
+    viewer/editor access. Policy bindings never grant operator authority.
+
+    Each cluster's allowedNamespaces is an outer boundary for users and operators:
+    [] adds no name restriction, while a nonempty list requires exact membership.
+    Protected namespaces remain excluded. Ordinary access also requires a valid
+    policy, managed/nonterminating namespace and matching persisted namespace UID.
+
+    Policy denial returns 403 FORBIDDEN with details.reason POLICY_DENIED and
+    message "operation is not permitted". Required initial observations or an
+    assigned scoped target awaiting UID association return 503 INTERNAL_ERROR
+    with details.reason POLICY_UNAVAILABLE and message "authorization policy is
+    unavailable". Allowlist checks do not depend on cache readiness. After initial
+    sync, invalid/missing policy, unmanaged/absent/terminating namespace or UID
+    mismatch denies scoped access; protected targets use the same generic denial.
+    Existing authentication, feature, input and infrastructure error mapping remains.
+
+    Cluster collection discovery omits targets whose required observations are
+    unavailable; scoped discovery still returns 503 for unavailable observations.
+    Discovery and aggregate totals include only authorized namespaces. Empty
+    eligible sets return empty success after initial synchronization, without
+    resource reads. Aggregate lists recheck roles and namespace/policy identity
+    before publication, use stable namespace/name ordering, and fail as a whole
+    on page errors. Successful administration means persistence, not immediate
+    observation by all replicas.
   version: "0.1.0"
   contact:
     name: dana-team
@@ -79,6 +124,20 @@ components:
             status:
               type: integer
               example: 404
+            details:
+              type: object
+              additionalProperties: true
+              description: Optional structured error context.
+              properties:
+                reason:
+                  type: string
+                  description: Policy failures use POLICY_DENIED or POLICY_UNAVAILABLE.
+                completedSteps:
+                  type: array
+                  description: Acknowledged namespace administration steps before a partial failure; inspect current state before recovery.
+                  items:
+                    type: string
+                    enum: [namespaceCreated, quotaSaved, namespaceDeletionAccepted]
 
     # ── Auth ─────────────────────────────────────────────────────────────────────
     LoginRequest:
@@ -202,7 +261,7 @@ components:
           type: array
           items:
             type: string
-          description: Empty list means all namespaces are accessible.
+          description: Empty means no additional namespace-name filter. Nonempty requires exact membership, including for backend-policy operators; other authorization checks still apply.
           example: []
 
     ClusterList:
@@ -229,11 +288,23 @@ components:
           type: array
           items:
             type: string
-          description: Users currently bound via the namespace's `capp-user` RoleBinding. Omitted when no RoleBinding exists.
+          description: Kubernetes-mode capp-user RoleBinding users, or backend-policy direct User/editor assignments (groups are not expanded). Omitted when membership is unavailable, including invalid policy.
           example: [alice, bob]
+        bindings:
+          type: array
+          description: Backend-policy only; full assignment set. Omitted when membership is unavailable.
+          items:
+            $ref: '#/components/schemas/PolicyBinding'
+        policyResourceVersion:
+          type: string
+          description: Backend-policy storage revision when available; use on PUT/PATCH to detect stale edits.
+        policyState:
+          type: string
+          enum: [invalid]
+          description: Backend-policy operator reads of malformed owned policies, or operator list items with policy ownership, termination or namespace-UID conflicts; membership is omitted.
         canEdit:
           type: boolean
-          description: Whether the authenticated user has admin-level permission to modify this namespace's quota and full user list (via PUT).
+          description: Kubernetes-mode administration permission, or configured operator authority in backend-policy mode; false for operator list items with policy ownership, termination or namespace-UID conflicts. Not ordinary resource access.
           example: false
 
     QuotaInfo:
@@ -284,7 +355,7 @@ components:
           example: 2
         canCreate:
           type: boolean
-          description: Whether the authenticated user has permission to create new namespaces in this cluster.
+          description: Kubernetes-mode namespace creation permission, or configured backend-policy operator authority (target allowlist/protection still applies).
 
     NamespaceQuota:
       type: object
@@ -303,53 +374,132 @@ components:
           description: Maximum number of pods allowed in the namespace.
           example: 50
 
+    PolicyBinding:
+      type: object
+      additionalProperties: false
+      required: [kind, name, role]
+      description: |
+        Backend-policy application assignment, not a Kubernetes RoleBinding.
+        Names match exactly and case-sensitively: no surrounding Unicode whitespace
+        or Unicode control characters (Cc); significant internal spaces and
+        zero-width format characters (Cf, including U+200B) remain unchanged.
+        Configured restrictedBindingNamePrefixes applies to User and Group names;
+        explicit [] disables prefix restrictions, not name-format validation.
+        With system: restricted, service-account User names are excluded too.
+      properties:
+        kind:
+          type: string
+          enum: [User, Group]
+        name:
+          type: string
+          minLength: 1
+          example: Platform Developers
+        role:
+          type: string
+          enum: [viewer, editor]
+
+    PolicyResourceVersion:
+      type: string
+      description: |
+        Optional backend-policy precondition from a fresh namespace GET. Supplied
+        values must match current policy storage, even for no-ops; a missing policy
+        with a supplied revision conflicts. Omitted revisions apply to a fresh read
+        with conditional writes, but do not detect edits since the client's last GET.
+        Concurrent updates return 409 without silent retry. UID association may
+        change this revision. Inactive in Kubernetes authorization mode.
+      example: "12345"
+
     CreateNamespaceRequest:
       type: object
       required: [name]
+      description: |
+        Kubernetes mode retains quota/RoleBinding behavior and rejects bindings.
+        Backend-policy requires an operator. Supply users OR bindings, never both
+        (even empty); explicit null membership, duplicate input users/tuples and
+        unknown fields are rejected. Bodies are limited to 512 KiB. Omitted
+        membership creates an empty policy. Creates namespace, optional quota,
+        then policy; partial failure retains completed resources for GET/PUT recovery.
+        Existing namespaces return 409 and are never adopted by POST.
       properties:
         name:
           type: string
-          description: Name of the namespace to create.
+          description: Name of the namespace to create; subject to allowlist and protected exclusions.
           example: my-namespace
         users:
           type: array
           items:
             type: string
-          description: |
-            Users to bind to the `capp-user` ClusterRole via a RoleBinding.
-            If omitted, no RoleBinding is created.
+          description: Kubernetes-mode capp-user RoleBinding users, or backend-policy direct User/editor assignments.
           example: [alice, bob]
+        bindings:
+          type: array
+          description: Backend-policy only; mutually exclusive with users.
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/PolicyBinding'
         quota:
           $ref: '#/components/schemas/NamespaceQuota'
 
     UpdateNamespaceRequest:
       type: object
       description: |
-        Replaces the namespace's ResourceQuota and RoleBinding. Omit a field to
-        leave that resource unchanged. Quota decreases are rejected when current
-        usage exceeds the requested new limit.
+        Omit quota or membership to leave it unchanged. Quota decreases below
+        current usage are rejected. Kubernetes mode replaces the capp-user
+        RoleBinding via users and rejects bindings.
+        Backend-policy requires an operator. Users replaces only direct User/editor
+        grants, preserving viewers and Group grants; bindings replaces the entire
+        set and can repair malformed owned policy. PUT can initialize missing policy.
+        Empty users removes direct editors; empty bindings removes all grants.
+        Users and bindings are mutually exclusive, non-null when supplied; duplicate
+        input users/tuples and unknown fields are rejected. Bodies are limited to
+        512 KiB. Ownership, UID, revision and immutable-data conflicts detected
+        during preparation return 409 before effects. Quota is saved before
+        membership; later storage conflicts can report partial completion.
       properties:
         users:
           type: array
           items:
             type: string
-          description: |
-            Full replacement list of users for the `capp-user` RoleBinding.
-            Creates the RoleBinding if it does not exist.
+          description: Replacement users with the mode-specific scope described above.
           example: [alice, bob]
+        bindings:
+          type: array
+          description: Backend-policy full replacement/repair; never resets namespace UID association.
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/PolicyBinding'
+        policyResourceVersion:
+          $ref: '#/components/schemas/PolicyResourceVersion'
         quota:
           $ref: '#/components/schemas/NamespaceQuota'
 
     PatchNamespaceRequest:
       type: object
-      description: Adds new users to the namespace's existing `capp-user` RoleBinding without removing current members.
+      description: |
+        Kubernetes mode adds users to the existing capp-user RoleBinding and rejects
+        bindings. Backend-policy requires an operator and an existing valid policy
+        (404 if missing; 409 if invalid). Add users as direct editors OR binding tuples;
+        preserve other grants and treat already-stored tuples as no-ops. Omitted
+        membership is a no-op. PATCH cannot remove grants or change quota.
+        Users and bindings are mutually exclusive, non-null when supplied; duplicate
+        input users/tuples and unknown fields are rejected. Bodies are limited to
+        512 KiB. Supplied revisions are checked even for no-ops. Initialize or repair
+        policy through PUT. Namespace UID mismatches require manual recreation.
       properties:
         users:
           type: array
           items:
             type: string
-          description: Users to add. Existing users are deduplicated; no user is removed.
+          description: Users to add; no user is removed.
           example: [charlie]
+        bindings:
+          type: array
+          description: Backend-policy tuples to add, mutually exclusive with users.
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/PolicyBinding'
+        policyResourceVersion:
+          $ref: '#/components/schemas/PolicyResourceVersion'
 
     # ── ConfigMaps ────────────────────────────────────────────────────────────────
     ConfigMapRequest:
@@ -1481,7 +1631,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     Forbidden:
-      description: The caller does not have permission.
+      description: The caller does not have permission. Backend-policy denials use code FORBIDDEN, message "operation is not permitted", and details.reason POLICY_DENIED.
       content:
         application/json:
           schema:
@@ -1493,13 +1643,31 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     Conflict:
-      description: A resource with this name already exists.
+      description: Resource already exists, or namespace administration ownership/revision/UID/immutable-data conflict; read current state before explicit recovery.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     InternalError:
       description: Unexpected server error (INTERNAL_ERROR with message "internal server error").
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PolicyUnavailable:
+      description: Required backend-policy observations or scoped UID association unavailable (INTERNAL_ERROR, details.reason POLICY_UNAVAILABLE); resource routes may also report target health or infrastructure failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NamespaceAdministrationUnavailable:
+      description: Namespace administration infrastructure authentication, permissions or availability failed (503 INTERNAL_ERROR); not a denial of operator authority. Partial failures may include details.completedSteps.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RequestTooLarge:
+      description: Backend-policy namespace request exceeds 512 KiB (413 BAD_REQUEST).
       content:
         application/json:
           schema:
@@ -1756,7 +1924,14 @@ paths:
     get:
       tags: [clusters]
       summary: List all configured clusters
-      description: Returns metadata for every cluster registered in the server config.
+      description: |
+        Kubernetes mode returns configured clusters. Backend-policy returns
+        operator-visible clusters or clusters with eligible viewer/editor namespaces.
+        Targets with missing or initially unsynchronized nonoperator stores are
+        omitted. The response is 200 with an empty items array if no clusters are
+        visible. Operator visibility does not require store synchronization.
+        Eligible unhealthy clusters may appear with healthy=false. Results use
+        stable cluster-name order.
       responses:
         "200":
           description: Cluster list.
@@ -1771,9 +1946,16 @@ paths:
     get:
       tags: [clusters]
       summary: Get a single cluster
+      description: |
+        Backend-policy returns operator-visible or eligible role-visible metadata;
+        fully observed but invisible clusters return 404 CLUSTER_NOT_FOUND, as do
+        unknown clusters. Incomplete required observation returns 503. Metadata
+        can report healthy=false without granting resource execution.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: Cluster metadata.
           content:
@@ -1793,9 +1975,17 @@ paths:
       description: |
         Returns Kubernetes namespaces (or OpenShift Projects) the authenticated
         user has access to. Only namespaces labeled `dana.io/capp-ns=true` are
-        returned. On vanilla Kubernetes each namespace is checked via
-        SelfSubjectAccessReview; on OpenShift the Projects API handles access
-        control natively.
+        returned. In Kubernetes authorization mode, vanilla Kubernetes uses
+        SelfSubjectAccessReview; OpenShift uses Projects access control.
+        Backend-policy uses eligible viewer/editor assignments or operator
+        administrative discovery, without permission reviews. Both paths filter
+        by allowedNamespaces and protected exclusions, with totals after filtering.
+        Operators need no resource grants or ready policy observations. A policy
+        ownership, termination or namespace-UID conflict in an included namespace
+        returns that item with policyState=invalid and canEdit=false, omitting
+        membership and policy revision. Other namespaces remain visible. Malformed
+        owned policies remain editable for full-membership repair. Storage failures
+        still fail the collection request.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
       responses:
@@ -1809,8 +1999,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -1821,7 +2013,11 @@ paths:
       description: |
         Creates a new Kubernetes namespace (or OpenShift Project) in the specified
         cluster. The namespace is automatically labeled `dana.io/capp-ns=true` so
-        it is visible in the namespace list endpoint.
+        it can be discovered subject to active-mode authorization.
+        Backend-policy requires a configured operator and an allowed, nonprotected
+        body name. Writes namespace, optional quota, then initial policy. Successful
+        persistence does not imply observation by every replica or execution RBAC.
+        Partial failures report completed steps; inspect GET and recover via PUT.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
       requestBody:
@@ -1831,6 +2027,10 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateNamespaceRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/NamespaceAdministrationUnavailable'
+        "413":
+          $ref: '#/components/responses/RequestTooLarge'
         "201":
           description: Namespace created.
           content:
@@ -1859,11 +2059,20 @@ paths:
       description: |
         Returns a single namespace with its resource quota, users, and whether
         the authenticated user can edit the namespace (admin-level permission).
-        Requires namespace-scoped access (ability to create Capps in the namespace).
+        Kubernetes mode requires namespace-scoped access (ability to create Capps).
+        Backend-policy accepts an eligible viewer/editor or configured operator;
+        operators need no resource grant or ready policy cache. Malformed owned
+        policy is returned to operators with policyState=invalid and its revision,
+        omitting membership. canEdit expresses operator authority only. Policy
+        ownership, termination or namespace-UID conflicts return 409 instead.
+        An otherwise authorized operator read of an unmanaged namespace returns
+        409 CONFLICT with the message "namespace must be managed".
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: Namespace details.
           content:
@@ -1874,17 +2083,23 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
         "404":
           $ref: '#/components/responses/NotFound'
         "500":
           $ref: '#/components/responses/InternalError'
     put:
       tags: [namespaces]
-      summary: Replace namespace quota and role binding
+      summary: Update namespace quota and membership
       description: |
-        Full replacement of the namespace's ResourceQuota and `capp-user` RoleBinding.
-        Omit `quota` or `users` to leave that resource unchanged.
-        Quota decreases are rejected when current usage exceeds the new limit.
+        Kubernetes mode replaces supplied quota and capp-user RoleBinding users.
+        Backend-policy requires a configured operator; users replaces direct editors
+        only, bindings replaces all assignments and can repair malformed owned policy.
+        Omitted fields remain unchanged. Missing policy can be initialized through PUT.
+        Quota decreases below usage are rejected. Validate before effects, save quota
+        before membership, and report completed steps on partial failure. Policy
+        revision/ownership/UID/immutable-data conflicts return 409 without retries.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -1895,6 +2110,12 @@ paths:
             schema:
               $ref: '#/components/schemas/UpdateNamespaceRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/NamespaceAdministrationUnavailable'
+        "413":
+          $ref: '#/components/responses/RequestTooLarge'
+        "409":
+          $ref: '#/components/responses/Conflict'
         "200":
           description: Namespace updated.
           content:
@@ -1917,15 +2138,18 @@ paths:
           $ref: '#/components/responses/InternalError'
     patch:
       tags: [namespaces]
-      summary: Add users to namespace role binding
+      summary: Add namespace members
       description: |
-        Appends new users to the namespace's existing `capp-user` RoleBinding.
-        Existing members are preserved; duplicate users are silently ignored.
-        The RoleBinding must already exist (created via POST or PUT).
+        Kubernetes mode appends users to the existing capp-user RoleBinding;
+        existing users are deduplicated. Any user who can create Capps in the
+        namespace can call it in Kubernetes mode.
 
-        **Authorization:** any user who can create Capps in the target namespace
-        is allowed to call this endpoint (namespace-scoped access). Cluster-admin
-        permission is not required.
+        Backend-policy requires a configured operator, not a viewer/editor grant.
+        Adds users as direct editors OR explicit bindings to an existing valid policy;
+        existing tuples are no-ops, but duplicate input tuples are invalid. Omitted
+        membership is a no-op. Cannot remove bindings or change quota. Missing policy
+        returns 404; invalid policy returns 409. Use PUT to initialize/repair.
+        Even a no-op checks policyResourceVersion when supplied.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -1936,8 +2160,14 @@ paths:
             schema:
               $ref: '#/components/schemas/PatchNamespaceRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/NamespaceAdministrationUnavailable'
+        "413":
+          $ref: '#/components/responses/RequestTooLarge'
+        "409":
+          $ref: '#/components/responses/Conflict'
         "200":
-          description: Role binding updated.
+          description: Namespace membership saved; backend-policy propagation to replicas is eventual.
           content:
             application/json:
               schema:
@@ -1961,11 +2191,18 @@ paths:
       summary: Delete a namespace
       description: |
         Deletes a CAPP-managed namespace. The namespace must not contain any Capps —
-        returns 409 Conflict if Capps exist.
+        returns 409 Conflict if Capps exist. Backend-policy requires a configured
+        operator and conditionally cleans up only the captured owned policy after
+        namespace deletion acceptance. This deletes the namespace, not only policy.
+        Cleanup failure reports completed steps; a terminating-namespace retry may
+        finish cleanup. Once absent, the namespace returns 404 and orphan policies
+        require manual cleanup. Replacement/mismatched policies are never deleted.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
       responses:
+        "503":
+          $ref: '#/components/responses/NamespaceAdministrationUnavailable'
         "204":
           description: Namespace deleted.
         "401":
@@ -1975,7 +2212,7 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
         "409":
-          description: Namespace contains Capps and cannot be deleted.
+          description: Namespace contains Capps, or backend-policy deletion encountered a policy ownership, termination, namespace-UID or conditional storage conflict. Inspect current state before recovery; partial failures may include details.completedSteps.
           content:
             application/json:
               schema:
@@ -2005,7 +2242,7 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2032,7 +2269,7 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2051,6 +2288,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ConfigMapRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "201":
           description: ConfigMap created.
           content:
@@ -2094,7 +2333,7 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2109,6 +2348,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: ConfigMap details.
           content:
@@ -2146,6 +2387,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ConfigMapUpdateRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: ConfigMap updated.
           content:
@@ -2179,6 +2422,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "204":
           description: ConfigMap deleted.
         "401":
@@ -2242,7 +2487,7 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2272,7 +2517,7 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2295,6 +2540,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SecretRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "201":
           description: Secret created.
           content:
@@ -2338,7 +2585,7 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2356,6 +2603,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: Secret details.
           content:
@@ -2394,6 +2643,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SecretUpdateRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: Secret updated.
           content:
@@ -2429,6 +2680,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "204":
           description: Secret deleted.
         "401":
@@ -2492,7 +2745,7 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2517,7 +2770,7 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2536,6 +2789,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CappRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "201":
           description: Capp created.
           content:
@@ -2564,6 +2819,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: Capp details.
           content:
@@ -2596,6 +2853,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CappRequest'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "200":
           description: Capp updated.
           content:
@@ -2628,6 +2887,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
         "204":
           description: Capp deleted, and its backup cleaned up if Git sync was enabled.
         "200":
@@ -2653,6 +2914,9 @@ paths:
       tags: [benchmarks]
       summary: Run a benchmark for a Capp
       description: |
+        Backend-policy mode denies this operation with 403 POLICY_DENIED,
+        without resource or Prometheus calls. The behavior below applies to Kubernetes mode.
+
         Creates one benchmark Job for the Capp. The Job runs the selected
         check from the configured runner image and writes samples to every
         configured VictoriaMetrics URL.
@@ -2702,6 +2966,9 @@ paths:
       tags: [benchmarks]
       summary: Get the benchmark status for a Capp
       description: |
+        Backend-policy mode denies this operation with 403 POLICY_DENIED,
+        without resource or Prometheus calls. The behavior below applies to Kubernetes mode.
+
         Returns the benchmark Job name and status (`running`, `completed`, or
         `failed`). Both fields are empty when no Job exists. Registered only
         when `resources.benchmarks.enabled` is true.
@@ -2728,6 +2995,9 @@ paths:
       tags: [metrics]
       summary: List preset PromQL dashboards for a Capp
       description: |
+        Backend-policy mode denies this operation with 403 POLICY_DENIED,
+        without resource or Prometheus calls. The behavior below applies to Kubernetes mode.
+
         Returns the latency, throughput, and autoscaling charts for this Capp.
         Each expression is scoped to the Capp's Knative service
         and is meant for `query_range`. The Capp must exist. Registered only
@@ -2757,6 +3027,9 @@ paths:
       tags: [metrics]
       summary: Run an instant PromQL query for a Capp
       description: |
+        Backend-policy mode denies this operation with 403 POLICY_DENIED,
+        without resource or Prometheus calls. The behavior below applies to Kubernetes mode.
+
         Forwards the query to the configured Prometheus-compatible URL
         (`resources.benchmarks.queryURL`) and returns that response unchanged.
         Keeps any query parameters on that URL, such as an API key.
@@ -2815,6 +3088,9 @@ paths:
       tags: [metrics]
       summary: Run a range PromQL query for a Capp
       description: |
+        Backend-policy mode denies this operation with 403 POLICY_DENIED,
+        without resource or Prometheus calls. The behavior below applies to Kubernetes mode.
+
         Forwards the query to the configured Prometheus-compatible URL
         (`resources.benchmarks.queryURL`) and returns that response unchanged.
         Keeps any query parameters on that URL, such as an API key.
@@ -2919,7 +3195,7 @@ paths:
         "502":
           $ref: '#/components/responses/GitopsFailed'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2961,7 +3237,7 @@ paths:
         "502":
           $ref: '#/components/responses/GitopsFailed'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -2993,7 +3269,7 @@ paths:
         "500":
           $ref: '#/components/responses/InternalError'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -3030,7 +3306,7 @@ paths:
         "500":
           $ref: '#/components/responses/InternalError'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -3085,7 +3361,7 @@ paths:
         "500":
           $ref: '#/components/responses/InternalError'
         "503":
-          description: Cluster is currently unhealthy.
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
           content:
             application/json:
               schema:
@@ -3223,6 +3499,11 @@ paths:
 
         Same-cluster migration to a different namespace is supported. Migrating to
         the same cluster and namespace is rejected.
+
+        Backend-policy requires eligible editor access at source and destination,
+        including copy-only requests. Both cluster allowlists apply before dependent
+        reads/writes; operator status alone is insufficient. Each target uses its
+        configured backend credentials. Authorization does not make migration atomic.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -3249,13 +3530,13 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
-          description: Target namespace denied by allowed namespaces or user lacks RBAC on target cluster.
+          description: Endpoint allowlist/policy denial, Kubernetes-mode caller RBAC denial, or execution/webhook refusal. Backend-policy returns the same details.reason POLICY_DENIED for unknown destinations, insufficient roles, excluded namespaces, missing or unsynchronized destination observations, and pending destination UID association.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         "404":
-          description: Source Capp not found, target cluster not configured, or target namespace does not exist.
+          description: Source Capp not found. Kubernetes-mode destination validation also returns this for an unknown target cluster or missing target namespace; backend-policy destination authorization conceals these conditions with 403 POLICY_DENIED.
           content:
             application/json:
               schema:
@@ -3269,7 +3550,7 @@ paths:
         "500":
           $ref: '#/components/responses/InternalError'
         "503":
-          description: Target cluster is currently unhealthy.
+          description: Source policy observations or UID association are unavailable (details.reason POLICY_UNAVAILABLE), or a cluster is unhealthy (code CLUSTER_UNHEALTHY). Backend-policy checks destination health only after destination authorization succeeds; unavailable destination policy observations or association return 403 POLICY_DENIED.
           content:
             application/json:
               schema:
@@ -3293,7 +3574,12 @@ paths:
     get:
       tags: []
       summary: Readiness probe
-      description: Returns 200 when at least one cluster is healthy and accepting traffic.
+      description: |
+        Kubernetes mode requires at least one healthy cluster. Backend-policy also
+        requires that cluster's namespace and policy observations to have initially
+        synchronized. Empty policies and individual pending UID associations do not
+        prevent readiness. Later watch degradation retains readiness and cached state;
+        this does not guarantee execution credentials/permissions or all-target readiness.
       security: []
       responses:
         "200":
@@ -3302,7 +3588,7 @@ paths:
             application/json:
               example: {"status": "ready"}
         "503":
-          description: No healthy clusters available.
+          description: No healthy target (with initial observation synchronization in backend-policy mode) is available.
           content:
             application/json:
               example: {"status": "not ready", "reason": "no healthy clusters available"}

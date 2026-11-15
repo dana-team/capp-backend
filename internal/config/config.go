@@ -235,8 +235,31 @@ type CredentialConfig struct {
 	Inline *InlineCredential `mapstructure:"inline"`
 }
 
+// Authorization modes select backend API policy or Kubernetes permissions.
+const (
+	AuthorizationModeKubernetes    = "kubernetes"
+	AuthorizationModeBackendPolicy = "backend-policy"
+)
+
+// AuthorizationConfig selects the process-wide authorization boundary.
+type AuthorizationConfig struct {
+	Mode string `mapstructure:"mode"`
+	// RestrictedBindingNamePrefixes must be explicit in backend-policy mode; [] permits all prefixes.
+	RestrictedBindingNamePrefixes []string `mapstructure:"restrictedBindingNamePrefixes"`
+}
+
+// ClusterAuthorizationConfig defines policy storage and administration settings.
+// Operator identities authorize namespace administration, not resource access.
+type ClusterAuthorizationConfig struct {
+	PolicyNamespace     string   `mapstructure:"policyNamespace"`
+	ProtectedNamespaces []string `mapstructure:"protectedNamespaces"`
+	OperatorUsers       []string `mapstructure:"operatorUsers"`
+	OperatorGroups      []string `mapstructure:"operatorGroups"`
+}
+
 // ClusterConfig defines one managed Kubernetes/OpenShift cluster.
 type ClusterConfig struct {
+	Authorization ClusterAuthorizationConfig `mapstructure:"authorization"`
 	// Name is the unique identifier used in API paths: /api/v1/clusters/{name}/...
 	// Must be a valid URL path segment (no slashes or spaces).
 	Name string `mapstructure:"name"`
@@ -366,15 +389,16 @@ type ResourceConfig struct {
 // Config is the root configuration object for the capp-backend server.
 // It is populated once at startup by Load and then treated as read-only.
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Auth      AuthConfig      `mapstructure:"auth"`
-	Logging   LoggingConfig   `mapstructure:"logging"`
-	Metrics   MetricsConfig   `mapstructure:"metrics"`
-	Tracing   TracingConfig   `mapstructure:"tracing"`
-	Clusters  []ClusterConfig `mapstructure:"clusters"`
-	Resources ResourcesConfig `mapstructure:"resources"`
-	GitOps    GitOpsConfig    `mapstructure:"gitops"`
-	Sizes     CappSizes       `mapstructure:"cappSizes"`
+	Authorization AuthorizationConfig `mapstructure:"authorization"`
+	Server        ServerConfig        `mapstructure:"server"`
+	Auth          AuthConfig          `mapstructure:"auth"`
+	Logging       LoggingConfig       `mapstructure:"logging"`
+	Metrics       MetricsConfig       `mapstructure:"metrics"`
+	Tracing       TracingConfig       `mapstructure:"tracing"`
+	Clusters      []ClusterConfig     `mapstructure:"clusters"`
+	Resources     ResourcesConfig     `mapstructure:"resources"`
+	GitOps        GitOpsConfig        `mapstructure:"gitops"`
+	Sizes         CappSizes           `mapstructure:"cappSizes"`
 }
 
 // Load reads configuration from the file at path (if non-empty) and from
@@ -483,6 +507,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.writeTimeoutSeconds", 30)
 	v.SetDefault("server.idleTimeoutSeconds", 60)
 	v.SetDefault("server.corsAllowedOrigins", []string{})
+
+	// Authorization
+	v.SetDefault("authorization.mode", AuthorizationModeKubernetes)
 
 	// Auth
 	v.SetDefault("auth.mode", AuthModePassthrough)

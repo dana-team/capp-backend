@@ -47,16 +47,10 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 }
 
 func (h *Handler) listAll(c *gin.Context) {
-	k8sClient := namespaced.ExtractClient(c)
-	if k8sClient == nil {
-		return
-	}
-
 	configMapList := &corev1.ConfigMapList{}
-	if err := k8sClient.List(c.Request.Context(), configMapList, client.MatchingLabels{
+	if !namespaced.ListAll(c, configMapList, client.MatchingLabels{
 		consts.ManagedLabelKey: consts.ManagedLabelValue,
-	}); err != nil {
-		apierrors.Respond(c, err)
+	}) {
 		return
 	}
 	c.JSON(http.StatusOK, convertToResponseList(configMapList.Items))
