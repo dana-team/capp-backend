@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/resources/consts"
+	api "github.com/dana-team/capp-backend/pkg/api/boundcapps"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/util/retry"
@@ -37,15 +38,9 @@ const (
 	KindConfigMap Kind = "ConfigMap"
 )
 
-// Response is returned by GET .../secrets/:name/bound and .../configmaps/:name/bound.
-type Response struct {
-	// BoundCapps lists every Capp in the namespace that references the resource,
-	// from its pod template or (Secrets only) its log or Kafka source settings.
-	BoundCapps []string `json:"boundCapps"`
-	// ToReload lists the subset of BoundCapps that restart when the resource
-	// changes: opted-in Capps whose pod template references it.
-	ToReload []string `json:"toReload"`
-}
+// Response lives in pkg/api/boundcapps so clients can use it without this
+// package's Kubernetes dependencies.
+type Response = api.Response
 
 // Find lists the Capps in namespace that reference the resource of the given
 // kind and name.

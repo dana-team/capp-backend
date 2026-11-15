@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	"github.com/dana-team/capp-backend/pkg/api/capps"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

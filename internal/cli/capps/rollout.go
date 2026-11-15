@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	apitypes "github.com/dana-team/capp-backend/pkg/api/capps"
 )
 
 // RegisterRolloutCommand attaches the rollout sub-command to parent.

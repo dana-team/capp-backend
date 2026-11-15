@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
+	"github.com/dana-team/capp-backend/pkg/api/boundcapps"
+	"github.com/dana-team/capp-backend/pkg/api/secrets"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

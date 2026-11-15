@@ -10,7 +10,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/cli/client"
 	"github.com/dana-team/capp-backend/internal/cli/root"
-	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	apitypes "github.com/dana-team/capp-backend/pkg/api/capps"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

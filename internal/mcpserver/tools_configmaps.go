@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
+	"github.com/dana-team/capp-backend/pkg/api/boundcapps"
+	"github.com/dana-team/capp-backend/pkg/api/configmaps"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

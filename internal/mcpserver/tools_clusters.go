@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/pkg/api/clusters"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -16,7 +16,7 @@ type ClusterToolSet struct{}
 func (ClusterToolSet) Name() string { return "clusters" }
 
 type clusterListOutput struct {
-	Items []cluster.ClusterMeta `json:"items"`
+	Items []clusters.ClusterMeta `json:"items"`
 }
 
 type clusterGetInput struct {
@@ -42,14 +42,14 @@ func (ClusterToolSet) Register(s *mcp.Server, be *Backend) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "cluster_get",
 		Description: "Get health and metadata for a single cluster by name.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in clusterGetInput) (*mcp.CallToolResult, cluster.ClusterMeta, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in clusterGetInput) (*mcp.CallToolResult, clusters.ClusterMeta, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
-			return nil, cluster.ClusterMeta{}, err
+			return nil, clusters.ClusterMeta{}, err
 		}
-		var out cluster.ClusterMeta
+		var out clusters.ClusterMeta
 		if err := c.Get(ctx, fmt.Sprintf("/api/v1/clusters/%s", in.Cluster), &out); err != nil {
-			return nil, cluster.ClusterMeta{}, err
+			return nil, clusters.ClusterMeta{}, err
 		}
 		return nil, out, nil
 	})

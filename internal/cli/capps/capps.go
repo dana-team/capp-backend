@@ -13,8 +13,8 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/resource"
 	"github.com/dana-team/capp-backend/internal/cli/root"
 	"github.com/dana-team/capp-backend/internal/cli/utils"
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
-	apitypes "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	"github.com/dana-team/capp-backend/pkg/api/boundcapps"
+	apitypes "github.com/dana-team/capp-backend/pkg/api/capps"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 

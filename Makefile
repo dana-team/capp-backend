@@ -82,7 +82,7 @@ test-cover: ## Run tests and generate an HTML coverage report
 
 .PHONY: docker-build
 docker-build: ## Build the Docker image
-	docker build -t ghcr.io/dana-team/capp-backend:latest .
+	docker build -t ghcr.io/dana-team/capp-backend:latest -f deploy/Dockerfile .
 
 .PHONY: docker-push
 docker-push: ## Push the Docker image to the registry

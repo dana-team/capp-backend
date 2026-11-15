@@ -1,0 +1,11 @@
+# Allowlist: send only what the image builds need. Without this the context
+# includes .git and bin/ (local binaries and golangci-lint, 100+ MB).
+*
+!go.mod
+!go.sum
+!api/
+!cmd/
+!internal/
+!pkg/
+!dist/
+!cappctl-linux-amd64
