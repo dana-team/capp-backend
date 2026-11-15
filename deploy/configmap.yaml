@@ -19,6 +19,10 @@ data:
       corsAllowedOrigins:
         - "https://console.example.com"
 
+    authorization:
+      mode: kubernetes
+      restrictedBindingNamePrefixes: ["system:"]
+
     auth:
       mode: "passthrough"
       rateLimit:
@@ -43,6 +47,12 @@ data:
     clusters:
       - name: "production"
         displayName: "Production Cluster"
+        allowedNamespaces: []
+        authorization:
+          policyNamespace: capp-platform-system
+          protectedNamespaces: [capp-platform-system]
+          operatorUsers: []
+          operatorGroups: []
         credential:
           inline:
             apiServer: "https://api.production.example.com:6443"

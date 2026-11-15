@@ -39,9 +39,14 @@ type NamespaceItem struct {
 	// Nil when no ResourceQuota exists for the namespace.
 	Quota *QuotaInfo `json:"quota,omitempty"`
 
-	// Users is the list of users with access to the namespace.
-	// Nil when no RoleBinding exists for the namespace.
+	// Users contains Kubernetes-mode RoleBinding users or direct backend-policy editors.
+	// Nil when membership is unavailable, including an invalid policy.
 	Users *[]string `json:"users,omitempty"`
+
+	// Bindings and policy metadata are present only in backend-policy mode.
+	Bindings              *[]Binding `json:"bindings,omitempty"`
+	PolicyResourceVersion string     `json:"policyResourceVersion,omitempty"`
+	PolicyState           string     `json:"policyState,omitempty"`
 
 	// CanEdit is true when the authenticated user has admin-level permission
 	// to modify the namespace's quota and full user list (via PUT).
@@ -55,17 +60,33 @@ type ResourceQuota struct {
 	Pods   int    `json:"pods,omitempty"`
 }
 
+// CreateNamespaceRequest specifies a new namespace's membership and quota.
 type CreateNamespaceRequest struct {
-	Name  string         `json:"name" binding:"required"`
-	Users *[]string      `json:"users,omitempty"`
-	Quota *ResourceQuota `json:"quota,omitempty"`
+	Bindings *[]Binding     `json:"bindings,omitempty"`
+	Name     string         `json:"name" binding:"required"`
+	Users    *[]string      `json:"users,omitempty"`
+	Quota    *ResourceQuota `json:"quota,omitempty"`
 }
 
+// UpdateNamespaceRequest replaces the supplied namespace membership and quota.
 type UpdateNamespaceRequest struct {
-	Users *[]string      `json:"users,omitempty"`
-	Quota *ResourceQuota `json:"quota,omitempty"`
+	Bindings              *[]Binding     `json:"bindings,omitempty"`
+	PolicyResourceVersion *string        `json:"policyResourceVersion,omitempty"`
+	Users                 *[]string      `json:"users,omitempty"`
+	Quota                 *ResourceQuota `json:"quota,omitempty"`
 }
 
+// PatchNamespaceRequest adds namespace membership without removing existing grants.
 type PatchNamespaceRequest struct {
-	Users *[]string `json:"users,omitempty"`
+	Bindings              *[]Binding `json:"bindings,omitempty"`
+	PolicyResourceVersion *string    `json:"policyResourceVersion,omitempty"`
+	Users                 *[]string  `json:"users,omitempty"`
+}
+
+// Binding assigns an application role to a named user or group.
+// Names must be nonblank, without surrounding whitespace or control characters.
+type Binding struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Role string `json:"role"`
 }

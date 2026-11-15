@@ -44,9 +44,15 @@ ingress:
   tls: []
 
 # ── Backend configuration ─────────────────────────────────────────────────────
-# These values are rendered into the ConfigMap that the server reads at startup.
-# Sensitive values (tokens, secrets) go in the secret block below.
+# config supplies application settings; put credentials in Secrets.
 config:
+  # authorization configures access decisions for all target clusters.
+  authorization:
+    # mode selects kubernetes or backend-policy; backend-policy requires LDAP.
+    mode: kubernetes
+    # restrictedBindingNamePrefixes blocks User/Group policy bindings by case-sensitive prefix.
+    # Backend-policy only. Required and non-null; [] disables restrictions; entries cannot be empty.
+    restrictedBindingNamePrefixes: ["system:"]
   server:
     port: 8080
     readTimeoutSeconds: 30
@@ -118,6 +124,19 @@ config:
           # caCert: ""    # base64 PEM — omit for in-cluster service account
           insecure: false  # set true to skip TLS verification (NOT for production)
           token: ""       # overridden by secret.clusterTokens[0]
+      # authorization applies only in backend-policy mode; ignored in kubernetes mode.
+      authorization:
+        # policyNamespace is the required policy storage namespace, automatically protected.
+        policyNamespace: capp-platform-system
+        # protectedNamespaces excludes additional namespaces from resource access and administration.
+        protectedNamespaces: [capp-platform-system]
+        # operatorUsers grants namespace administration to exact, case-sensitive usernames.
+        # A user or group match suffices; ordinary resource access requires separate policy grants.
+        operatorUsers: []
+        # operatorGroups grants the same authority to exact, case-sensitive groups.
+        # Both lists empty denies namespace mutations; entries must not be blank.
+        operatorGroups: []
+      # allowedNamespaces limits users and operators in both modes; [] adds no restriction.
       allowedNamespaces: []
 
   resources:
@@ -218,8 +237,9 @@ rbac:
 
 # ── Service Account (openshift and ldap modes) ────────────────────────────────
 # Created when auth.mode is "openshift" or "ldap" and create is true.
-# Both modes bind impersonation permissions to this account; only OpenShift
-# receives OAuth annotations and TokenReview permissions.
+# Kubernetes authorization binds impersonation permissions to this account.
+# Backend-policy binds the consolidated backend role for a local target.
+# Only OpenShift receives OAuth annotations and TokenReview permissions.
 # Set create to false and name to an existing account to reuse it.
 serviceAccount:
   create: true
