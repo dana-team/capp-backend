@@ -15,6 +15,7 @@ import (
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,6 +24,12 @@ import (
 )
 
 func TestBackendPolicyGitOperations(t *testing.T) {
+	for _, provider := range []string{config.AuthModeOpenShift, config.AuthModePassthrough} {
+		t.Run(provider, func(t *testing.T) { testBackendPolicyGitOperations(t, provider) })
+	}
+}
+
+func testBackendPolicyGitOperations(t *testing.T, provider string) {
 	store, _, _ := policyStore(t, nil)
 	operations := []struct {
 		name, method, suffix, body string
@@ -98,7 +105,8 @@ func TestBackendPolicyGitOperations(t *testing.T) {
 					user = "bob"
 				}
 				mgr := policyManager(t, nil)
-				r := policyRouter(t, policyIdentity(user), mgr, policy.Target{Store: store, ExecutionClient: execution}, zap.NewNop())
+				identity := newPolicyProvider(t, provider, map[string]authv1.UserInfo{"c1": {Username: user}}, nil)
+				r := policyRouter(t, identity.auth, mgr, policy.Target{Store: store, ExecutionClient: execution}, zap.NewNop())
 				group := r.Group("/api/v1/clusters/:cluster")
 				enabled := scenario != "git disabled"
 				newCappsHandler(t, enabled, git, mgr, config.ObservabilityConfig{}).RegisterRoutes(group)

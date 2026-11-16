@@ -2,6 +2,7 @@
 package policy
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"net/http"
@@ -11,9 +12,11 @@ import (
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/api/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -47,6 +50,8 @@ type Target struct {
 }
 
 type policyDecision struct {
+	identity                          auth.ClusterCredential
+	authenticate                      func(string) (auth.ClusterCredential, error)
 	request                           *http.Request
 	method, route, cluster, namespace string
 	category                          Category
@@ -62,7 +67,8 @@ type policyDecision struct {
 // Install globally after CORS, with Logging and Recovery, without
 // Kubernetes-mode Auth/Cluster middleware. Discovery, aggregate and migration consumers
 // must use their category-specific authorization before accessing resources.
-func New(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, routes *Routes, targets map[string]Target, logger *zap.Logger) gin.HandlerFunc {
+func New(authMgr auth.AuthManager, authMode string, clusterMgr cluster.ClusterManager, routes *Routes, targets map[string]Target, logger *zap.Logger) gin.HandlerFunc {
+	sharedIdentity := authMode == config.AuthModeLDAP || authMode == config.AuthModeOpenShift
 	targets = maps.Clone(targets)
 	for name, target := range targets {
 		target.OperatorUsers = slices.Clone(target.OperatorUsers)
@@ -97,22 +103,19 @@ func New(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, routes *Ro
 			}
 			auditPolicy(logger, caller, decision, outcome)
 		}()
-		cred, ok := middleware.Authenticate(c, authMgr)
+		identities, ok := decision.prepareAuthentication(c, authMgr, clusterMgr, targets, sharedIdentity)
 		if !ok {
 			return
 		}
-		if cred.ImpersonateUser == "" {
-			apierrors.Respond(c, apierrors.NewUnauthorized("authentication required"))
-			return
-		}
+		cred := decision.identity
 		caller = cred.ImpersonateUser
+		clusterName := decision.cluster
 		if rule.Category == Denied {
 			respondPolicyError(c, authorization.ErrDenied)
 			return
 		}
 
-		clusterName := c.Param("cluster")
-		if clusterName == "" && (rule.Category != Discovery || c.FullPath() != "/api/v1/clusters") {
+		if clusterName == "" && !decision.isGlobalDiscovery() {
 			respondPolicyError(c, authorization.ErrDenied)
 			return
 		}
@@ -168,7 +171,7 @@ func New(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, routes *Ro
 			switch {
 			case rule.Category == Migration:
 				decision.prepareMigration = func(clusterName, namespace string) (client.Client, client.Client, error) {
-					return migrationClients(clusterMgr, targets, cred, rule.AllowedRoles, decision, clusterName, namespace, logger)
+					return migrationClients(clusterMgr, targets, rule.AllowedRoles, decision, clusterName, namespace, logger)
 				}
 			case !namespaceDetail:
 				if target.ExecutionClient == nil {
@@ -180,7 +183,7 @@ func New(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, routes *Ro
 
 		case Discovery:
 			decision.discover = func(name string) ([]authorization.NamespaceState, bool, error) {
-				return discoverNamespaces(clusterMgr, targets[name], cred, rule.AllowedRoles, name)
+				return identities.discover(clusterMgr, targets[name], rule.AllowedRoles, name, decision, logger)
 			}
 		case Aggregate:
 			decision.aggregate = func(c *gin.Context, list client.ObjectList, options ...client.ListOption) error {
@@ -194,6 +197,156 @@ func New(authMgr auth.AuthManager, clusterMgr cluster.ClusterManager, routes *Ro
 		outcome = auditOutcomeAllowed
 		c.Next()
 	}
+}
+
+func (d policyDecision) isGlobalDiscovery() bool {
+	return d.cluster == "" && d.category == Discovery && d.route == "/api/v1/clusters"
+}
+
+func (d *policyDecision) prepareAuthentication(c *gin.Context, mgr auth.AuthManager, clusters cluster.ClusterManager, targets map[string]Target, sharedIdentity bool) (*requestAuthentication, bool) {
+	identities := &requestAuthentication{AuthManager: mgr, sharedIdentity: sharedIdentity, credentials: make(map[string]auth.ClusterCredential)}
+	// Targetless protected routes still require verification before denial.
+	// Only shared providers have one identity representing these requests.
+	if d.cluster == "" {
+		identities.targets = make([]string, 0, len(targets))
+		for _, meta := range clusters.List() {
+			identities.targets = append(identities.targets, meta.Name)
+		}
+		slices.Sort(identities.targets)
+	}
+	credential, ok := middleware.Authenticate(c, identities)
+	if !ok {
+		return nil, false
+	}
+	if d.cluster != "" && credential.ImpersonateUser == "" {
+		apierrors.Respond(c, apierrors.NewUnauthorized(auth.ErrUnauthenticated.Error()))
+		return nil, false
+	}
+	if d.cluster == "" && !sharedIdentity {
+		delete(c.Keys, string(middleware.CredentialKey))
+	}
+	d.identity = credential
+	request := c.Request
+	d.authenticate = func(name string) (auth.ClusterCredential, error) {
+		return identities.Authenticate(request.Context(), name, request)
+	}
+	return identities, true
+}
+
+// requestAuthentication retains identities only for the current HTTP request.
+// Discovery workers write separate slots and join before publishing the map.
+type requestAuthentication struct {
+	auth.AuthManager
+	sharedIdentity bool
+	targets        []string
+	credentials    map[string]auth.ClusterCredential
+}
+
+func (a *requestAuthentication) Authenticate(ctx context.Context, name string, r *http.Request) (auth.ClusterCredential, error) {
+	if a.targets != nil {
+		if err := a.authenticateTargets(ctx, r); err != nil {
+			return auth.ClusterCredential{}, err
+		}
+		if a.sharedIdentity {
+			return a.credentials[a.targets[0]], nil
+		}
+		return auth.ClusterCredential{}, nil
+	}
+	if credential, ok := a.credentials[name]; ok {
+		return credential, nil
+	}
+	for _, credential := range a.credentials {
+		if credential.AuthProvider == config.AuthModeLDAP || credential.AuthProvider == config.AuthModeOpenShift {
+			a.credentials[name] = credential
+			return credential, nil
+		}
+	}
+	credential, err := a.AuthManager.Authenticate(ctx, name, r)
+	if err == nil {
+		a.credentials[name] = credential
+	}
+	return credential, err
+}
+
+func (a *requestAuthentication) authenticateTargets(ctx context.Context, r *http.Request) error {
+	if len(a.targets) == 0 {
+		return auth.ErrUnauthenticated
+	}
+	// Shared providers need one verified identity, even when the home reviewer
+	// becomes unavailable during discovery. Passthrough continues per target.
+	first, err := a.AuthManager.Authenticate(ctx, a.targets[0], r)
+	if err != nil && !errors.Is(err, auth.ErrUnauthenticated) {
+		return err
+	}
+	if ctx.Err() != nil {
+		return auth.ErrIdentityUnavailable
+	}
+	if a.sharedIdentity {
+		if err != nil {
+			return err
+		}
+		for _, name := range a.targets {
+			a.credentials[name] = first
+		}
+		return nil
+	}
+	group, reviewCtx := errgroup.WithContext(ctx)
+	group.SetLimit(4)
+	credentials := make([]auth.ClusterCredential, len(a.targets))
+	if err == nil {
+		credentials[0] = first
+	}
+	for i, name := range a.targets[1:] {
+		group.Go(func() error {
+			if reviewCtx.Err() != nil {
+				return auth.ErrIdentityUnavailable
+			}
+			credential, err := a.AuthManager.Authenticate(reviewCtx, name, r)
+			if errors.Is(err, auth.ErrUnauthenticated) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			credentials[i+1] = credential
+			return nil
+		})
+		if reviewCtx.Err() != nil {
+			break
+		}
+	}
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return auth.ErrIdentityUnavailable
+	}
+	for i, credential := range credentials {
+		if credential.ImpersonateUser != "" {
+			a.credentials[a.targets[i]] = credential
+		}
+	}
+	if len(a.credentials) == 0 {
+		return auth.ErrUnauthenticated
+	}
+	return nil
+}
+
+func (a *requestAuthentication) discover(mgr cluster.ClusterManager, target Target, roles []string, name string, decision policyDecision, logger *zap.Logger) ([]authorization.NamespaceState, bool, error) {
+	verified, ok := a.credentials[name]
+	if !ok {
+		return nil, false, nil
+	}
+	states, operator, err := discoverNamespaces(mgr, target, verified, roles, name)
+	if decision.isGlobalDiscovery() {
+		decision.cluster, decision.identity, decision.operator = name, verified, operator
+		outcome := auditOutcomeDenied
+		if err == nil {
+			outcome = auditOutcomeAllowed
+		}
+		auditPolicy(logger, verified.ImpersonateUser, decision, outcome)
+	}
+	return states, operator, err
 }
 
 // RequireExecution validates the request-local namespace decision before a
@@ -294,6 +447,7 @@ func auditPolicy(logger *zap.Logger, caller string, decision policyDecision, out
 		}
 	}
 	logger.Info("authorization decision",
+		zap.String("authProvider", decision.identity.AuthProvider), zap.String("identityAuthority", decision.identity.IdentityAuthority),
 		zap.String("caller", caller), zap.String("method", decision.method), zap.String("route", decision.route),
 		zap.String("cluster", decision.cluster), zap.String("namespace", decision.namespace),
 		zap.String("outcome", outcome), zap.Bool("operator", decision.operator), zap.String("authority", authority),
@@ -346,9 +500,14 @@ func RequireNamespaceAccess(c *gin.Context) (bool, authorization.NamespaceState,
 // for a discovery request. Scoped requests cannot inspect another cluster.
 // Operator authority permits administrative discovery, not resource access.
 // An empty cluster name only validates a global discovery request.
-// Global discovery omits unavailable targets by returning no observations or
-// operator authority with success; scoped discovery still reports unavailability.
+// Global discovery omits targets with unavailable policy observations; scoped
+// discovery reports that unavailability. Identity verification precedes both.
 func RequireDiscovery(c *gin.Context, clusterName string) ([]authorization.NamespaceState, bool, bool) {
+	if c.Request.Context().Err() != nil {
+		c.Set(string(policyDeniedKey), true)
+		apierrors.Respond(c, &apierrors.APIError{Code: apierrors.CodeInternal, Status: http.StatusServiceUnavailable, Message: auth.ErrIdentityUnavailable.Error()})
+		return nil, false, false
+	}
 	decision, ok := requestPolicyDecision(c)
 	if !Enabled(c) || !ok || decision.category != Discovery || decision.discover == nil ||
 		(decision.cluster != "" && decision.cluster != clusterName) {

@@ -47,6 +47,24 @@ rules:
     verbs: ["get", "patch"]
   {{- end }}
   {{- end }}
+  {{- if or (eq .Values.config.auth.mode "passthrough") (and (eq .Values.config.auth.mode "openshift") (eq (include "capp-backend.hasLocalTarget" .) "true")) }}
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  {{- end }}
+{{- if and (eq .Values.config.auth.mode "openshift") (eq (include "capp-backend.hasLocalTarget" .) "false") }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "capp-backend.fullname" . }}-tokenreviewer
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+{{- end }}
 {{- else if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
