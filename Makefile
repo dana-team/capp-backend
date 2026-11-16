@@ -52,9 +52,18 @@ fetch-ui: ## Download the Scalar API reference JS bundle for disconnected (air-g
 	  -o internal/server/ui/scalar.min.js
 	@echo "Saved to internal/server/ui/scalar.min.js ($(shell wc -c < internal/server/ui/scalar.min.js) bytes)"
 
+# Build tags for the server binary. They drop two dependencies it never uses and
+# make it about 6 MB (8%) smaller. Keep them in sync with deploy/Dockerfile and
+# the server builds in .github/workflows/test.yaml and release.yaml.
+#   nomsgpack   - gin's MessagePack codec (github.com/ugorji/go/codec)
+#   grpcnotrace - golang.org/x/net/trace, imported by grpc (a transitive
+#                 dependency), which registers /debug/requests and
+#                 /debug/events on http.DefaultServeMux
+SERVER_GO_TAGS ?= nomsgpack,grpcnotrace
+
 .PHONY: build
 build: fmt vet ## Build the server binary
-	go build -o bin/server ./cmd/server/...
+	go build -tags=$(SERVER_GO_TAGS) -o bin/server ./cmd/server/...
 
 .PHONY: build-cli
 build-cli: fmt vet ## Build the cappctl CLI binary
@@ -66,7 +75,7 @@ build-capp-mcp: fmt vet ## Build the capp-mcp binary
 
 .PHONY: run
 run: fmt vet ## Run the server locally using the default config file
-	go run ./cmd/server/... --config=config/config.yaml
+	go run -tags=$(SERVER_GO_TAGS) ./cmd/server/... --config=config/config.yaml
 
 .PHONY: run-capp-mcp
 run-capp-mcp: fmt vet ## Run capp-mcp locally against a local capp-backend on :8080

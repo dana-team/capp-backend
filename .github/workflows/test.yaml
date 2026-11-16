@@ -128,7 +128,7 @@ jobs:
           cache-key: server-build
 
       - name: Build
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/server ./cmd/server/...
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=nomsgpack,grpcnotrace -ldflags="-s -w" -o dist/server ./cmd/server/...
 
       - name: Build image (no push)
         run: docker build -f deploy/Dockerfile --build-arg BINARY=prebuilt -t ghcr.io/dana-team/capp-backend:ci .
