@@ -74,6 +74,13 @@ spec:
                     name: {{ include "capp-backend.secretName" . }}
                     key: gitopsToken
               {{- end }}
+              {{- if (and (dig "resources" "cfunc" "enabled" false .Values.config) (dig "resources" "cfunc" "functions" "enabled" false .Values.config)) }}
+              - name: CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" . }}
+                    key: cfuncGitToken
+              {{- end }}
               {{- if (dig "resources" "observability" "enabled" false .Values.config) }}
               - name: CAPP_RESOURCES_OBSERVABILITY_QUERYURL
                 valueFrom:

@@ -23,10 +23,19 @@ import (
 )
 
 // Handler implements resources.ResourceHandler for Kubernetes Secrets.
-type Handler struct{}
+type Handler struct {
+	functions boundcapps.FunctionGuard
+}
 
 // New returns a ready-to-use secret Handler.
 func New() *Handler { return &Handler{} }
+
+// WithFunctionGuard turns on the check for cfunc functions that read a
+// secret. See boundcapps.FunctionGuard.
+func (h *Handler) WithFunctionGuard(enabled bool) *Handler {
+	h.functions.Enabled = enabled
+	return h
+}
 
 // Name returns the handler's identifier.
 func (h *Handler) Name() string { return "secrets" }
@@ -124,6 +133,11 @@ func (h *Handler) bound(c *gin.Context) {
 	}
 
 	resp, err := boundcapps.Find(c.Request.Context(), k8sClient, namespace, boundcapps.KindSecret, name)
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	resp.BoundFunctions, err = h.functions.Bound(c.Request.Context(), k8sClient, namespace, boundcapps.KindSecret, name)
 	if err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -312,6 +326,15 @@ func (h *Handler) delete(c *gin.Context) {
 	}
 	if len(bound.BoundCapps) > 0 {
 		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf("secret %s is still in use by Capps: %s", name, strings.Join(bound.BoundCapps, ", "))))
+		return
+	}
+	functions, err := h.functions.Bound(c.Request.Context(), k8sClient, namespace, boundcapps.KindSecret, name)
+	if err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
+	if len(functions) > 0 {
+		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf("secret %s is still in use by functions: %s", name, strings.Join(functions, ", "))))
 		return
 	}
 

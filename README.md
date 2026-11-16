@@ -316,6 +316,14 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools/:name` | ✓ | Get a pool |
 | `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools/:name` | ✓ | Update a pool |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools/:name` | ✓ | Delete a pool; 409 while Functions in the namespace use it |
+| `GET` | `/api/v1/clusters/:cluster/cfunc/functions` | ✓ | List all cfunc functions across namespaces (function routes exist only when `resources.cfunc.functions.enabled`) |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions` | ✓ | List functions in a namespace |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions` | ✓ | Create a function with its triggers from a git repository |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions/:name` | ✓ | Get a function with its triggers, deployed commit, build state and build log |
+| `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions/:name` | ✓ | Update a function: clones again, replaces the triggers |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions/:name` | ✓ | Delete a function with its package and triggers |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions/:name/test` | ✓ | Call the function one time through one of its http triggers; 501 without `cfuncRouterURL` |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions/:name/logs` | ✓ | Recent log lines of the pods that serve the function now |
 | `GET` | `/healthz` | — | Liveness probe |
 | `GET` | `/readyz` | — | Readiness probe (≥1 healthy cluster; backend-policy also requires its initial policy/namespace sync) |
 | `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
@@ -400,6 +408,53 @@ curl -X POST "$BACKEND/api/v1/clusters/$CLUSTER/namespaces/$NS/cfunc/pools" \
 - **Environments created outside this API.** A `PUT` keeps the fields this API does not expose, such as pod specs, and keeps an environment variable it cannot express (a `fieldRef`), which `GET` leaves out. A stored grace period of 0 becomes 360. An Environment with interface version 1 or 2 can be read and deleted but not updated (409): Fission ignores the pool size below version 3 and does not let the version change.
 - **`DELETE`** returns 409 while a Function in the same namespace uses the pool. The check is partial: a Function in another namespace can name the pool and is not seen, so deleting the pool breaks it.
 - A cluster without the Fission CRDs answers 501 `NOT_SUPPORTED`.
+- **Known Fission limit with `tenancy.mode=dynamic` (measured on v1.27.0).** In a namespace that was onboarded while Fission runs, Fission does not reuse a function's pod: every request takes a new pod from the pool, and the pods stay until the idle time passes. A function that gets more requests in that time than its `concurrency` answers 429, and the pool is drained and refilled all the time. In a namespace Fission knew at start (for example `default`), twelve requests in a row used one pod. The cause is in Fission's executor, which checks a pod through a cache of the namespaces known at start. Until Fission fixes it, prefer `tenancy.mode=cluster`, or `static` with the namespaces listed, for clusters with real traffic, and leave `onboardNamespaces` off there. `cluster` mode was not tested here.
+- **`onboardNamespaces: true`** makes the first pool of a namespace set the label `fission.io/enabled=true` on that namespace, which is how a Fission that runs with `tenancy.mode=dynamic` starts to serve it. The caller's credential is tried first. When it is refused, the backend's own cluster credential is used, but only for a caller who may create pools in that namespace (a SelfSubjectAccessReview), so one of the two needs `patch` on namespaces. The label is never removed.
+
+#### Functions
+
+A **function** is code from a git repository that runs in a pool, together with the triggers that call it. Set `resources.cfunc.functions.enabled: true`, the git server and its token:
+
+```yaml
+resources:
+  cfunc:
+    functions:
+      enabled: true
+      git:
+        baseURL: "https://gitlab.example.com"   # token: CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN
+clusters:
+  - name: prod
+    cfuncRouterURL: "https://fn.example.com"    # optional: the Fission router of this cluster
+```
+
+```bash
+curl -X POST "$BACKEND/api/v1/clusters/$CLUSTER/namespaces/$NS/cfunc/functions" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+        "name": "shop", "pool": "py",
+        "source": {"url": "https://gitlab.example.com/team-a/functions.git", "ref": "main", "path": "shop"},
+        "entrypoint": "main.handle",
+        "secretVolumes": [{"secretName": "shop-db"}],
+        "triggers": [
+          {"name": "api", "type": "http", "path": "/orders", "methods": ["GET", "POST"]},
+          {"name": "nightly", "type": "cron", "schedule": "0 2 * * *"}
+        ]
+      }'
+```
+
+- **One object, several Fission objects.** The backend writes a `Function`, the `Package` that holds its code, and one `HTTPTrigger` or `TimeTrigger` for each trigger, and deletes them together. The function always runs on Fission's pool manager, in a **pool of its own namespace**; it takes its runtime, CPU, memory and environment variables from that pool.
+- **`source`** names a repository under `git.baseURL`, an optional `ref` (branch, tag or full commit hash; default: the default branch) and an optional `path` (a folder or one file; default: the repository root). The backend clones with its own token, because Fission cannot clone a private repository, and stores the code inline in the Package, so the code is limited to **256 KiB** as a zip archive. A client never sends a token, and the token is sent to `git.baseURL` only. The response shows the `commit` that is deployed. **`source.build`** says whether Fission builds the code: by default a folder is built when the pool has a build image, and one file is loaded as it is. A compiled language needs `"build": true` also for one file (`go/hello-world/hello.go`). The archive keeps the executable bit of a file, so a `build.sh` in the folder can be the `advanced.buildCommand`. A repository that does not exist, or that the token cannot read, answers 400.
+- **`entrypoint`** is the function inside the code that the runtime calls. Its form depends on the flavor: `main.handle` (python), `handler` (ruby), `Handler` (go), `io.fission.HelloWorld` (java).
+- **`triggers`** is one list; `type` is `http` or `cron`. An http trigger has a `path` and `methods` (default `GET`). The backend serves it under **`/<namespace>/<function><path>`**, because the Fission router has one URL space for the whole cluster and two namespaces could otherwise claim the same path; the response shows `fullPath` and, with `cfuncRouterURL`, the `url`. A cron trigger has a `schedule` (five fields, six with seconds, or `@hourly`, `@every 5m`) that must not run more often than `minCronIntervalSeconds`. Each trigger reports the `status` Fission gives it, such as `RouteAdmitted`, `RouteConflict` or `CronRegistered`. Triggers that already name the function, for example ones made with the `fission` CLI, belong to it: they are listed, and a create or update replaces them. When two of them would get the same name in a response, the one this API did not name gets a number (`api-2`), and the next `PUT` stores it under that name.
+- **`secretVolumes`** and **`configMapVolumes`** are the Capp types. Create the Secret or ConfigMap through this API first, then name it. One difference from a Capp: Fission fixes the path, `/secrets/<namespace>/<name>/<key>` and `/configs/<namespace>/<name>/<key>`, so `name` and `mountPath` are optional and, when sent, must equal what a response shows. Deleting a Secret or ConfigMap answers 409 while a function reads it, and its `/bound` route lists those functions. A caller who may not list Fission Functions gets no such check and an empty `boundFunctions`: a Role with Secrets and ConfigMaps only keeps working as before.
+- **`advanced`** holds `concurrency` (default `defaultConcurrency`, at most `maxConcurrency`; both are 500, Fission's own default, and a call answers 429 when the limit is reached), `requestsPerPod`, `idleTimeoutSeconds`, `onceOnly`, `retainPods`, `specializationTimeoutSeconds` and, only with `allowCustomBuild`, `buildCommand`.
+- **Full replace on update.** `PUT` clones again, so it is also how new code of a branch is deployed; an unchanged commit starts no build. A trigger the body leaves out is deleted. A `GET` response can be sent back as the body.
+- **Limits a client can hit.** Two http triggers of one function cannot serve the same method on the same path (400). The 256 KiB limit applies to the bytes that are stored: the zip for code that is built, the file itself for one file that is not. A Package of the function's name that was not created through this API is never replaced (409) and never deleted with the function. The backend clones at most 4 repositories at one time. That bounds the count, not the size: each clone is read into memory in full (the whole tree of a branch or tag, the whole history for a commit hash), so one clone is as large as its repository. Size the backend's memory for the largest repository under `git.baseURL`, or point `git.baseURL` at a group that holds only function repositories. A request that gets no free slot within the 60-second fetch time answers 503 `CFUNC_SOURCE_BUSY` and changes nothing; four slow clones can therefore hold back every other function create and update for up to that time.
+- **Slow requests.** A create, an update and a test call can take longer than `server.writeTimeoutSeconds` (a clone has 60 seconds, a test call the function's timeout plus 10). The handler moves the write deadline of that one response, so the client still gets its answer; a proxy in front of the backend needs a timeout at least as long.
+- **Build state.** `build.status` is `pending`, `running`, `succeeded`, `failed`, or `none` when the code needs no build, and `build.log` is the builder's output. A build runs after the request returns: read the function again. A `PUT` of a function whose build failed asks for the build again, also with the same code. The backend does not point the function at built code; Fission's builder does when the build succeeds, and the function then serves the new code. **A build that fails takes the function down** (measured on Fission v1.27.0): Fission drops the function's pods when it records the result, and a new pod cannot load a package whose build failed, so calls answer 500 until a build succeeds. A new pod also cannot load the package while a build runs. Fix the code and send the `PUT` again; check `build.status` before you rely on a change.
+- **Failure and retry.** A request is validated, then the repository is cloned, and only then is anything written, in the order package, function, triggers. A failure after the function is saved answers 500 and says so; the same body in a `PUT` finishes the rest. A git server that cannot be reached answers 502 `CFUNC_SOURCE_FAILED` and changes nothing.
+- **`test`** sends one request through an http trigger to the router at `cfuncRouterURL` and returns the status, headers and body. It never calls another address and does not follow redirects. A function with only cron triggers cannot be called this way.
+- **`logs`** returns the end of the log of each pod that serves the function now (`?lines=`, default 100). A pod whose log cannot be read at that moment, for example one that was just removed, is in the answer with no lines. Fission takes an idle pod away after `idleTimeoutSeconds` and the log goes with it, so this shows recent runs only.
 
 ## cappctl CLI
 
@@ -537,7 +592,8 @@ internal/
 │       ├── capps/       # Capp CRUD, sync, and migrate handler
 │       ├── configmaps/  # ConfigMap CRUD handler
 │       ├── secrets/     # Secret CRUD handler
-│       └── cfunc/pools/ # cfunc pool CRUD handler (Fission Environments; flavors and sizes from config)
+│       ├── cfunc/pools/ # cfunc pool CRUD handler (Fission Environments; flavors and sizes from config)
+│       └── cfunc/functions/ # cfunc function CRUD, test call and logs (Fission Function + Package + triggers)
 └── server/         # Gin engine setup, route registration, auth endpoints
 pkg/k8s/            # Kubernetes scheme builder (registers CRD types)
 helm/

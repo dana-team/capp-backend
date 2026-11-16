@@ -654,6 +654,294 @@ components:
           items:
             $ref: '#/components/schemas/CfuncPoolResponse'
 
+    CfuncFunctionSource:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: https URL of the git repository. It must be under the backend's git base URL (resources.cfunc.functions.git.baseURL), which is the only server the backend's token is sent to.
+          example: https://gitlab.example.com/team-a/functions.git
+        ref:
+          type: string
+          description: A branch, a tag or a full 40-character commit hash. Defaults to the default branch of the repository.
+          example: main
+        path:
+          type: string
+          description: Folder, or one file, inside the repository that holds the function. Defaults to the repository root. The code must be at most 256 KiB as it is stored (the zip archive for code that is built, the file itself for one file that is not), with no symbolic links.
+          example: shop
+        build:
+          type: boolean
+          description: Whether Fission builds the code before it runs. Defaults to true for a folder in a pool that has a build image, and to false for one file, which is loaded as it is. A compiled language needs true also for one file. True needs a pool with a build image. A response always carries the value.
+        commit:
+          type: string
+          readOnly: true
+          description: Hash of the commit that is deployed.
+
+    CfuncFunctionTrigger:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+          description: Name of the trigger inside its function. A DNS label. The Fission object is named <function>-<name>. A trigger that was made outside this API and would share a name with another one is listed with a number (for example api-2).
+          example: api
+        type:
+          type: string
+          enum: [http, cron]
+        path:
+          type: string
+          description: http only. URL path below the prefix /<namespace>/<function>, which the backend adds because the Fission router has one URL space for the whole cluster. Empty serves the prefix itself. It can hold {variables}.
+          example: /orders
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+          description: http only. Defaults to GET.
+        schedule:
+          type: string
+          description: cron only. Five fields, six with seconds first, or a descriptor such as "@hourly" or "@every 5m". It must not run more often than resources.cfunc.functions.minCronIntervalSeconds (60 by default). Fission calls the function with POST on its root path.
+          example: "0 2 * * *"
+        fullPath:
+          type: string
+          readOnly: true
+          description: http only. The path the router serves.
+          example: /team-a/shop/orders
+        url:
+          type: string
+          readOnly: true
+          description: http only. fullPath on the cluster's Fission router. Present only when the cluster has a cfuncRouterURL.
+        status:
+          type: string
+          readOnly: true
+          description: Reason of the trigger's Ready condition, for example RouteAdmitted, RouteConflict, FunctionNotFound, CronRegistered or InvalidCron. Empty until Fission has seen the trigger.
+        message:
+          type: string
+          readOnly: true
+          description: Explains status when the trigger is not ready.
+
+    CfuncFunctionAdvanced:
+      type: object
+      description: Execution settings most functions leave alone.
+      properties:
+        concurrency:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Highest number of pods that serve the function at one time. Defaults to resources.cfunc.functions.defaultConcurrency (500, the Fission default) and must not exceed maxConcurrency (500). When it is reached, calls answer 429.
+        requestsPerPod:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 1000
+          default: 1
+          description: Requests one pod serves at the same time.
+        idleTimeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 120
+          description: How long a pod stays with the function after its last request.
+        onceOnly:
+          type: boolean
+          description: A pod serves exactly one request.
+        retainPods:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 0
+          description: Pods kept with the function after the idle time. At most the concurrency.
+        specializationTimeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 120
+          default: 120
+          description: How long Fission waits for a pod to load the code.
+        buildCommand:
+          type: string
+          description: Build command for this function, in place of the pool's. Rejected with 400 unless the backend sets resources.cfunc.allowCustomBuild, and for a pool with no build image.
+
+    CfuncFunctionRequest:
+      type: object
+      required: [name, pool, source]
+      properties:
+        name:
+          type: string
+          description: Name of the function, a DNS label. On PUT the name in the URL is used.
+          example: shop
+        pool:
+          type: string
+          description: A cfunc pool of the same namespace. The function takes its runtime, CPU, memory and environment variables from it. A pool with a build image gets the folder as source and builds it; any other pool loads the folder as it is (a folder with one file is stored as that file).
+          example: py
+        source:
+          $ref: '#/components/schemas/CfuncFunctionSource'
+        entrypoint:
+          type: string
+          description: The function inside the code that the runtime calls. Its form depends on the pool's flavor, for example main.handle (python), handler (ruby), Handler (go) or io.fission.HelloWorld (java).
+          example: main.handle
+        timeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 60
+          description: Longest time one request may take. At most resources.cfunc.functions.maxTimeoutSeconds (300).
+        secretVolumes:
+          type: array
+          description: Secrets of the namespace the function reads as files. The same type as on a Capp, with one difference. Fission fixes the path to /secrets/<namespace>/<secretName>/<key>, so name and mountPath are optional and, when sent, must equal what a response shows.
+          items:
+            $ref: '#/components/schemas/SecretVolume'
+        configMapVolumes:
+          type: array
+          description: ConfigMaps of the namespace the function reads as files, at /configs/<namespace>/<configMapName>/<key>, under the same rules as secretVolumes.
+          items:
+            $ref: '#/components/schemas/ConfigMapVolume'
+        triggers:
+          type: array
+          description: The ways the function is called. At most resources.cfunc.functions.maxTriggers (10). Full replace on PUT.
+          items:
+            $ref: '#/components/schemas/CfuncFunctionTrigger'
+        advanced:
+          $ref: '#/components/schemas/CfuncFunctionAdvanced'
+
+    CfuncFunctionResponse:
+      type: object
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        uid:
+          type: string
+        resourceVersion:
+          type: string
+        pool:
+          type: string
+        source:
+          $ref: '#/components/schemas/CfuncFunctionSource'
+        entrypoint:
+          type: string
+        timeoutSeconds:
+          type: integer
+          format: int32
+        secretVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretVolume'
+        configMapVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigMapVolume'
+        triggers:
+          type: array
+          items:
+            $ref: '#/components/schemas/CfuncFunctionTrigger'
+        advanced:
+          allOf:
+            - $ref: '#/components/schemas/CfuncFunctionAdvanced'
+          description: Present only when a value is not its default. Send it back in a PUT to keep it, because PUT is a full replace.
+        build:
+          type: object
+          description: Build state of the function's code. A build runs after the request returns, so read the function again to see its result.
+          properties:
+            status:
+              type: string
+              description: pending, running, succeeded, failed, or none when the code needs no build. Empty until Fission has seen the package.
+            log:
+              type: string
+              description: Output of the build.
+        status:
+          type: object
+          properties:
+            observedGeneration:
+              type: integer
+              format: int64
+            conditions:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  status:
+                    type: string
+                  reason:
+                    type: string
+                  message:
+                    type: string
+                  lastTransitionTime:
+                    type: string
+                    format: date-time
+
+    CfuncFunctionList:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int32
+          example: 2
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CfuncFunctionResponse'
+
+    CfuncFunctionTestRequest:
+      type: object
+      properties:
+        trigger:
+          type: string
+          description: Name of an http trigger of the function. Optional when the function has exactly one.
+        method:
+          type: string
+          description: HTTP method. Defaults to the first method of the trigger and must be one of its methods.
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        body:
+          type: string
+
+    CfuncFunctionTestResponse:
+      type: object
+      properties:
+        url:
+          type: string
+        method:
+          type: string
+        statusCode:
+          type: integer
+          format: int32
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        body:
+          type: string
+        truncated:
+          type: boolean
+          description: True when the body was longer than 1 MiB.
+        durationMs:
+          type: integer
+          format: int64
+
+    CfuncFunctionLogs:
+      type: object
+      properties:
+        pods:
+          type: array
+          items:
+            type: object
+            properties:
+              pod:
+                type: string
+              lines:
+                type: array
+                items:
+                  type: string
+
     CfuncNameListResponse:
       type: object
       description: Names only, in alphabetical order.
@@ -850,7 +1138,7 @@ components:
 
     BoundCappsResponse:
       type: object
-      required: [boundCapps, toReload]
+      required: [boundCapps, toReload, boundFunctions]
       properties:
         boundCapps:
           type: array
@@ -871,6 +1159,11 @@ components:
             Capps with reloadOnBoundResourceChange enabled that use it in their
             pod template. Log and Kafka references never trigger a restart.
           example: [web]
+        boundFunctions:
+          type: array
+          items:
+            type: string
+          description: cfunc functions in the namespace that read the resource as files. Deleting the resource is refused while this list is non-empty. Always empty on a backend that does not serve cfunc functions, and for a caller who may not list Fission Functions.
 
     # ── Resource sizing ─────────────────────────────────────────────────────────
     ResourceQuantitiesDTO:
@@ -2609,6 +2902,353 @@ paths:
                 $ref: '#/components/schemas/Error'
         "501":
           description: The cluster does not serve the Fission Environment resource (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+  /api/v1/clusters/{cluster}/cfunc/functions:
+    get:
+      tags: [cfunc]
+      summary: List functions across all namespaces
+      description: Exists only when resources.cfunc.functions.enabled is true, as do all function routes.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Functions the caller can read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncFunctionList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "501":
+          description: The cluster does not serve the Fission resources (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/cfunc/functions:
+    get:
+      tags: [cfunc]
+      summary: List the functions of a namespace
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Functions of the namespace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncFunctionList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "501":
+          description: The cluster does not serve the Fission resources (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+    post:
+      tags: [cfunc]
+      summary: Create a function
+      description: |
+        Clones the repository with the backend's token, stores the folder in a
+        Fission Package, and creates the Function and one HTTPTrigger or
+        TimeTrigger for each trigger. The function always runs on the pool
+        manager, in a pool of its own namespace.
+        The objects are written in the order package, function, triggers. When
+        a write fails after the function is saved, the answer is 500 and says
+        so; send the same body in a PUT to finish. A create that failed before
+        the function was saved can be sent again as it is.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CfuncFunctionRequest'
+      responses:
+        "201":
+          description: Function created. build.status is often empty or pending; read the function again for the result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncFunctionResponse'
+        "400":
+          description: Invalid request body, a source.url outside the git base URL, a ref or path the repository does not have, code above 256 KiB, a pool that does not exist in the namespace or cannot run functions, an invalid trigger, two http triggers on the same method and path, a cron schedule that runs too often, a secretVolumes or configMapVolumes entry with another name or mountPath, or a value above a configured limit. Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          description: A function of that name exists, a Package of that name exists that was not created through this API (its code is not replaced), or a trigger name is taken by an object of another function in the namespace. In the last case the function is saved; rename the trigger and send the body in a PUT.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "502":
+          description: The git server could not be reached or read (CFUNC_SOURCE_FAILED). Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "501":
+          description: The cluster does not serve the Fission resources (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          description: The backend had no free slot to clone the repository within the fetch time (CFUNC_SOURCE_BUSY), or the authorization policy is unavailable. Nothing is written; retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/cfunc/functions/{name}:
+    get:
+      tags: [cfunc]
+      summary: Get a function
+      description: Returns the function with its triggers, the commit that is deployed, and the build state and log.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Function details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncFunctionResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: The cluster does not serve the Fission resources (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+    put:
+      tags: [cfunc]
+      summary: Update a function
+      description: |
+        Full replace. The repository is cloned again, so this is also how new
+        code of the same branch is deployed; an unchanged commit starts no
+        build, unless the last build failed. A build that fails takes the
+        function down until a build succeeds (Fission drops its pods and a
+        new pod cannot load a package whose build failed), so check
+        build.status after a change. An omitted field falls back to its default. A trigger that the
+        body does not list is deleted. The name in the body is ignored; the
+        name in the URL is used. A response of GET can be sent back as the
+        body. A function that runs on another executor, which can only come
+        from outside this API, answers 409.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CfuncFunctionRequest'
+      responses:
+        "200":
+          description: Function updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncFunctionResponse'
+        "400":
+          description: Invalid request body, a source.url outside the git base URL, a ref or path the repository does not have, code above 256 KiB, a pool that does not exist in the namespace or cannot run functions, an invalid trigger, two http triggers on the same method and path, a cron schedule that runs too often, a secretVolumes or configMapVolumes entry with another name or mountPath, or a value above a configured limit. Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: The function runs on another executor, a Package of the function's name exists that was not created through this API, or a trigger name is taken by an object of another function.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "502":
+          description: The git server could not be reached or read (CFUNC_SOURCE_FAILED). Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "501":
+          description: The cluster does not serve the Fission resources (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          description: The backend had no free slot to clone the repository within the fetch time (CFUNC_SOURCE_BUSY), or the authorization policy is unavailable. Nothing is written; retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [cfunc]
+      summary: Delete a function
+      description: Deletes the triggers, the package and then the function. A Package that was not created through this API is left. A delete that failed part of the way can be sent again.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "204":
+          description: Function deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: The cluster does not serve the Fission resources (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/cfunc/functions/{name}/test:
+    post:
+      tags: [cfunc]
+      summary: Call a function one time
+      description: |
+        Sends one request through an http trigger of the function to the
+        cluster's Fission router and returns the answer. The target is always
+        the configured router and a path of this function. Redirects are not
+        followed. A function with no http trigger cannot be called this way,
+        and a trigger path with a variable cannot be used.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CfuncFunctionTestRequest'
+      responses:
+        "200":
+          description: What the function answered. A function error is a 200 here with its own statusCode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncFunctionTestResponse'
+        "400":
+          description: No http trigger, more than one and none named, an unknown trigger, a method the trigger does not serve, or a path with a variable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: The cluster has no cfuncRouterURL (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "502":
+          description: The router did not answer (CFUNC_ROUTER_FAILED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/cfunc/functions/{name}/logs:
+    get:
+      tags: [cfunc]
+      summary: Read the recent log of a function
+      description: |
+        Returns the end of the log of each pod that serves the function now,
+        newest pod first, at most 20 pods. A pod whose log cannot be
+        read at that moment is listed with no lines. Fission takes an idle pod away from
+        the function and the log goes with the pod, so this shows recent runs
+        only. The log is read with the caller's own cluster credential. Denied
+        in backend-policy authorization mode.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - name: lines
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+          description: Lines from the end of each pod's log.
+      responses:
+        "200":
+          description: Log lines for each pod. An empty list when no pod serves the function now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncFunctionLogs'
+        "400":
+          description: lines is out of range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: The cluster does not serve the Fission resources (NOT_SUPPORTED).
           content:
             application/json:
               schema:

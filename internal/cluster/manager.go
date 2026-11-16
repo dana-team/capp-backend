@@ -149,6 +149,12 @@ func (m *defaultClusterManager) List() []ClusterMeta {
 // RestConfig is copied so that injecting the caller's bearer token does not
 // affect other in-flight requests.
 func (m *defaultClusterManager) ClientFor(cluster *ClusterClient, cred auth.ClusterCredential) (client.Client, error) {
+	return client.New(requestConfig(cluster, cred), client.Options{Scheme: cluster.Scheme})
+}
+
+// requestConfig returns the cluster's REST config with the caller's
+// credential applied.
+func requestConfig(cluster *ClusterClient, cred auth.ClusterCredential) *rest.Config {
 	// Copy the base config to avoid mutating the shared struct.
 	reqCfg := rest.CopyConfig(cluster.RestConfig)
 
@@ -171,7 +177,7 @@ func (m *defaultClusterManager) ClientFor(cluster *ClusterClient, cred auth.Clus
 		}
 	}
 
-	return client.New(reqCfg, client.Options{Scheme: cluster.Scheme})
+	return reqCfg
 }
 
 // IsNamespaceAllowed returns true if namespace is in the allowed list,

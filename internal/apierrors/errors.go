@@ -45,6 +45,9 @@ const (
 	CodeGitopsFailed          = "GITOPS_FAILED"
 	CodePrometheusQueryFailed = "PROMETHEUS_QUERY_FAILED"
 	CodePrometheusTimeout     = "PROMETHEUS_TIMEOUT"
+	CodeCfuncSourceFailed     = "CFUNC_SOURCE_FAILED"
+	CodeCfuncSourceBusy       = "CFUNC_SOURCE_BUSY"
+	CodeCfuncRouterFailed     = "CFUNC_ROUTER_FAILED"
 )
 
 // ReasonPolicyDenied is the public reason for an authorization policy denial.
@@ -175,6 +178,47 @@ func NewGitopsFailed(err error) *APIError {
 		Status:  http.StatusBadGateway,
 		cause:   err,
 	}
+}
+
+// NewCfuncSourceFailed returns a 502 error when the git server that holds a
+// function's code cannot be reached or read. The cause is kept for server
+// logs and is not included in the client message.
+func NewCfuncSourceFailed(err error) *APIError {
+	return &APIError{
+		Code:    CodeCfuncSourceFailed,
+		Message: "reading the function's code from the git server failed; nothing was changed, retry the request",
+		Status:  http.StatusBadGateway,
+		cause:   err,
+	}
+}
+
+// NewCfuncSourceBusy returns a 503 error when the backend had no free slot
+// to clone a function's repository. The git server was not contacted.
+func NewCfuncSourceBusy(err error) *APIError {
+	return &APIError{
+		Code:    CodeCfuncSourceBusy,
+		Message: "the backend is busy cloning other repositories; nothing was changed, retry the request",
+		Status:  http.StatusServiceUnavailable,
+		cause:   err,
+	}
+}
+
+// NewCfuncRouterFailed returns a 502 error when the Fission router did not
+// answer a function test call. The cause is kept for server logs.
+func NewCfuncRouterFailed(err error) *APIError {
+	return &APIError{
+		Code:    CodeCfuncRouterFailed,
+		Message: "the Fission router did not answer the test call",
+		Status:  http.StatusBadGateway,
+		cause:   err,
+	}
+}
+
+// NewPartialFailure returns a 500 error whose message is safe to show: it
+// says which part of a multi-object write is done and which is not, so the
+// caller knows a repeated request finishes the rest.
+func NewPartialFailure(msg string, err error) *APIError {
+	return &APIError{Code: CodeInternal, Message: msg, Status: http.StatusInternalServerError, cause: err}
 }
 
 // NewPrometheusQueryFailed returns a 502 error when a PromQL query cannot be

@@ -216,6 +216,36 @@ config:
       #       buildImage: "jvm-builder:1.32.0"
       #       keepArchive: true
       flavors: {}
+      # Makes the first pool of a namespace set the fission.io/enabled=true
+      # label on that namespace. Turn it on only when Fission runs with
+      # tenancy.mode=dynamic; it gives the backend the right to patch
+      # namespaces. The label is never removed.
+      onboardNamespaces: false
+      # Functions: code from a git repository that runs in a pool, with http
+      # and cron triggers. Off by default.
+      functions:
+        enabled: false
+        git:
+          # The one git server function code is cloned from. A function's
+          # source.url must start with it. Required when enabled; https only.
+          # Its token is secret.cfuncGitToken.
+          baseURL: ""     # e.g. "https://gitlab.example.com"
+          # Sent with the token. GitLab and GitHub accept any non-empty value.
+          username: "oauth2"
+        # Highest number of triggers of one function.
+        maxTriggers: 10
+        # Highest timeoutSeconds a function may ask for.
+        maxTimeoutSeconds: 300
+        # Pods one function may use at one time: the value written when a
+        # request names none, and the highest a request may ask for. Both are
+        # Fission's own default, 500. Lower them only on a Fission that reuses
+        # a function's pod between requests: where it does not (v1.27.0 with
+        # tenancy.mode=dynamic, in a namespace onboarded at runtime), every
+        # request takes a new pod and a low limit answers 429 very soon.
+        defaultConcurrency: 500
+        maxConcurrency: 500
+        # Shortest interval between two runs of a cron trigger.
+        minCronIntervalSeconds: 60
 
   # GitOps — push Capp values to a git repository for ArgoCD sync.
   # Disabled by default. Enable and provide credentials to activate.
@@ -254,6 +284,11 @@ secret:
   # GitOps token. Required when config.gitops.authMethod is "token".
   # Override: --set secret.gitopsToken="<personal-access-token>"
   gitopsToken: ""
+
+  # Token for config.resources.cfunc.functions.git.baseURL, with read access
+  # to every repository a function may name. Required when functions are
+  # enabled. Injected as CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN.
+  cfuncGitToken: ""
 
   # Prometheus-compatible URL that metrics queries read from, including any
   # token in its query string (e.g. https://vm.example.com?apikey=abc123).

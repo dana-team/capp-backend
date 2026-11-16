@@ -81,6 +81,9 @@ data:
         {{- if $cluster.gitOpsPath }}
         gitOpsPath: {{ $cluster.gitOpsPath | quote }}
         {{- end }}
+        {{- if $cluster.cfuncRouterURL }}
+        cfuncRouterURL: {{ $cluster.cfuncRouterURL | quote }}
+        {{- end }}
         credential:
           {{- if $cluster.credential.kubeconfigPath }}
           kubeconfigPath: {{ $cluster.credential.kubeconfigPath | quote }}
@@ -169,6 +172,21 @@ data:
           {{- toYaml .sizes | nindent 10 }}
         flavors:
           {{- toYaml .flavors | nindent 10 }}
+        onboardNamespaces: {{ .onboardNamespaces | default false }}
+        {{- with .functions }}
+        {{- if .enabled }}
+        functions:
+          enabled: true
+          git:
+            baseURL: {{ required "config.resources.cfunc.functions.git.baseURL is required when functions are enabled" (dig "git" "baseURL" "" .) | quote }}
+            username: {{ dig "git" "username" "oauth2" . | quote }}
+          maxTriggers: {{ .maxTriggers | default 10 }}
+          maxTimeoutSeconds: {{ .maxTimeoutSeconds | default 300 }}
+          defaultConcurrency: {{ .defaultConcurrency | default 500 }}
+          maxConcurrency: {{ .maxConcurrency | default 500 }}
+          minCronIntervalSeconds: {{ .minCronIntervalSeconds | default 60 }}
+        {{- end }}
+        {{- end }}
       {{- end }}
       {{- end }}
 

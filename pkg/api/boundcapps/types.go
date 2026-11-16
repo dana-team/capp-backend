@@ -13,4 +13,9 @@ type Response struct {
 	// ToReload lists the subset of BoundCapps that restart when the resource
 	// changes: opted-in Capps whose pod template references it.
 	ToReload []string `json:"toReload"`
+	// BoundFunctions lists every cfunc function in the namespace that reads
+	// the resource as files. Deleting the resource is refused while it is
+	// non-empty. It is always empty on a backend that does not serve cfunc
+	// functions.
+	BoundFunctions []string `json:"boundFunctions"`
 }

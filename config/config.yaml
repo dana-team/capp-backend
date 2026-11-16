@@ -228,6 +228,25 @@ resources:
   #       image: "jvm-env:1.32.0"
   #       buildImage: "jvm-builder:1.32.0"
   #       keepArchive: true               # the JVM runtime loads the .jar as one file
+  #   onboardNamespaces: false            # true: the first pool of a namespace sets fission.io/enabled=true on it (Fission tenancy.mode=dynamic)
+  #   functions:                          # code from a git repository that runs in a pool, with http and cron triggers
+  #     enabled: false
+  #     git:
+  #       baseURL: "https://gitlab.example.com"   # the only server code is cloned from; a function's source.url must start with it
+  #       token: ""                       # inject via CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN; needs read access to the repositories
+  #       username: "oauth2"              # sent with the token; GitLab and GitHub accept any non-empty value
+  #     maxTriggers: 10                   # highest number of triggers of one function
+  #     maxTimeoutSeconds: 300            # highest timeoutSeconds of a function
+  #     defaultConcurrency: 500           # pods one function may use at one time when a request names none (Fission's own default)
+  #     maxConcurrency: 500               # highest concurrency a request may ask for
+  #     minCronIntervalSeconds: 60        # shortest interval between two runs of a cron trigger
+  #
+  # A cluster entry can name its Fission router with cfuncRouterURL. The
+  # function test route calls it, and a function response then shows the full
+  # URL of each http trigger:
+  #   clusters:
+  #     - name: prod
+  #       cfuncRouterURL: "https://fn.example.com"
 
   # Per-Capp metrics served at .../capps/{name}/metrics[/{metric}]. Callers
   # pick a metric by name and never send PromQL. Set either query or series

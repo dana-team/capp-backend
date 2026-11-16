@@ -40,4 +40,9 @@ const (
 	// permissions the backend SA was granted. Use this for administrative listing
 	// operations (e.g. namespace discovery) where user-scoped RBAC is too restrictive.
 	AdminK8sClientKey contextKey = "adminK8sClient"
+
+	// PodLogsKey is the gin.Context key for the cluster.PodLogs function that
+	// reads pod logs with the caller's credential. It is set in Kubernetes
+	// authorization mode only.
+	PodLogsKey contextKey = "podLogs"
 )

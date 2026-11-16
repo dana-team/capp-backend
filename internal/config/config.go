@@ -282,6 +282,11 @@ type ClusterConfig struct {
 	// Defaults to Name if unset. Must be a valid filesystem path segment
 	// (no slashes or spaces).
 	GitOpsPath string `mapstructure:"gitOpsPath"`
+
+	// CfuncRouterURL is the base URL of this cluster's Fission router. The
+	// cfunc function test route calls it, and a function response shows the
+	// full URL of each http trigger with it. Empty turns both off.
+	CfuncRouterURL string `mapstructure:"cfuncRouterURL"`
 }
 
 // ResourceToggle is a simple feature flag for a resource handler.
@@ -345,6 +350,62 @@ type CfuncConfig struct {
 	// Flavors maps a flavor name to its images. Viper lowercases the names,
 	// and a name must not contain a dot.
 	Flavors map[string]CfuncFlavor `mapstructure:"flavors"`
+
+	// OnboardNamespaces makes the first pool of a namespace set the
+	// fission.io/enabled=true label on that namespace. It has an effect only
+	// when Fission runs with tenancy.mode=dynamic. Default: false.
+	OnboardNamespaces bool `mapstructure:"onboardNamespaces"`
+
+	// Functions configures the cfunc function endpoints.
+	Functions CfuncFunctionsConfig `mapstructure:"functions"`
+}
+
+// CfuncFunctionsConfig controls cfunc functions. A function takes its code
+// from a git repository that the backend clones.
+type CfuncFunctionsConfig struct {
+	// Enabled toggles the function endpoints. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Git is the one git server that function code is cloned from.
+	Git CfuncGitConfig `mapstructure:"git"`
+
+	// MaxTriggers is the highest number of triggers of one function.
+	// Default: 10.
+	MaxTriggers int `mapstructure:"maxTriggers"`
+
+	// MaxTimeoutSeconds is the highest timeoutSeconds a request may ask for.
+	// Default: 300.
+	MaxTimeoutSeconds int `mapstructure:"maxTimeoutSeconds"`
+
+	// DefaultConcurrency is written when a request names no concurrency. It
+	// is Fission's own default, 500. A low value looks safer but is a trap:
+	// where Fission does not reuse a function's pod, every request takes a
+	// new one, and a low limit answers 429 after a few requests. Default: 500.
+	DefaultConcurrency int `mapstructure:"defaultConcurrency"`
+
+	// MaxConcurrency is the highest concurrency a request may ask for. Each
+	// pod reserves the resources of the pool's size. Default: 500.
+	MaxConcurrency int `mapstructure:"maxConcurrency"`
+
+	// MinCronIntervalSeconds is the shortest interval between two runs of a
+	// cron trigger. Default: 60.
+	MinCronIntervalSeconds int `mapstructure:"minCronIntervalSeconds"`
+}
+
+// CfuncGitConfig names the git server of function code and its credential.
+type CfuncGitConfig struct {
+	// BaseURL is an https URL that every function repository URL must start
+	// with, for example "https://gitlab.example.com". The token is sent to
+	// this host only.
+	BaseURL string `mapstructure:"baseURL"`
+
+	// Token is the access token for BaseURL. Inject via
+	// CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN.
+	Token string `mapstructure:"token"`
+
+	// Username is sent with the token. GitLab and GitHub accept any
+	// non-empty value. Default: "oauth2".
+	Username string `mapstructure:"username"`
 }
 
 // CfuncFlavor is the set of images and build settings behind one flavor.
@@ -783,6 +844,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("resources.cfunc.registryPrefix", "ghcr.io/fission")
 	v.SetDefault("resources.cfunc.allowCustomBuild", false)
 	v.SetDefault("resources.cfunc.maxPoolSize", 10)
+	v.SetDefault("resources.cfunc.onboardNamespaces", false)
+	v.SetDefault("resources.cfunc.functions.enabled", false)
+	v.SetDefault("resources.cfunc.functions.git.baseURL", "")
+	v.SetDefault("resources.cfunc.functions.git.token", "")
+	v.SetDefault("resources.cfunc.functions.git.username", "oauth2")
+	v.SetDefault("resources.cfunc.functions.maxTriggers", 10)
+	v.SetDefault("resources.cfunc.functions.maxTimeoutSeconds", 300)
+	v.SetDefault("resources.cfunc.functions.defaultConcurrency", 500)
+	v.SetDefault("resources.cfunc.functions.maxConcurrency", 500)
+	v.SetDefault("resources.cfunc.functions.minCronIntervalSeconds", 60)
 
 	// Capp t-shirt sizes
 	v.SetDefault("cappSizes.small.requests.cpu", "250m")
