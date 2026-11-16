@@ -161,6 +161,21 @@ func TestToK8s_ExistingPreservedOnUpdate(t *testing.T) {
 
 // -- FromK8s tests --
 
+func TestEnvVars_UnrepresentableSourceSurvivesAnUpdate(t *testing.T) {
+	podIP := corev1.EnvVar{Name: "POD_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}}
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}, podIP}
+
+	got := FromK8s(existing, minimalSizes())
+	assert.Equal(t, []EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}, got.Env, "a fieldRef cannot be expressed, so it is left out rather than sent as an empty valueFrom")
+
+	req := minimalRequest()
+	req.Env = got.Env
+	updated, err := ToK8s(req, existing, "default", minimalSizes())
+	require.NoError(t, err, "a GET response must be accepted back")
+	assert.Equal(t, []corev1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}, podIP}, updated.Spec.ConfigurationSpec.Template.Spec.Containers[0].Env)
+}
+
 func TestFromK8s_MinimalCapp(t *testing.T) {
 	capp := minimalCapp()
 	resp := FromK8s(capp, config.CappSizes{})

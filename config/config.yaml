@@ -194,6 +194,41 @@ resources:
   capprevisions:
     enabled: true
 
+  # cfunc (function as a service, on Fission). A client creates a pool of warm
+  # pods from a flavor and a size; the images and resources behind them are set
+  # here and never reach a client. GET /api/v1/cfunc/flavors and
+  # /api/v1/cfunc/sizes list the names. Requires Fission on the managed clusters.
+  # cfunc:
+  #   enabled: false
+  #   registryPrefix: "ghcr.io/fission"   # or CAPP_RESOURCES_CFUNC_REGISTRYPREFIX; joined as <prefix>/<image>
+  #   imagePullSecret: ""                 # Secret name; must exist in each namespace that holds a pool
+  #   allowCustomBuild: false             # true lets a request's "advanced" block name its own build image and command
+  #   maxPoolSize: 10                     # highest poolSize a request may ask for
+  #   defaultSize: small                  # size used when a request names none
+  #   sizes:                              # size name (no dot) → resources of each warm pod
+  #     small:
+  #       requests: {cpu: "100m", memory: "128Mi"}
+  #       limits:   {cpu: "200m", memory: "256Mi"}
+  #     large:
+  #       requests: {cpu: "500m", memory: "512Mi"}
+  #       limits:   {cpu: "1", memory: "1Gi"}
+  #   flavors:                            # flavor name (lowercase, no dot) → images, relative to registryPrefix
+  #     python:
+  #       image: "python-env:1.35.0"
+  #       # The three build settings are the flavor's defaults. With
+  #       # allowCustomBuild, a client can override buildImage and buildCommand
+  #       # for one pool with the request's "advanced" block; builderEnv is
+  #       # set only here.
+  #       buildImage: "python-builder:1.35.0"
+  #       buildCommand: ""                # empty uses "build", the script of the official build images
+  #       builderEnv:                     # set on the builder container; stored in a ConfigMap, so no tokens
+  #         - name: PIP_INDEX_URL
+  #           value: "https://registry.example.internal/pypi/simple"
+  #     java:
+  #       image: "jvm-env:1.32.0"
+  #       buildImage: "jvm-builder:1.32.0"
+  #       keepArchive: true               # the JVM runtime loads the .jar as one file
+
   # Per-Capp metrics served at .../capps/{name}/metrics[/{metric}]. Callers
   # pick a metric by name and never send PromQL. Set either query or series
   # (at most 10) on each metric. Every query must contain

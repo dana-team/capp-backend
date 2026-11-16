@@ -25,6 +25,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 )
 
 // Error code constants. These are the values that appear in the "code" field
@@ -232,6 +233,8 @@ func Respond(c *gin.Context, err error) {
 // for server-side logging. Returns nil if err is not a Kubernetes API error.
 func translateK8sError(err error) *APIError {
 	switch {
+	case meta.IsNoMatchError(err):
+		return &APIError{Code: CodeNotSupported, Message: "the cluster does not serve this resource type", Status: http.StatusNotImplemented, cause: err}
 	case k8serrors.IsNotFound(err):
 		return &APIError{Code: CodeNotFound, Message: k8sSafeMessage(err, "resource not found"), Status: http.StatusNotFound, cause: err}
 	case k8serrors.IsAlreadyExists(err):

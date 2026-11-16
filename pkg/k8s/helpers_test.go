@@ -20,6 +20,7 @@ func TestBuildScheme_Success(t *testing.T) {
 
 	assert.True(t, s.IsGroupRegistered(""), "core API group should be registered")
 	assert.True(t, s.IsGroupRegistered("rcs.dana.io"), "Capp CRD group should be registered")
+	assert.True(t, s.IsGroupRegistered("fission.io"), "Fission CRD group should be registered")
 }
 
 // -- IsOpenShift tests --

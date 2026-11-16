@@ -10,6 +10,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
+	"github.com/dana-team/capp-backend/internal/resources/namespaced/containerspec"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -79,11 +80,11 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	container.Name = req.ContainerName
 	container.Image = req.Image
 
-	env, err := envVarsToK8s(req.Env)
+	env, err := containerspec.EnvVarsToK8s(req.Env)
 	if err != nil {
 		return nil, err
 	}
-	container.Env = env
+	container.Env = containerspec.MergeEnvVars(env, container.Env)
 
 	container.VolumeMounts = nil
 	capp.Spec.ConfigurationSpec.Template.Spec.Volumes = nil
@@ -225,89 +226,19 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 			return nil, fmt.Errorf("invalid size %q: must be one of small, medium, or large", req.Size)
 		}
 
-		resources, err := parseResourceQuantities(requests, limits)
+		resources, err := containerspec.ParseResourceQuantities(requests, limits)
 		if err != nil {
 			return nil, fmt.Errorf("size %q: %w", req.Size, err)
 		}
 		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = resources
 	} else if req.CustomResources != nil {
-		resources, err := parseCustomResources(req.CustomResources)
+		resources, err := containerspec.ParseCustomResources(req.CustomResources)
 		if err != nil {
 			return nil, fmt.Errorf("customResources: %w", err)
 		}
 		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Resources = resources
 	}
 	return capp, nil
-}
-
-// parseResourceQuantities parses config-level quantities into a K8s ResourceRequirements.
-func parseResourceQuantities(requests, limits config.ResourceQuantities) (corev1.ResourceRequirements, error) {
-	reqCPU, err := resource.ParseQuantity(requests.CPU)
-	if err != nil {
-		return corev1.ResourceRequirements{}, fmt.Errorf("invalid requests.cpu %q: %w", requests.CPU, err)
-	}
-	reqMem, err := resource.ParseQuantity(requests.Memory)
-	if err != nil {
-		return corev1.ResourceRequirements{}, fmt.Errorf("invalid requests.memory %q: %w", requests.Memory, err)
-	}
-	limCPU, err := resource.ParseQuantity(limits.CPU)
-	if err != nil {
-		return corev1.ResourceRequirements{}, fmt.Errorf("invalid limits.cpu %q: %w", limits.CPU, err)
-	}
-	limMem, err := resource.ParseQuantity(limits.Memory)
-	if err != nil {
-		return corev1.ResourceRequirements{}, fmt.Errorf("invalid limits.memory %q: %w", limits.Memory, err)
-	}
-	return corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:    reqCPU,
-			corev1.ResourceMemory: reqMem,
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    limCPU,
-			corev1.ResourceMemory: limMem,
-		},
-	}, nil
-}
-
-// parseResourceList parses CPU and memory quantities into a ResourceList.
-func parseResourceList(cpu, memory, label string) (corev1.ResourceList, error) {
-	list := make(corev1.ResourceList)
-	if cpu != "" {
-		q, err := resource.ParseQuantity(cpu)
-		if err != nil {
-			return nil, fmt.Errorf("invalid %s.cpu %q: %w", label, cpu, err)
-		}
-		list[corev1.ResourceCPU] = q
-	}
-	if memory != "" {
-		q, err := resource.ParseQuantity(memory)
-		if err != nil {
-			return nil, fmt.Errorf("invalid %s.memory %q: %w", label, memory, err)
-		}
-		list[corev1.ResourceMemory] = q
-	}
-	return list, nil
-}
-
-// parseCustomResources converts a user-supplied ResourceSpec into K8s ResourceRequirements.
-func parseCustomResources(spec *ResourceSpec) (corev1.ResourceRequirements, error) {
-	var res corev1.ResourceRequirements
-	if spec.Requests != nil {
-		list, err := parseResourceList(spec.Requests.CPU, spec.Requests.Memory, "requests")
-		if err != nil {
-			return res, err
-		}
-		res.Requests = list
-	}
-	if spec.Limits != nil {
-		list, err := parseResourceList(spec.Limits.CPU, spec.Limits.Memory, "limits")
-		if err != nil {
-			return res, err
-		}
-		res.Limits = list
-	}
-	return res, nil
 }
 
 // eventSourcesSpecToK8s converts the DTO EventSourcesSpec into the K8s type.
@@ -465,33 +396,6 @@ func sizeFromResources(res corev1.ResourceRequirements, sizes config.CappSizes) 
 	return ""
 }
 
-// envVarsFromK8s converts K8s EnvVars into DTO EnvVars.
-func envVarsFromK8s(envs []corev1.EnvVar) []EnvVar {
-	result := make([]EnvVar, 0, len(envs))
-	for _, e := range envs {
-		ev := EnvVar{Name: e.Name}
-		if e.ValueFrom != nil {
-			ev.ValueFrom = envVarSourceFromK8s(e.ValueFrom)
-		} else {
-			ev.Value = e.Value
-		}
-		result = append(result, ev)
-	}
-	return result
-}
-
-// envVarSourceFromK8s converts a K8s EnvVarSource into a DTO EnvVarSource.
-func envVarSourceFromK8s(src *corev1.EnvVarSource) *EnvVarSource {
-	out := &EnvVarSource{}
-	if src.SecretKeyRef != nil {
-		out.SecretKeyRef = &KeySelector{Name: src.SecretKeyRef.Name, Key: src.SecretKeyRef.Key}
-	}
-	if src.ConfigMapKeyRef != nil {
-		out.ConfigMapKeyRef = &KeySelector{Name: src.ConfigMapKeyRef.Name, Key: src.ConfigMapKeyRef.Key}
-	}
-	return out
-}
-
 // volumeMountsFromK8s converts K8s VolumeMounts into DTO VolumeMounts.
 func volumeMountsFromK8s(mounts []corev1.VolumeMount) []VolumeMount {
 	result := make([]VolumeMount, 0, len(mounts))
@@ -499,36 +403,6 @@ func volumeMountsFromK8s(mounts []corev1.VolumeMount) []VolumeMount {
 		result = append(result, VolumeMount{Name: vm.Name, MountPath: vm.MountPath})
 	}
 	return result
-}
-
-// resourceSpecFromK8s converts K8s ResourceRequirements into a DTO ResourceSpec.
-// Returns nil when the container has no resources set.
-func resourceSpecFromK8s(res corev1.ResourceRequirements) *ResourceSpec {
-	if len(res.Requests) == 0 && len(res.Limits) == 0 {
-		return nil
-	}
-	spec := &ResourceSpec{}
-	if len(res.Requests) > 0 {
-		rq := &ResourceQuantities{}
-		if cpu, ok := res.Requests[corev1.ResourceCPU]; ok {
-			rq.CPU = cpu.String()
-		}
-		if mem, ok := res.Requests[corev1.ResourceMemory]; ok {
-			rq.Memory = mem.String()
-		}
-		spec.Requests = rq
-	}
-	if len(res.Limits) > 0 {
-		lq := &ResourceQuantities{}
-		if cpu, ok := res.Limits[corev1.ResourceCPU]; ok {
-			lq.CPU = cpu.String()
-		}
-		if mem, ok := res.Limits[corev1.ResourceMemory]; ok {
-			lq.Memory = mem.String()
-		}
-		spec.Limits = lq
-	}
-	return spec
 }
 
 // FromK8s converts a live rcs.dana.io/v1alpha1.Capp into a CappResponse DTO.
@@ -575,8 +449,8 @@ func BareFromK8s(meta metav1.ObjectMeta, spec cappv1alpha1.CappSpec, sizes confi
 		if s := sizeFromResources(c.Resources, sizes); s != "" {
 			resp.Size = CappSize(s)
 		}
-		resp.Resources = resourceSpecFromK8s(c.Resources)
-		resp.Env = envVarsFromK8s(c.Env)
+		resp.Resources = containerspec.ResourceSpecFromK8s(c.Resources)
+		resp.Env = containerspec.EnvVarsFromK8s(c.Env)
 		resp.VolumeMounts = volumeMountsFromK8s(c.VolumeMounts)
 	}
 
@@ -767,36 +641,4 @@ func imagePullSecretsToK8s(names []string) ([]corev1.LocalObjectReference, error
 		refs = append(refs, corev1.LocalObjectReference{Name: name})
 	}
 	return refs, nil
-}
-
-// envVarsToK8s converts API env vars to container env vars. A valueFrom must
-// set exactly one of secretKeyRef or configMapKeyRef.
-func envVarsToK8s(vars []EnvVar) ([]corev1.EnvVar, error) {
-	var out []corev1.EnvVar
-	for _, e := range vars {
-		ev := corev1.EnvVar{Name: e.Name}
-		if e.ValueFrom != nil {
-			bothSet := e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.ConfigMapKeyRef != nil
-			neitherSet := e.ValueFrom.SecretKeyRef == nil && e.ValueFrom.ConfigMapKeyRef == nil
-			if bothSet || neitherSet {
-				return nil, fmt.Errorf("env var %q: valueFrom must set exactly one of secretKeyRef or configMapKeyRef", e.Name)
-			}
-			ev.ValueFrom = &corev1.EnvVarSource{}
-			if e.ValueFrom.SecretKeyRef != nil {
-				ev.ValueFrom.SecretKeyRef = &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.SecretKeyRef.Name},
-					Key:                  e.ValueFrom.SecretKeyRef.Key,
-				}
-			} else {
-				ev.ValueFrom.ConfigMapKeyRef = &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.ConfigMapKeyRef.Name},
-					Key:                  e.ValueFrom.ConfigMapKeyRef.Key,
-				}
-			}
-		} else {
-			ev.Value = e.Value
-		}
-		out = append(out, ev)
-	}
-	return out, nil
 }

@@ -1,9 +1,12 @@
 // Package capps holds the Capp request/response DTOs of the REST API.
 //
-// It imports nothing, so clients (cappctl, capp-mcp) can share these types
-// without pulling in the server handler and its Kubernetes/Gin dependencies.
+// It imports only the shared DTOs in pkg/api/common, so clients (cappctl,
+// capp-mcp) can share these types without pulling in the server handler and
+// its Kubernetes/Gin dependencies.
 // The handler package internal/resources/namespaced/capps aliases them.
 package capps
+
+import "github.com/dana-team/capp-backend/pkg/api/common"
 
 // ── Request / Response DTOs ───────────────────────────────────────────────────
 // These types are the public API contract between the backend and the frontend.
@@ -16,36 +19,15 @@ const CappSizeSmall CappSize = "small"
 const CappSizeMedium CappSize = "medium"
 const CappSizeLarge CappSize = "large"
 
-// ResourceQuantities holds CPU and memory as Kubernetes quantity strings.
-type ResourceQuantities struct {
-	CPU    string `json:"cpu,omitempty"`
-	Memory string `json:"memory,omitempty"`
-}
-
-// ResourceSpec describes the compute resources requested/limited for a container.
-type ResourceSpec struct {
-	Requests *ResourceQuantities `json:"requests,omitempty"`
-	Limits   *ResourceQuantities `json:"limits,omitempty"`
-}
-
-// EnvVarSource selects a value from a Secret or ConfigMap key.
-type EnvVarSource struct {
-	SecretKeyRef    *KeySelector `json:"secretKeyRef,omitempty"`
-	ConfigMapKeyRef *KeySelector `json:"configMapKeyRef,omitempty"`
-}
-
-// KeySelector identifies a key within a named Secret or ConfigMap.
-type KeySelector struct {
-	Name string `json:"name" binding:"required"`
-	Key  string `json:"key"  binding:"required"`
-}
-
-// EnvVar represents a single container environment variable.
-type EnvVar struct {
-	Name      string        `json:"name"      binding:"required"`
-	Value     string        `json:"value,omitempty"`
-	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
-}
+// The container-level DTOs are shared with other resources; these aliases
+// keep the names this package has always exported.
+type (
+	ResourceQuantities = common.ResourceQuantities
+	ResourceSpec       = common.ResourceSpec
+	EnvVarSource       = common.EnvVarSource
+	KeySelector        = common.KeySelector
+	EnvVar             = common.EnvVar
+)
 
 // VolumeMount maps a volume into a container at a path.
 type VolumeMount struct {

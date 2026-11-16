@@ -12,6 +12,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
+	"github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/pools"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
 	"github.com/dana-team/capp-backend/internal/testutil"
@@ -28,6 +29,7 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 				cfg.Auth.Mode = mode
 				cfg.Resources.Namespaces.Enabled = true
 				cfg.Metrics.Enabled, cfg.Metrics.Path = optional, "/monitoring/custom"
+				cfg.Resources.Cfunc.Enabled = optional
 				registry := policyRegistry(t, optional)
 				srv, err := New(cfg, "dev", &testutil.MockAuthManager{}, &testutil.MockClusterManager{}, registry, zap.NewNop())
 				if err != nil {
@@ -61,11 +63,14 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 }
 
 func policyRegistry(t testing.TB, optional bool) *resources.Registry {
-	r := resources.NewRegistry(map[string]bool{"configmaps": optional, "secrets": optional})
+	r := resources.NewRegistry(map[string]bool{"configmaps": optional, "secrets": optional, "cfuncpools": optional})
 	r.Register(newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}))
 	r.Register(revisions.New(false, nil, config.CappSizes{}))
 	r.Register(configmaps.New())
 	r.Register(secrets.New())
+	poolHandler, err := pools.New(config.CfuncConfig{})
+	require.NoError(t, err)
+	r.Register(poolHandler)
 	return r
 }
 

@@ -160,6 +160,12 @@ jobs:
             --set secret.jwtSecretKey=test-secret \
             > /dev/null
 
+      - name: Template chart (cfunc enabled)
+        run: |
+          helm template capp-backend helm/capp-backend \
+            -f helm/capp-backend/ci/cfunc-values.yaml \
+            > /dev/null
+
       - name: Template chart (observability enabled)
         run: |
           helm template capp-backend helm/capp-backend \
