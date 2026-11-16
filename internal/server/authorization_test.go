@@ -96,7 +96,7 @@ func TestNewBackendPolicy(t *testing.T) {
 	authMgr := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
 		return auth.ClusterCredential{ImpersonateUser: caller}, nil
 	}}
-	srv, err := New(cfg, "dev", authMgr, mgr, policyRegistry(true), zap.NewNop())
+	srv, err := New(cfg, "dev", authMgr, mgr, policyRegistry(t, true), zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}

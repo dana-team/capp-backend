@@ -129,6 +129,15 @@ func TestNewPrometheusQueryFailed(t *testing.T) {
 	assert.NotContains(t, e.Message, "vm.monitoring.svc", "cause must not leak to clients")
 }
 
+func TestNewPrometheusQueryTimeout(t *testing.T) {
+	cause := errors.New("context deadline exceeded")
+	e := NewPrometheusQueryTimeout(cause)
+	assert.Equal(t, CodePrometheusTimeout, e.Code)
+	assert.Equal(t, http.StatusGatewayTimeout, e.Status)
+	require.ErrorIs(t, e, cause)
+	assert.NotEqual(t, CodePrometheusQueryFailed, e.Code, "a timeout must not be reported as the same code as a hard failure")
+}
+
 func TestAPIError_ErrorString(t *testing.T) {
 	e := NewNotFound("capp", "foo")
 	assert.Contains(t, e.Error(), CodeNotFound)

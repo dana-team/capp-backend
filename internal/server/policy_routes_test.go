@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/authorization"
+	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources"
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/benchmarks"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
@@ -28,7 +28,7 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 				cfg.Auth.Mode = mode
 				cfg.Resources.Namespaces.Enabled = true
 				cfg.Metrics.Enabled, cfg.Metrics.Path = optional, "/monitoring/custom"
-				registry := policyRegistry(optional)
+				registry := policyRegistry(t, optional)
 				srv, err := New(cfg, "dev", &testutil.MockAuthManager{}, &testutil.MockClusterManager{}, registry, zap.NewNop())
 				if err != nil {
 					t.Fatal(err)
@@ -60,12 +60,20 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 	}
 }
 
-func policyRegistry(optional bool) *resources.Registry {
-	r := resources.NewRegistry(map[string]bool{"benchmarks": optional, "configmaps": optional, "secrets": optional})
-	r.Register(capps.New(false, nil, nil, config.CappSizes{}))
+func policyRegistry(t testing.TB, optional bool) *resources.Registry {
+	r := resources.NewRegistry(map[string]bool{"configmaps": optional, "secrets": optional})
+	r.Register(newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}))
 	r.Register(revisions.New(false, nil, config.CappSizes{}))
 	r.Register(configmaps.New())
 	r.Register(secrets.New())
-	r.Register(benchmarks.New(config.BenchmarkConfig{}, zap.NewNop()))
 	return r
+}
+
+// newCappsHandler builds a capps handler for policy tests, failing the test
+// when the observability config cannot produce a Prometheus client.
+func newCappsHandler(t testing.TB, gitopsEnabled bool, git capps.GitOpsSyncer, mgr cluster.ClusterManager, observability config.ObservabilityConfig) *capps.Handler {
+	t.Helper()
+	h, err := capps.New(gitopsEnabled, git, mgr, config.CappSizes{}, observability)
+	require.NoError(t, err)
+	return h
 }

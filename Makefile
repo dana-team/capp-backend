@@ -37,12 +37,18 @@ tidy: ## Tidy go module dependencies
 
 ##@ Build
 
+# SCALAR_VERSION pins the embedded Scalar bundle to a reviewed @scalar/api-reference
+# release. Bump it deliberately (in its own PR) rather than re-running fetch-ui against
+# an unpinned "latest" URL, which would otherwise ship whatever third-party build is
+# newest on jsDelivr at download time, unreviewed.
+SCALAR_VERSION := 1.78.0
+
 .PHONY: fetch-ui
 fetch-ui: ## Download the Scalar API reference JS bundle for disconnected (air-gapped) deployments
 	@mkdir -p internal/server/ui
-	@echo "Downloading Scalar API reference bundle..."
+	@echo "Downloading Scalar API reference bundle v$(SCALAR_VERSION)..."
 	curl -fsSL \
-	  "https://cdn.jsdelivr.net/npm/@scalar/api-reference" \
+	  "https://cdn.jsdelivr.net/npm/@scalar/api-reference@$(SCALAR_VERSION)" \
 	  -o internal/server/ui/scalar.min.js
 	@echo "Saved to internal/server/ui/scalar.min.js ($(shell wc -c < internal/server/ui/scalar.min.js) bytes)"
 

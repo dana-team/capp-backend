@@ -59,9 +59,8 @@ func TestRoutesLookup(t *testing.T) {
 		{http.MethodPut, policyNamespaceRoute, policy.Administration, true},
 		{http.MethodPatch, policyNamespaceRoute, policy.Administration, true},
 		{http.MethodDelete, policyNamespaceRoute, policy.Administration, true},
-		{http.MethodGet, policyNamespaceRoute + "/capps/:name/benchmark", policy.Denied, true},
-		{http.MethodPost, policyNamespaceRoute + "/capps/:name/benchmark", policy.Denied, true},
-		{http.MethodGet, policyNamespaceRoute + "/capps/:name/metrics/query", policy.Denied, true},
+		{http.MethodGet, policyNamespaceRoute + "/capps/:name/metrics", policy.Denied, true},
+		{http.MethodGet, policyNamespaceRoute + "/capps/:name/metrics/:metric", policy.Denied, true},
 		{http.MethodGet, "/api/v1/clusters/prod/namespaces/team-a/secrets", policy.Denied, false},
 		{http.MethodGet, "/unknown", policy.Denied, false},
 	} {

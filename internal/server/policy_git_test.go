@@ -9,7 +9,6 @@ import (
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
-	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/dana-team/capp-backend/pkg/k8s"
@@ -102,7 +101,7 @@ func TestBackendPolicyGitOperations(t *testing.T) {
 				r := policyRouter(t, policyIdentity(user), mgr, policy.Target{Store: store, ExecutionClient: execution}, zap.NewNop())
 				group := r.Group("/api/v1/clusters/:cluster")
 				enabled := scenario != "git disabled"
-				capps.New(enabled, git, mgr, config.CappSizes{}).RegisterRoutes(group)
+				newCappsHandler(t, enabled, git, mgr, config.ObservabilityConfig{}).RegisterRoutes(group)
 				revisions.New(enabled, git, config.CappSizes{}).RegisterRoutes(group)
 				w := policyRequest(r, op.method, "/api/v1/clusters/c1/namespaces/team-a/capps/app"+op.suffix, op.body)
 				status, wantWrites, wantGit := op.status, 1, 1
