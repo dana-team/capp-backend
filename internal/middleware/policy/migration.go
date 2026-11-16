@@ -38,19 +38,26 @@ func PrepareMigration(c *gin.Context, clusterName, namespace string) (client.Cli
 	return source, destination, true
 }
 
-func migrationClients(mgr cluster.ClusterManager, targets map[string]Target, cred auth.ClusterCredential, roles []string, source policyDecision, clusterName, namespace string, logger *zap.Logger) (client.Client, client.Client, error) {
+func migrationClients(mgr cluster.ClusterManager, targets map[string]Target, roles []string, source policyDecision, clusterName, namespace string, logger *zap.Logger) (client.Client, client.Client, error) {
 	destination := source
 	destination.cluster, destination.namespace = clusterName, namespace
 	destination.state = authorization.NamespaceState{}
+	destination.identity = auth.ClusterCredential{}
+	destination.operator = false
 	outcome := auditOutcomeDenied
-	defer func() { auditPolicy(logger, cred.ImpersonateUser, destination, outcome) }()
+	defer func() { auditPolicy(logger, destination.identity.ImpersonateUser, destination, outcome) }()
 	// Until destination authorization succeeds, conceal existence and readiness
 	// behind the same denial, including when policy observations are unavailable.
 	target := targets[clusterName]
 	if target.Store == nil {
 		return nil, nil, authorization.ErrDenied
 	}
-	var err error
+	cred, err := source.authenticate(clusterName)
+	if err != nil {
+		return nil, nil, authorization.ErrDenied
+	}
+	destination.identity = cred
+	destination.operator = target.isOperator(cred.ImpersonateUser, cred.ImpersonateGroups)
 	destination.state, err = target.Store.Authorize(namespace, cred.ImpersonateUser, cred.ImpersonateGroups, roles)
 	if err != nil {
 		return nil, nil, authorization.ErrDenied

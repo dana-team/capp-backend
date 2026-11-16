@@ -30,12 +30,16 @@ type Server struct {
 	httpServer    *http.Server
 	logger        *zap.Logger
 	authorization *authorizationRuntime
+	authManager   auth.AuthManager
 }
 
 // New builds the Gin engine and starts authorization observation when enabled.
-// The backend version is compared with known client versions by middleware.ClientVersion.
 // Namespace handlers are assembled here; registry supplies the other resources.
 // Call Stop to release workers, even when Start has not been called.
+// version is the backend build version; it is compared with the version of each
+// known client (see middleware.ClientVersion).
+// A nil authMgr constructs the configured provider using the authorization
+// runtime's clients. Use StartAuthCleanup for providers with background cleanup.
 func New(
 	cfg *config.Config,
 	version string,
@@ -61,6 +65,22 @@ func New(
 			return nil, err
 		}
 	}
+	if authMgr == nil {
+		var reviewers map[string]auth.TokenReviewer
+		if authorization != nil {
+			reviewers = authorization.reviewers
+		}
+		var err error
+		authMgr, err = auth.New(cfg, auth.Dependencies{TargetReviewers: reviewers})
+		if err != nil {
+			if authorization != nil {
+				for _, reconciler := range authorization.reconcilers {
+					reconciler.Close()
+				}
+			}
+			return nil, err
+		}
+	}
 
 	// In production, suppress Gin's default debug output — our logging
 	// middleware handles structured request logging.
@@ -83,7 +103,7 @@ func New(
 	}
 
 	if authorization != nil {
-		engine.Use(policy.New(authMgr, clusterMgr, rules, authorization.targets, logger))
+		engine.Use(policy.New(authMgr, cfg.Auth.Mode, clusterMgr, rules, authorization.targets, logger))
 	}
 
 	// ── Observability endpoints (no auth required) ────────────────────────────
@@ -160,7 +180,16 @@ func New(
 		},
 		logger:        logger,
 		authorization: authorization,
+		authManager:   authMgr,
 	}, nil
+}
+
+// StartAuthCleanup runs optional provider maintenance until ctx is cancelled.
+// The caller owns its lifetime alongside the cluster health checks.
+func (s *Server) StartAuthCleanup(ctx context.Context) {
+	if cleanup, ok := s.authManager.(interface{ StartCleanup(context.Context) }); ok {
+		cleanup.StartCleanup(ctx)
+	}
 }
 
 // Start begins listening for HTTP requests. It blocks until the server is
