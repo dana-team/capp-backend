@@ -31,13 +31,31 @@ var DocsHTML = []byte(`<!doctype html>
     </style>
   </head>
   <body>
-    <!-- Scalar reads the data-url attribute and renders the spec. -->
-    <script
-      id="api-reference"
-      data-url="/openapi.yaml"
-      data-configuration='{"theme":"purple"}'></script>
-    <!-- Served from the embedded binary — no CDN required. -->
-    <script src="/ui/scalar.js"></script>
+    <!-- Scalar reads data-url / data-configuration from this element on load. -->
+    <script id="api-reference"></script>
+    <!--
+      The docs are served at <server-url>/docs, where <server-url> may carry a
+      path prefix (e.g. behind an ingress). Derive <server-url> from the page
+      URL at runtime and use it for the spec, the bundle, and "Send request",
+      instead of the spec's localhost server.
+    -->
+    <script>
+      (function () {
+        var base = window.location.origin +
+          window.location.pathname.replace(/\/docs\/?$/, "").replace(/\/$/, "");
+        var ref = document.getElementById("api-reference");
+        ref.dataset.url = base + "/openapi.yaml";
+        ref.dataset.configuration = JSON.stringify({
+          theme: "purple",
+          servers: [{ url: base, description: "This server" }],
+        });
+        // Load the bundle only after the config is set; it is served from the
+        // embedded binary, so no CDN is required.
+        var bundle = document.createElement("script");
+        bundle.src = base + "/ui/scalar.js";
+        document.body.appendChild(bundle);
+      })();
+    </script>
   </body>
 </html>
 `)
