@@ -308,6 +308,14 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Get a Secret |
 | `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Update a Secret |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/secrets/:name` | ✓ | Delete a Secret |
+| `GET` | `/api/v1/cfunc/flavors` | — | List the configured cfunc flavor names (only when `resources.cfunc.enabled`) |
+| `GET` | `/api/v1/cfunc/sizes` | — | List the configured cfunc size names (only when `resources.cfunc.enabled`) |
+| `GET` | `/api/v1/clusters/:cluster/cfunc/pools` | ✓ | List all cfunc pools across namespaces |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools` | ✓ | List pools in a namespace |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools` | ✓ | Create a pool from a flavor and a size |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools/:name` | ✓ | Get a pool |
+| `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools/:name` | ✓ | Update a pool |
+| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools/:name` | ✓ | Delete a pool; 409 while Functions in the namespace use it |
 | `GET` | `/healthz` | — | Liveness probe |
 | `GET` | `/readyz` | — | Readiness probe (≥1 healthy cluster; backend-policy also requires its initial policy/namespace sync) |
 | `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
@@ -339,6 +347,59 @@ Notes:
 - **Full replace on update.** `PUT` replaces the list, like `env` and volumes. Omit the field or send `[]` to remove all pull secrets.
 - **Validation.** Names must be valid DNS-1123 subdomains and unique, otherwise the request fails with 400. The backend doesn't check that the Secret exists or has the right type; a missing Secret shows up later as an image pull error on the revision.
 - **Migration and Git sync.** Migrate copies all managed Secrets in the namespace, including pull secrets created through the API. GitOps values files embed the Capp spec, so `imagePullSecrets` is synced too.
+
+### cfunc (function as a service)
+
+Disabled by default; set `resources.cfunc.enabled: true` on a backend whose clusters run [Fission](https://fission.io). A **pool** is a set of warm pods of one language runtime that functions run in. It is stored on the cluster as a Fission `Environment`.
+
+A client never names a runtime image. It sends a **flavor** (the language) and a **size** (the CPU and memory of each warm pod); the backend configuration holds what is behind them:
+
+```yaml
+resources:
+  cfunc:
+    enabled: true
+    registryPrefix: "ghcr.io/fission"   # joined with each image as <prefix>/<image>
+    imagePullSecret: ""                 # Secret name; must exist in each namespace that holds a pool
+    allowCustomBuild: false             # true lets a request name its own build image and command
+    maxPoolSize: 10                     # highest poolSize a request may ask for
+    defaultSize: small
+    sizes:
+      small:
+        requests: {cpu: "100m", memory: "128Mi"}
+        limits:   {cpu: "200m", memory: "256Mi"}
+    flavors:
+      python:
+        image: "python-env:1.35.0"
+        buildImage: "python-builder:1.35.0"
+        builderEnv:
+          - name: PIP_INDEX_URL
+            value: "https://registry.example.internal/pypi/simple"
+      java:
+        image: "jvm-env:1.32.0"
+        buildImage: "jvm-builder:1.32.0"
+        keepArchive: true
+```
+
+The Helm chart ships no sizes and no flavors: set `config.resources.cfunc.sizes`, `flavors` and `defaultSize` yourself. A flavor image must speak the Fission v2 interface; the v1-only `perl-env` starts warm pods but cannot load a function. The server does not start with a flavor image that is not a valid reference, a flavor or size name that contains a dot, a negative quantity, or a build command without a build image.
+
+```bash
+curl "$BACKEND/api/v1/cfunc/flavors"   # {"items":["java","python"],"total":2}
+curl "$BACKEND/api/v1/cfunc/sizes"     # {"items":["small"],"total":1}
+
+curl -X POST "$BACKEND/api/v1/clusters/$CLUSTER/namespaces/$NS/cfunc/pools" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "my-python", "flavor": "python", "size": "small", "poolSize": 3}'
+```
+
+- **`poolSize`** is the number of warm pods kept ready (default 3, at most `maxPoolSize`). Idle cost is `poolSize` × the size's requests. `0` keeps no warm pod.
+- **`env`** is an optional list of environment variables for the warm pods, in the same shape as a Capp's `env`: `{"name": "LOG_LEVEL", "value": "debug"}` or a `valueFrom` with `secretKeyRef` or `configMapKeyRef`. The pods are shared, so every function that runs in the pool sees them. `PUT` replaces the list; omit it to remove all.
+- **`advanced`** is an optional block for the few clients that need it. `resources` lays over the size's CPU and memory: a value it leaves out comes from the size, so a pool always has all four, and no value may exceed the largest configured size. `buildImage` and `buildCommand` replace the flavor's build settings, but only when the backend sets `allowCustomBuild: true`; it is off by default, because anyone who can create a pool could otherwise make the Fission builder run any image and command. `advanced.buildImage` is a full image reference and is used as written.
+- **Full replace on update.** `PUT` takes the same body as `POST` (the name comes from the URL); an omitted field falls back to its default. It also applies the flavor's current configuration, so it is how an existing pool picks up a new image tag.
+- **A response can be sent back.** When a pool has custom resources or build settings, the response carries them in an `advanced` block, so a client that reads a pool, changes one field and sends it back keeps them.
+- **Nothing is stored about the flavor or size.** A read reports them by matching the pool's runtime image and resources against the configuration, so both are empty for an Environment created outside this API, and the flavor is empty once the configuration moves it to another image.
+- **Environments created outside this API.** A `PUT` keeps the fields this API does not expose, such as pod specs, and keeps an environment variable it cannot express (a `fieldRef`), which `GET` leaves out. A stored grace period of 0 becomes 360. An Environment with interface version 1 or 2 can be read and deleted but not updated (409): Fission ignores the pool size below version 3 and does not let the version change.
+- **`DELETE`** returns 409 while a Function in the same namespace uses the pool. The check is partial: a Function in another namespace can name the pool and is not seen, so deleting the pool breaks it.
+- A cluster without the Fission CRDs answers 501 `NOT_SUPPORTED`.
 
 ## cappctl CLI
 
@@ -475,7 +536,8 @@ internal/
 │   └── namespaced/
 │       ├── capps/       # Capp CRUD, sync, and migrate handler
 │       ├── configmaps/  # ConfigMap CRUD handler
-│       └── secrets/     # Secret CRUD handler
+│       ├── secrets/     # Secret CRUD handler
+│       └── cfunc/pools/ # cfunc pool CRUD handler (Fission Environments; flavors and sizes from config)
 └── server/         # Gin engine setup, route registration, auth endpoints
 pkg/k8s/            # Kubernetes scheme builder (registers CRD types)
 helm/

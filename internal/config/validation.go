@@ -15,7 +15,9 @@ import (
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/go-ldap/ldap/v3"
 	"github.com/golang-jwt/jwt/v5"
+	imagename "github.com/google/go-containerregistry/pkg/name"
 	"github.com/prometheus/prometheus/promql/parser"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/api/validation"
 )
 
@@ -58,6 +60,7 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateAuth(&cfg.Auth)...)
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 	errs = append(errs, validateObservability(&cfg.Resources.Observability, len(cfg.Clusters))...)
+	errs = append(errs, validateCfunc(&cfg.Resources.Cfunc)...)
 
 	if cfg.Metrics.Enabled {
 		if err := ValidateMetricsPath(cfg.Metrics.Path); err != nil {
@@ -644,6 +647,158 @@ func (o *ObservabilityConfig) MetricsWithoutClusterLabel() []string {
 		}
 	}
 	return names
+}
+
+// validateCfunc checks that the flavor and size maps are usable when enabled.
+func validateCfunc(e *CfuncConfig) []error {
+	if !e.Enabled {
+		return nil
+	}
+
+	const prefix = "config: resources.cfunc"
+	var errs []error
+
+	if strings.Contains(e.RegistryPrefix, "://") || strings.HasSuffix(e.RegistryPrefix, "/") {
+		errs = append(errs, fmt.Errorf("%s.registryPrefix must be a registry path with no scheme and no trailing slash", prefix))
+	}
+	if e.ImagePullSecret != "" {
+		if msgs := validation.NameIsDNSSubdomain(e.ImagePullSecret, false); len(msgs) > 0 {
+			errs = append(errs, fmt.Errorf("%s.imagePullSecret: %s", prefix, strings.Join(msgs, "; ")))
+		}
+	}
+
+	if e.MaxPoolSize < 1 {
+		errs = append(errs, fmt.Errorf("%s.maxPoolSize must be 1 or greater, got %d", prefix, e.MaxPoolSize))
+	}
+
+	if len(e.Sizes) == 0 {
+		errs = append(errs, fmt.Errorf("%s.sizes must name at least one size when cfunc is enabled", prefix))
+	} else if _, ok := e.Sizes[e.DefaultSize]; !ok {
+		errs = append(errs, fmt.Errorf("%s.defaultSize %q is not one of the configured sizes", prefix, e.DefaultSize))
+	}
+	// A read reports the size by matching the pool's resources, so two
+	// sizes with the same values could not be told apart.
+	sizeByValues := make(map[string]string, len(e.Sizes))
+	for _, name := range e.SizeNames() {
+		values, err := sizeValues(e.Sizes[name])
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s.sizes.%s: %w", prefix, name, err))
+			continue
+		}
+		if other, ok := sizeByValues[values]; ok {
+			errs = append(errs, fmt.Errorf("%s.sizes.%s has the same resources as size %q", prefix, name, other))
+			continue
+		}
+		sizeByValues[values] = name
+	}
+
+	if len(e.Flavors) == 0 {
+		errs = append(errs, fmt.Errorf("%s.flavors must name at least one flavor when cfunc is enabled", prefix))
+	}
+	// A read reports the flavor by matching the pool's runtime image.
+	flavorByImage := make(map[string]string, len(e.Flavors))
+	for _, name := range e.FlavorNames() {
+		flavor := e.Flavors[name]
+		if flavor.Image == "" {
+			errs = append(errs, fmt.Errorf("%s.flavors.%s.image is required", prefix, name))
+			continue
+		}
+		if other, ok := flavorByImage[flavor.Image]; ok {
+			errs = append(errs, fmt.Errorf("%s.flavors.%s has the same image as flavor %q", prefix, name, other))
+		}
+		flavorByImage[flavor.Image] = name
+		if flavor.BuildCommand != "" && flavor.BuildImage == "" {
+			errs = append(errs, fmt.Errorf("%s.flavors.%s.buildCommand needs a buildImage", prefix, name))
+		}
+		for _, field := range []struct{ key, image string }{{"image", flavor.Image}, {"buildImage", flavor.BuildImage}} {
+			if err := validateFlavorImage(e, field.image); err != nil {
+				errs = append(errs, fmt.Errorf("%s.flavors.%s.%s %q: %w", prefix, name, field.key, field.image, err))
+			}
+		}
+		for i, variable := range flavor.BuilderEnv {
+			if variable.Name == "" {
+				errs = append(errs, fmt.Errorf("%s.flavors.%s.builderEnv[%d].name is required", prefix, name, i))
+			}
+		}
+	}
+
+	return errs
+}
+
+// validateFlavorImage checks that an image joined with the registry prefix is
+// a pullable reference, so that a typo fails at startup and not as an image
+// pull error on every pool of the flavor.
+func validateFlavorImage(e *CfuncConfig, image string) error {
+	if image == "" {
+		return nil
+	}
+	// With a prefix, an image that names its own registry would be joined
+	// into <prefix>/<registry>/<image>, which parses but cannot be pulled.
+	if first, _, hasPath := strings.Cut(image, "/"); e.RegistryPrefix != "" && hasPath &&
+		(strings.ContainsAny(first, ".:") || first == "localhost") {
+		return fmt.Errorf("already names a registry (%s); with registryPrefix set, give the image relative to it", first)
+	}
+	if _, err := imagename.ParseReference(e.ImageRef(image)); err != nil {
+		return fmt.Errorf("%s is not a valid image reference", e.ImageRef(image))
+	}
+	return nil
+}
+
+// validateCfuncFileNames rejects a flavor or size name that contains a dot.
+// Viper splits such a key into nested maps, which would otherwise surface as
+// a confusing "image is required" for the first half of the name.
+func validateCfuncFileNames(raw map[string]any) error {
+	cfunc := rawSection(rawSection(raw, "resources"), "cfunc")
+	for _, section := range []string{"flavors", "sizes"} {
+		for key := range rawSection(cfunc, section) {
+			if strings.Contains(key, ".") {
+				return fmt.Errorf("config: resources.cfunc.%s: name %q must not contain a dot", section, key)
+			}
+		}
+	}
+	return nil
+}
+
+// rawSection returns the nested map under key, matching the key without
+// regard to case as Viper does.
+func rawSection(m map[string]any, key string) map[string]any {
+	for k, v := range m {
+		if strings.EqualFold(k, key) {
+			section, _ := v.(map[string]any)
+			return section
+		}
+	}
+	return nil
+}
+
+// sizeValues parses a size and returns its four quantities in canonical form.
+func sizeValues(size ResourceSize) (string, error) {
+	fields := []struct{ name, value string }{
+		{"requests.cpu", size.Requests.CPU},
+		{"requests.memory", size.Requests.Memory},
+		{"limits.cpu", size.Limits.CPU},
+		{"limits.memory", size.Limits.Memory},
+	}
+	quantities := make([]resource.Quantity, len(fields))
+	canonical := make([]string, len(fields))
+	for i, field := range fields {
+		quantity, err := resource.ParseQuantity(field.value)
+		if err != nil {
+			return "", fmt.Errorf("invalid %s %q: %w", field.name, field.value, err)
+		}
+		if quantity.Sign() < 0 {
+			return "", fmt.Errorf("%s %q must not be negative", field.name, field.value)
+		}
+		quantities[i] = quantity
+		canonical[i] = quantity.String()
+	}
+	if quantities[0].Cmp(quantities[2]) > 0 {
+		return "", errors.New("requests.cpu is larger than limits.cpu")
+	}
+	if quantities[1].Cmp(quantities[3]) > 0 {
+		return "", errors.New("requests.memory is larger than limits.memory")
+	}
+	return strings.Join(canonical, "/"), nil
 }
 
 // validateGitOpsPaths checks that every cluster's GitOpsPath (after fallback)

@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
+	fissionv1 "github.com/fission/fission/pkg/apis/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -23,6 +24,7 @@ import (
 //
 //   - k8s.io/api (core, apps, batch, …) via clientgoscheme
 //   - github.com/dana-team/container-app-operator/api/v1alpha1 (Capp, CappRevision, CappConfig)
+//   - github.com/fission/fission/pkg/apis/core/v1 (Environment, Function, …)
 //
 // All resource handlers obtain their scheme from this function so the set of
 // registered types is consistent across the application.
@@ -35,6 +37,10 @@ func BuildScheme() (*runtime.Scheme, error) {
 
 	if err := cappv1alpha1.AddToScheme(s); err != nil {
 		return nil, fmt.Errorf("k8s: registering rcs.dana.io/v1alpha1 scheme: %w", err)
+	}
+
+	if err := fissionv1.AddToScheme(s); err != nil {
+		return nil, fmt.Errorf("k8s: registering fission.io/v1 scheme: %w", err)
 	}
 
 	return s, nil

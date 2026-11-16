@@ -18,6 +18,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources"
 	"github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
 	"github.com/dana-team/capp-backend/internal/server/ui"
+	cfuncapi "github.com/dana-team/capp-backend/pkg/api/cfunc"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -108,6 +109,12 @@ func New(
 
 	// ── Capp size definitions (no auth required) ────────────────────────────
 	engine.GET("/api/v1/sizes", cappSizes(cfg.Sizes))
+
+	// ── cfunc flavor and size names (no auth required) ──────────────────────
+	if cfg.Resources.Cfunc.Enabled {
+		engine.GET("/api/v1/cfunc/flavors", cfuncFlavors(cfg.Resources.Cfunc))
+		engine.GET("/api/v1/cfunc/sizes", cfuncSizes(cfg.Resources.Cfunc))
+	}
 
 	// ── Auth endpoints ────────────────────────────────────────────────────────
 	authGroup := engine.Group("/api/v1/auth")
@@ -212,6 +219,23 @@ func readyz(clusterMgr cluster.ClusterManager, authorization *authorizationRunti
 			"status": "not ready",
 			"reason": reason,
 		})
+	}
+}
+
+// cfuncFlavors returns the configured flavor names. The images behind
+// them are deliberately left out.
+func cfuncFlavors(cfg config.CfuncConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		names := cfg.FlavorNames()
+		c.JSON(http.StatusOK, cfuncapi.FlavorListResponse{Items: names, Total: len(names)})
+	}
+}
+
+// cfuncSizes returns the configured size names without their resources.
+func cfuncSizes(cfg config.CfuncConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		names := cfg.SizeNames()
+		c.JSON(http.StatusOK, cfuncapi.SizeListResponse{Items: names, Total: len(names)})
 	}
 }
 

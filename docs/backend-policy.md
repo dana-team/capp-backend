@@ -55,11 +55,11 @@ Here `C` is `/api/v1/clusters/:cluster` and `N` is `C/namespaces/:namespace`.
 | GET cluster/namespace discovery | Eligible viewer/editor namespaces, or operator administrative discovery |
 | GET `N` | Eligible viewer/editor or configured operator |
 | POST `C/namespaces`; PUT/PATCH/DELETE `N` | Configured operator only |
-| GET `N/{capps,configmaps,secrets}` and object detail | viewer or editor |
+| GET `N/{capps,configmaps,secrets,cfunc/pools}` and object detail | viewer or editor |
 | GET `N/{configmaps,secrets}/names` | viewer or editor |
 | GET `N/{configmaps,secrets}/:name/bound` | viewer or editor |
 | GET Capp revisions and revision detail | viewer or editor |
-| GET `C/{capps,configmaps,secrets}` | viewer or editor separately in each included namespace |
+| GET `C/{capps,configmaps,secrets,cfunc/pools}` | viewer or editor separately in each included namespace |
 | POST resource collections; PUT/DELETE resource objects | editor |
 | Capp revision rollback, Git sync/unsync, including Git effects in update/delete | editor; feature settings still apply |
 | Capp migration | editor at source **and** destination, even for copy-only or same-cluster requests |
@@ -169,6 +169,8 @@ Replace the context and example names for your target. The role name must match 
 | Core Secrets | get, list, create, update, delete |
 | Core Namespaces | get, list, watch, create, delete |
 | Core ResourceQuotas | get, create, update |
+| `fission.io` Environments (only when `resources.cfunc.enabled`) | get, list, create, update, delete |
+| `fission.io` Functions (only when `resources.cfunc.enabled`) | list |
 
 Retain API discovery and `/version` reachability. The ClusterRoleBinding grants these permissions cluster-wide, including protected storage. Application policy checks, namespace restrictions and operator checks control user access; there is no separate Kubernetes permission boundary between resource execution and policy storage. Empty operator lists deny administration in the application without changing infrastructure grants. Namespace creation and policy writes do not create Kubernetes grants.
 

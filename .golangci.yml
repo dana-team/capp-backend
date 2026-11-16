@@ -52,6 +52,8 @@ linters:
               desc: clients must not depend on the server framework
             - pkg: "github.com/dana-team/container-app-operator"
               desc: use the REST API DTOs in pkg/api instead
+            - pkg: "github.com/fission/fission"
+              desc: use the REST API DTOs in pkg/api instead
             - pkg: "github.com/dana-team/capp-backend/internal/resources"
               desc: import the DTOs from pkg/api/<resource>
             - pkg: "github.com/dana-team/capp-backend/internal/cluster"

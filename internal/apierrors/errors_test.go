@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -167,6 +168,18 @@ func TestRespond_K8sNotFound(t *testing.T) {
 	assert.Equal(t, CodeNotFound, e.Code)
 	assert.Contains(t, e.Message, "my-app")
 	assert.NotContains(t, e.Message, "rcs.dana.io")
+}
+
+func TestRespond_K8sNoMatch(t *testing.T) {
+	noMatch := &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "fission.io", Kind: "Environment"}}
+
+	w := recordResponse(t, func(c *gin.Context) {
+		Respond(c, fmt.Errorf("listing: %w", noMatch))
+	})
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+	e := decodeError(t, w)
+	assert.Equal(t, CodeNotSupported, e.Code)
+	assert.NotContains(t, e.Message, "fission.io")
 }
 
 func TestRespond_K8sAlreadyExists(t *testing.T) {

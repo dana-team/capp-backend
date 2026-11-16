@@ -161,6 +161,62 @@ config:
           cpu: "2000m"
           memory: "2Gi"
 
+    # cfunc (function as a service, on Fission). A client creates a pool of
+    # warm pods from a flavor and a size; the images and resources behind them
+    # are set here and never reach a client. Requires Fission on the managed
+    # clusters.
+    cfunc:
+      enabled: false
+      # Prepended to every flavor image as "<registryPrefix>/<image>". Point it
+      # at your own registry to mirror the official images under the same names.
+      registryPrefix: "ghcr.io/fission"
+      # Name of an image pull Secret written to every pool. The Secret
+      # must already exist in each namespace that holds a pool.
+      imagePullSecret: ""
+      # Lets a request override the flavor's build image and build command with
+      # its "advanced" block. Off by default: with it on, anyone who can create
+      # a pool can make the Fission builder run any image and command.
+      allowCustomBuild: false
+      # Highest poolSize a request may ask for. Each warm pod reserves the
+      # resources of its size.
+      maxPoolSize: 10
+      # Size used when a request names none. Must be a key of sizes.
+      defaultSize: ""
+      # Size name → resources of each warm pod. Required when enabled. No two
+      # sizes may be equal, and a name must not contain a dot. It is empty by
+      # default because Helm merges maps: a default entry could not be removed
+      # by an override, only added to. Example:
+      #   sizes:
+      #     small:
+      #       requests: {cpu: "100m", memory: "128Mi"}
+      #       limits: {cpu: "200m", memory: "256Mi"}
+      #     large:
+      #       requests: {cpu: "500m", memory: "512Mi"}
+      #       limits: {cpu: "1", memory: "1Gi"}
+      sizes: {}
+      # Flavor name (lowercase, no dot) → images, relative to registryPrefix.
+      # Required when enabled; empty by default for the same reason as sizes.
+      # buildImage, buildCommand, builderEnv and keepArchive are optional.
+      # When allowCustomBuild is true, a client can override buildImage and
+      # buildCommand for one pool with the request's "advanced" block;
+      # everything else is set only here.
+      #   buildCommand: empty uses "build", the script of the official build images.
+      #   builderEnv:   list of {name, value} set on the builder container,
+      #                 e.g. PIP_INDEX_URL or NPM_REGISTRY for a private
+      #                 registry. It is stored in a ConfigMap: no tokens.
+      #   keepArchive:  hand the runtime the package as one archive (JVM .jar).
+      # The image must speak the Fission v2 interface; perl-env does not.
+      # Example:
+      #   flavors:
+      #     python:
+      #       image: "python-env:1.35.0"
+      #       buildImage: "python-builder:1.35.0"
+      #     java:
+      #       image: "jvm-env:1.32.0"
+      #       buildImage: "jvm-builder:1.32.0"
+      #       keepArchive: true
+      flavors: {}
+
   # GitOps — push Capp values to a git repository for ArgoCD sync.
   # Disabled by default. Enable and provide credentials to activate.
   gitops:

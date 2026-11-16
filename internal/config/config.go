@@ -12,8 +12,10 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -302,6 +304,92 @@ type ResourcesConfig struct {
 	// Observability configures the Capp metrics endpoints served by the
 	// capps handler. It is not a handler toggle of its own.
 	Observability ObservabilityConfig `mapstructure:"observability"`
+
+	// Cfunc configures function as a service on Fission.
+	Cfunc CfuncConfig `mapstructure:"cfunc"`
+}
+
+// CfuncConfig controls cfunc (function as a service), which runs on Fission.
+// Clients name a flavor and a size for a pool; the images and resources
+// behind them live here.
+type CfuncConfig struct {
+	// Enabled toggles the cfunc endpoints. Default: false.
+	Enabled bool `mapstructure:"enabled"`
+
+	// RegistryPrefix is prepended to every flavor image as "<prefix>/<image>".
+	// Empty uses the flavor images as written. Default: "ghcr.io/fission".
+	RegistryPrefix string `mapstructure:"registryPrefix"`
+
+	// ImagePullSecret is the Secret name written to every pool. The
+	// Secret must exist in the pool's namespace.
+	ImagePullSecret string `mapstructure:"imagePullSecret"`
+
+	// AllowCustomBuild lets a request override the flavor's build image and
+	// build command through its advanced block. It is off by default because
+	// a caller who can create a pool could then make the Fission builder run
+	// any image and command.
+	AllowCustomBuild bool `mapstructure:"allowCustomBuild"`
+
+	// MaxPoolSize is the highest poolSize a request may ask for. Each warm
+	// pod reserves the resources of its size, so this bounds what one pool
+	// can hold. Default: 10.
+	MaxPoolSize int `mapstructure:"maxPoolSize"`
+
+	// DefaultSize is the size used when a request names none.
+	DefaultSize string `mapstructure:"defaultSize"`
+
+	// Sizes maps a size name to the resources of each pool pod. A name must
+	// not contain a dot: Viper would read it as a nested key.
+	Sizes map[string]ResourceSize `mapstructure:"sizes"`
+
+	// Flavors maps a flavor name to its images. Viper lowercases the names,
+	// and a name must not contain a dot.
+	Flavors map[string]CfuncFlavor `mapstructure:"flavors"`
+}
+
+// CfuncFlavor is the set of images and build settings behind one flavor.
+type CfuncFlavor struct {
+	// Image is the runtime image, relative to RegistryPrefix.
+	Image string `mapstructure:"image"`
+
+	// BuildImage is the default build image, relative to RegistryPrefix.
+	// Empty means the flavor does not build source packages.
+	BuildImage string `mapstructure:"buildImage"`
+
+	// BuildCommand is the default build command. Empty uses "build", the
+	// script name of the official Fission build images.
+	BuildCommand string `mapstructure:"buildCommand"`
+
+	// BuilderEnv is set on the builder container. It is a list because Viper
+	// lowercases map keys, which would rename the variables.
+	BuilderEnv []CfuncEnvVar `mapstructure:"builderEnv"`
+
+	// KeepArchive hands the runtime the package as one archive (JVM .jar).
+	KeepArchive bool `mapstructure:"keepArchive"`
+}
+
+// CfuncEnvVar is one name/value pair of a builder container.
+type CfuncEnvVar struct {
+	Name  string `mapstructure:"name"`
+	Value string `mapstructure:"value"`
+}
+
+// ImageRef joins RegistryPrefix and a flavor image into a full reference.
+func (e CfuncConfig) ImageRef(image string) string {
+	if image == "" || e.RegistryPrefix == "" {
+		return image
+	}
+	return e.RegistryPrefix + "/" + image
+}
+
+// FlavorNames returns the configured flavor names in alphabetical order.
+func (e CfuncConfig) FlavorNames() []string {
+	return slices.Sorted(maps.Keys(e.Flavors))
+}
+
+// SizeNames returns the configured size names in alphabetical order.
+func (e CfuncConfig) SizeNames() []string {
+	return slices.Sorted(maps.Keys(e.Sizes))
 }
 
 // MetricsSelectorPlaceholder is replaced in every MetricsQuery.Query with the
@@ -562,6 +650,9 @@ func readConfigFile(v *viper.Viper, path string) (map[string]any, error) {
 			return nil, err
 		}
 	}
+	if err := validateCfuncFileNames(raw); err != nil {
+		return nil, err
+	}
 	return raw, nil
 }
 
@@ -686,6 +777,12 @@ func setDefaults(v *viper.Viper) {
 	// Observability — disabled by default
 	v.SetDefault("resources.observability.enabled", false)
 	v.SetDefault("resources.observability.queryURL", "")
+
+	// cfunc — disabled by default
+	v.SetDefault("resources.cfunc.enabled", false)
+	v.SetDefault("resources.cfunc.registryPrefix", "ghcr.io/fission")
+	v.SetDefault("resources.cfunc.allowCustomBuild", false)
+	v.SetDefault("resources.cfunc.maxPoolSize", 10)
 
 	// Capp t-shirt sizes
 	v.SetDefault("cappSizes.small.requests.cpu", "250m")

@@ -150,6 +150,27 @@ data:
           limits:
             cpu: {{ .Values.config.resources.cappSizes.large.limits.cpu | quote }}
             memory: {{ .Values.config.resources.cappSizes.large.limits.memory | quote }}
+      {{- with .Values.config.resources.cfunc }}
+      {{- if .enabled }}
+      {{- if not .sizes }}
+      {{- fail "config.resources.cfunc.sizes must name at least one size when cfunc is enabled" }}
+      {{- end }}
+      {{- if not .flavors }}
+      {{- fail "config.resources.cfunc.flavors must name at least one flavor when cfunc is enabled" }}
+      {{- end }}
+      cfunc:
+        enabled: true
+        registryPrefix: {{ .registryPrefix | quote }}
+        imagePullSecret: {{ .imagePullSecret | quote }}
+        allowCustomBuild: {{ .allowCustomBuild | default false }}
+        maxPoolSize: {{ .maxPoolSize | default 10 }}
+        defaultSize: {{ required "config.resources.cfunc.defaultSize is required when cfunc is enabled" .defaultSize | quote }}
+        sizes:
+          {{- toYaml .sizes | nindent 10 }}
+        flavors:
+          {{- toYaml .flavors | nindent 10 }}
+      {{- end }}
+      {{- end }}
 
     {{- if .Values.config.gitops.enabled }}
     gitops:

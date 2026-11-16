@@ -1,0 +1,32 @@
+# Used by CI to render the chart with cfunc enabled.
+config:
+  clusters:
+    - name: test
+      credential:
+        inline:
+          apiServer: https://example.com
+  resources:
+    cfunc:
+      enabled: true
+      registryPrefix: registry.example.internal/fission
+      defaultSize: small
+      sizes:
+        small:
+          requests: {cpu: "100m", memory: "128Mi"}
+          limits: {cpu: "200m", memory: "256Mi"}
+        large:
+          requests: {cpu: "500m", memory: "512Mi"}
+          limits: {cpu: "1", memory: "1Gi"}
+      flavors:
+        python:
+          image: "python-env:1.35.0"
+          buildImage: "python-builder:1.35.0"
+          builderEnv:
+            - name: PIP_INDEX_URL
+              value: "https://registry.example.internal/pypi/simple"
+        java:
+          image: "jvm-env:1.32.0"
+          buildImage: "jvm-builder:1.32.0"
+          keepArchive: true
+secret:
+  jwtSecretKey: test-secret

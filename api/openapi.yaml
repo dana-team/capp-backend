@@ -89,6 +89,8 @@ tags:
     description: ConfigMap resource management
   - name: secrets
     description: Secret resource management
+  - name: cfunc
+    description: cfunc (function as a service, on Fission) — pools of warm pods that functions run in. Present only when resources.cfunc.enabled is true.
 
 components:
   securitySchemes:
@@ -498,6 +500,174 @@ components:
           $ref: '#/components/schemas/PolicyResourceVersion'
 
     # ── ConfigMaps ────────────────────────────────────────────────────────────────
+    CfuncAdvanced:
+      type: object
+      description: Overrides for values that normally come from the flavor and the size. Every field is optional.
+      properties:
+        buildImage:
+          type: string
+          description: Full reference of a build image that replaces the flavor's. It is used as written; the configured registry prefix is not added. Rejected with 400 unless the backend sets resources.cfunc.allowCustomBuild, and it must be a valid image reference.
+          example: registry.example.internal/team-a/python-builder-geo:2
+        buildCommand:
+          type: string
+          description: Build command that replaces the flavor's. Rejected with 400 unless the backend sets resources.cfunc.allowCustomBuild, and when neither the flavor nor this block names a build image.
+          example: ./build.sh
+        resources:
+          allOf:
+            - $ref: '#/components/schemas/ResourceSpec'
+          description: CPU and memory of each warm pod, laid over the size. A value left out here comes from the requested or default size, so a pool always has all four; an empty block changes nothing. A request must not exceed its limit, and no value may exceed the largest configured size.
+
+    CfuncPoolRequest:
+      type: object
+      description: Request body accepted by POST (create) and PUT (update). For update the name is taken from the URL.
+      required: [name, flavor]
+      properties:
+        name:
+          type: string
+          description: Kubernetes name of the pool. Functions refer to it by this name.
+          example: my-python
+        flavor:
+          type: string
+          description: Language runtime, one of GET /api/v1/cfunc/flavors. The backend configuration holds the runtime image, build image, build command and builder variables behind it.
+          example: python
+        size:
+          type: string
+          description: Size of each warm pod, one of GET /api/v1/cfunc/sizes. Defaults to the configured default size.
+          example: small
+        poolSize:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 3
+          description: Number of warm pods kept ready. 0 keeps none, so the first call of a function waits for a pod. It must not exceed the backend's resources.cfunc.maxPoolSize (default 10); a higher value is rejected with 400.
+        env:
+          type: array
+          description: Environment variables set on every warm pod, so every function that runs in the pool sees them. Full replace on update; omit it or send [] to remove all. A valueFrom reference reads a Secret or ConfigMap of the pool's namespace; its existence is not checked.
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        advanced:
+          $ref: '#/components/schemas/CfuncAdvanced'
+
+    CfuncPoolResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          example: my-python
+        namespace:
+          type: string
+          example: team-a
+        createdAt:
+          type: string
+          format: date-time
+        uid:
+          type: string
+        resourceVersion:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        flavor:
+          type: string
+          description: The configured flavor whose runtime image the pool uses. Nothing is stored on the pool, so this is empty when no configured flavor has that image, for example after the configuration moved the flavor to a new image tag.
+          example: python
+        size:
+          type: string
+          description: The configured size whose resources the pool uses. Empty for resources set through advanced or outside this API.
+          example: small
+        poolSize:
+          type: integer
+          format: int32
+        resources:
+          $ref: '#/components/schemas/ResourceSpec'
+        image:
+          type: string
+          description: Runtime image in use.
+          example: ghcr.io/fission/python-env:1.35.0
+        builder:
+          type: object
+          description: Build image and command in use. Absent when the pool does not build source packages.
+          properties:
+            image:
+              type: string
+            command:
+              type: string
+        env:
+          type: array
+          description: Environment variables of the warm pods. Absent when there are none. A variable this API cannot express (a fieldRef or resourceFieldRef set outside it) is left out here and kept by PUT.
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        advanced:
+          allOf:
+            - $ref: '#/components/schemas/CfuncAdvanced'
+          description: What the pool has beyond its flavor and size, which is custom resources, or a build image or command that is not the flavor's. Present only then. Send it back in a PUT to keep those values, because PUT is a full replace.
+        version:
+          type: integer
+          format: int32
+          description: Fission Environment interface version. Always 3 for pools created through this API.
+        terminationGracePeriodSeconds:
+          type: integer
+          format: int64
+          description: Seconds a pod keeps serving before it is stopped. Set to 360 on create and kept on update.
+        allowedFunctionsPerContainer:
+          type: string
+          enum: [single, infinite]
+        allowAccessToExternalNetwork:
+          type: boolean
+        status:
+          type: object
+          properties:
+            observedGeneration:
+              type: integer
+              format: int64
+            conditions:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  status:
+                    type: string
+                  reason:
+                    type: string
+                  message:
+                    type: string
+                  lastTransitionTime:
+                    type: string
+                    format: date-time
+
+    CfuncPoolList:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int32
+          example: 2
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CfuncPoolResponse'
+
+    CfuncNameListResponse:
+      type: object
+      description: Names only, in alphabetical order.
+      properties:
+        total:
+          type: integer
+          format: int32
+          example: 4
+        items:
+          type: array
+          items:
+            type: string
+          example: [java, js, python, ruby]
+
     ConfigMapRequest:
       type: object
       required: [name]
@@ -1881,6 +2051,44 @@ paths:
               schema:
                 $ref: '#/components/schemas/CappSizesResponse'
 
+  /api/v1/cfunc/flavors:
+    get:
+      tags: [cfunc]
+      summary: List the configured cfunc flavors
+      description: |
+        Returns the flavor names a client can send as `flavor`, in alphabetical
+        order. The images behind a flavor are not returned. No authentication
+        required. The route exists only when resources.cfunc.enabled is true.
+      security: []
+      responses:
+        "200":
+          description: Flavor names.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncNameListResponse'
+
+  /api/v1/cfunc/sizes:
+    get:
+      tags: [cfunc]
+      summary: List the configured cfunc sizes
+      description: |
+        Returns the size names a client can send as `size`, in alphabetical
+        order (not smallest first). The resources behind a size are not returned. No
+        authentication required. The route exists only when
+        resources.cfunc.enabled is true.
+      security: []
+      responses:
+        "200":
+          description: Size names.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncNameListResponse'
+              example:
+                items: [large, medium, small]
+                total: 3
+
   # ── Clusters ───────────────────────────────────────────────────────────────────
   /api/v1/clusters:
     get:
@@ -2183,6 +2391,231 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   # ── ConfigMaps ─────────────────────────────────────────────────────────────────
+  /api/v1/clusters/{cluster}/cfunc/pools:
+    get:
+      tags: [cfunc]
+      summary: List all pools across all namespaces
+      description: Returns the pools (Fission Environments) from every namespace the authenticated user can access, including ones created outside this API.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+      responses:
+        "200":
+          description: Pool list (all namespaces).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncPoolList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "501":
+          description: The cluster does not serve the Fission Environment resource (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/cfunc/pools:
+    get:
+      tags: [cfunc]
+      summary: List pools in a namespace
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: Pool list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncPoolList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "501":
+          description: The cluster does not serve the Fission Environment resource (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+    post:
+      tags: [cfunc]
+      summary: Create a pool
+      description: |
+        Creates a pool, stored as a Fission Environment, from a flavor and a size. The backend
+        writes the runtime image, build image, build command, builder variables
+        and image pull secret of the flavor from its configuration, and the
+        resources of the size. It always creates interface version 3 with a
+        termination grace period of 360 seconds.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CfuncPoolRequest'
+      responses:
+        "201":
+          description: Pool created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncPoolResponse'
+        "400":
+          description: Invalid request body, unknown flavor or size, a pool size below 0 or above the maximum, invalid resources or resources above the largest size, an environment variable with no name or an invalid valueFrom, a custom build image or command when the backend does not allow them, or a build command with no build image.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "501":
+          description: The cluster does not serve the Fission Environment resource (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/cfunc/pools/{name}:
+    get:
+      tags: [cfunc]
+      summary: Get a pool
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "200":
+          description: Pool details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncPoolResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "501":
+          description: The cluster does not serve the Fission Environment resource (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+    put:
+      tags: [cfunc]
+      summary: Update a pool
+      description: |
+        Replaces the flavor, size, pool size and advanced overrides. An omitted
+        field falls back to its default; it does not keep the current value.
+        Omitting advanced puts the flavor's build image and command and the
+        size's resources back. Fields this API does not expose (pod specs and
+        a termination grace period other than 0) keep their values; a stored
+        grace period of 0 is replaced with 360. An environment variable this
+        API cannot express (a fieldRef or resourceFieldRef set outside it) is
+        not returned by GET and is kept by PUT. The name in the body is
+        ignored; the name in the URL is used.
+        The update also applies the flavor's current configuration, so it is
+        how a pool picks up a new image after a configuration change.
+        Changing the runtime image or resources makes Fission replace the warm pods.
+        An Environment with interface version 1 or 2, which can only come from
+        outside this API, cannot be updated and answers 409: Fission ignores
+        the pool size below version 3 and does not let the version change.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CfuncPoolRequest'
+      responses:
+        "200":
+          description: Pool updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CfuncPoolResponse'
+        "400":
+          description: Invalid request body, unknown flavor or size, a pool size below 0 or above the maximum, invalid resources or resources above the largest size, an environment variable with no name or an invalid valueFrom, a custom build image or command when the backend does not allow them, or a build command with no build image.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "501":
+          description: The cluster does not serve the Fission Environment resource (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
+    delete:
+      tags: [cfunc]
+      summary: Delete a pool
+      description: Refused while a Function in the same namespace uses the pool. The check is partial. A Function in another namespace can name the pool and is not seen, so deleting the pool breaks that Function.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      responses:
+        "204":
+          description: Pool deleted.
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: The pool is still used by one or more Functions in its own namespace; the message lists them. Functions in other namespaces are not checked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "501":
+          description: The cluster does not serve the Fission Environment resource (NOT_SUPPORTED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          $ref: '#/components/responses/PolicyUnavailable'
+
   /api/v1/clusters/{cluster}/configmaps:
     get:
       tags: [configmaps]

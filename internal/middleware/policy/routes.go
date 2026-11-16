@@ -55,7 +55,7 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 		rule   Rule
 	}
 	var declarations []declaration
-	for _, path := range []string{"/healthz", "/readyz", "/docs", "/ui/scalar.js", "/openapi.yaml", "/api/v1/sizes", "/api/v1/auth/mode", "/api/v1/auth/openshift/authorize"} {
+	for _, path := range []string{"/healthz", "/readyz", "/docs", "/ui/scalar.js", "/openapi.yaml", "/api/v1/sizes", "/api/v1/cfunc/flavors", "/api/v1/cfunc/sizes", "/api/v1/auth/mode", "/api/v1/auth/openshift/authorize"} {
 		declarations = append(declarations, declaration{method: http.MethodGet, path: path, rule: Rule{Category: Public}})
 	}
 	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/openshift/callback"} {
@@ -71,7 +71,7 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		declarations = append(declarations, declaration{method: method, path: namespacePath, rule: Rule{Category: Administration}})
 	}
-	for _, resource := range []string{"capps", "configmaps", "secrets"} {
+	for _, resource := range []string{"capps", "configmaps", "secrets", "cfunc/pools"} {
 		path := namespacePath + "/" + resource
 		declarations = append(declarations,
 			declaration{method: http.MethodGet, path: clusterPath + "/" + resource, rule: Rule{Category: Aggregate, AllowedRoles: read.AllowedRoles}},
@@ -81,7 +81,7 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 			declaration{method: http.MethodPut, path: path + "/:name", rule: write},
 			declaration{method: http.MethodDelete, path: path + "/:name", rule: write},
 		)
-		if resource != "capps" {
+		if resource == "configmaps" || resource == "secrets" {
 			declarations = append(declarations,
 				declaration{method: http.MethodGet, path: path + "/names", rule: read},
 				declaration{method: http.MethodGet, path: path + "/:name/bound", rule: read},

@@ -25,6 +25,14 @@ rules:
   - apiGroups: [""]
     resources: ["resourcequotas"]
     verbs: ["get", "create", "update"]
+  {{- if (dig "resources" "cfunc" "enabled" false .Values.config) }}
+  - apiGroups: ["fission.io"]
+    resources: ["environments"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  - apiGroups: ["fission.io"]
+    resources: ["functions"]
+    verbs: ["list"]
+  {{- end }}
 {{- else if or (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
