@@ -19,7 +19,7 @@ updates:
     labels:
       - "ci dependencies"
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/deploy/"
     schedule:
       interval: "monthly"
     labels:
