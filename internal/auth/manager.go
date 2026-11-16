@@ -29,9 +29,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/config"
+	"k8s.io/client-go/rest"
 )
 
 // ── Sentinel errors ───────────────────────────────────────────────────────────
@@ -56,6 +59,9 @@ var (
 
 	// ErrDirectoryUnavailable reports directory failures without account diagnostics.
 	ErrDirectoryUnavailable = errors.New("directory service unavailable")
+
+	// ErrIdentityUnavailable reports verification failures without reviewer diagnostics.
+	ErrIdentityUnavailable = errors.New("identity verification is unavailable")
 )
 
 // ── Core types ────────────────────────────────────────────────────────────────
@@ -80,6 +86,14 @@ type ClusterCredential struct {
 	// ImpersonateGroups are the verified groups in openshift and ldap auth modes.
 	// Kubernetes mode sends Impersonate-Group headers; backend-policy matches locally.
 	ImpersonateGroups []string
+
+	// AuthProvider identifies the provider that verified this identity. It is
+	// unset for an unverified passthrough credential.
+	AuthProvider string
+
+	// IdentityAuthority identifies the trusted reviewer endpoint or LDAP issuer,
+	// with URL user information, query and fragment removed.
+	IdentityAuthority string
 }
 
 // TokenPair is issued by Login/PasswordLogin and OAuth exchange in openshift mode,
@@ -107,6 +121,8 @@ type AuthManager interface {
 	//
 	// Returns ErrUnauthenticated if the request carries no valid credential.
 	// In ldap mode, returns ErrTokenExpired for an expired access token.
+	// Backend-policy review failures return ErrIdentityUnavailable without
+	// exposing upstream diagnostics; rejected identities return ErrUnauthenticated.
 	Authenticate(ctx context.Context, clusterName string, r *http.Request) (ClusterCredential, error)
 
 	// Login validates a raw Kubernetes bearer token against the named cluster
@@ -153,16 +169,29 @@ type OAuthAuthorizer interface {
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
+// Dependencies supplies trusted clients independently of caller credentials.
+// A nil HomeConfig uses the workload's in-cluster OpenShift review configuration.
+type Dependencies struct {
+	TargetReviewers map[string]TokenReviewer
+	HomeConfig      *rest.Config
+}
+
 // New instantiates the AuthManager implementation selected by cfg.Auth.Mode.
 //
 // For openshift mode, callers must also invoke the returned manager's StartCleanup
 // method (if the concrete type implements it) to start background cleanup tasks.
-func New(cfg *config.Config) (AuthManager, error) {
+func New(cfg *config.Config, dependencies Dependencies) (AuthManager, error) {
 	switch cfg.Auth.Mode {
 	case config.AuthModePassthrough:
+		if cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy {
+			return newVerifiedPassthroughManager(cfg.Clusters, dependencies.TargetReviewers)
+		}
 		return newPassthroughManager(), nil
 
 	case config.AuthModeOpenShift:
+		if dependencies.HomeConfig != nil {
+			return newOpenShiftManagerForConfig(cfg, dependencies.HomeConfig)
+		}
 		return newOpenShiftManager(cfg)
 
 	case config.AuthModeLDAP:
@@ -172,4 +201,26 @@ func New(cfg *config.Config) (AuthManager, error) {
 		// Validate() should catch this before we reach New(), but guard anyway.
 		return nil, fmt.Errorf("auth: unknown mode %q", cfg.Auth.Mode)
 	}
+}
+
+// sanitizeAuthority prepares trusted configuration for identity metadata.
+// Non-URL issuers are retained; unparseable URLs are omitted rather than leaked.
+func sanitizeAuthority(authority string) string {
+	// Plain issuers need not follow URL escaping rules.
+	if !strings.Contains(authority, ":") && !strings.HasPrefix(authority, "//") {
+		return authority
+	}
+	u, err := url.Parse(authority)
+	if err != nil {
+		return ""
+	}
+	if u.Scheme == "" && u.Host == "" {
+		return authority
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }

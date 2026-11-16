@@ -3,6 +3,7 @@ package cluster
 import (
 	"errors"
 	"fmt"
+	"net/http"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -28,6 +29,14 @@ func NewSystemClients(cluster *ClusterClient) (*SystemClients, error) {
 	httpClient, err := rest.HTTPClientFor(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("building system transport: %w", err)
+	}
+	// Keep redirect policy local even when HTTPClientFor returns the default client.
+	copyClient := *httpClient
+	httpClient = &copyClient
+	// Reviews carry the caller token in their body; neither credential may
+	// follow a redirect, including a redirect to another configured target.
+	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	typed, err := kubernetes.NewForConfigAndClient(cfg, httpClient)
 	if err != nil {

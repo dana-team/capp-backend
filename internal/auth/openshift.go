@@ -8,10 +8,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +50,9 @@ type openShiftManager struct {
 	// k8sClient is a typed Kubernetes client configured with rest.InClusterConfig().
 	// Used to submit TokenReview requests against the home cluster.
 	k8sClient kubernetes.Interface
+
+	identityAuthority string
+	backendPolicy     bool
 
 	// oauthMeta holds the discovered OAuth server endpoints.
 	oauthMeta *oauthServerMeta
@@ -87,6 +92,14 @@ const oauthClientIDParam = "client_id"
 // K8s client for TokenReview and discovers OAuth endpoints from the configured
 // API server.
 func newOpenShiftManager(cfg *config.Config) (*openShiftManager, error) {
+	inClusterCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("openshift: in-cluster config required: %w", err)
+	}
+	return newOpenShiftManagerForConfig(cfg, inClusterCfg)
+}
+
+func newOpenShiftManagerForConfig(cfg *config.Config, inClusterCfg *rest.Config) (*openShiftManager, error) {
 	osCfg := &cfg.Auth.OpenShift
 
 	// Build the HTTP client for OAuth requests.
@@ -100,11 +113,15 @@ func newOpenShiftManager(cfg *config.Config) (*openShiftManager, error) {
 	}
 
 	// Build in-cluster K8s client for TokenReview.
-	inClusterCfg, err := rest.InClusterConfig()
+	reviewClient, err := rest.HTTPClientFor(inClusterCfg)
 	if err != nil {
-		return nil, fmt.Errorf("openshift: in-cluster config required: %w", err)
+		return nil, fmt.Errorf("openshift: building review transport: %w", err)
 	}
-	k8sClient, err := kubernetes.NewForConfig(inClusterCfg)
+	// OAuth redirects have a separate policy; reviews must never forward either token.
+	reviewClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	k8sClient, err := kubernetes.NewForConfigAndClient(inClusterCfg, reviewClient)
 	if err != nil {
 		return nil, fmt.Errorf("openshift: building K8s client: %w", err)
 	}
@@ -126,12 +143,14 @@ func newOpenShiftManager(cfg *config.Config) (*openShiftManager, error) {
 
 	key := deriveStateKey(osCfg.ClientSecret)
 	return &openShiftManager{
-		cfg:        osCfg,
-		httpClient: httpClient,
-		k8sClient:  k8sClient,
-		oauthMeta:  oauthMeta,
-		cacheTTL:   cacheTTL,
-		hmacKey:    key,
+		cfg:               osCfg,
+		httpClient:        httpClient,
+		k8sClient:         k8sClient,
+		identityAuthority: sanitizeAuthority(inClusterCfg.Host),
+		backendPolicy:     cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy,
+		oauthMeta:         oauthMeta,
+		cacheTTL:          cacheTTL,
+		hmacKey:           key,
 	}, nil
 }
 
@@ -179,7 +198,7 @@ func discoverOAuthMeta(client *http.Client, apiServer string) (*oauthServerMeta,
 
 // Authenticate validates the bearer token via TokenReview (with cache) and
 // returns a ClusterCredential with impersonation fields set.
-func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Request) (ClusterCredential, error) {
+func (m *openShiftManager) Authenticate(ctx context.Context, _ string, r *http.Request) (ClusterCredential, error) {
 	raw := r.Header.Get("Authorization")
 	if raw == "" {
 		return ClusterCredential{}, ErrUnauthenticated
@@ -190,6 +209,9 @@ func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Req
 		return ClusterCredential{}, ErrUnauthenticated
 	}
 	token := strings.TrimPrefix(raw, prefix)
+	if m.backendPolicy && (token == "" || strings.ContainsAny(token, " \t\r\n")) {
+		return ClusterCredential{}, ErrUnauthenticated
+	}
 
 	// Check cache first.
 	cacheKey := sha256Sum(token)
@@ -202,11 +224,11 @@ func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Req
 		if time.Now().Before(cached.expiresAt) {
 			// Return a copy of the cached groups so callers cannot mutate the
 			// shared cache entry.
-			groupsCopy := make([]string, len(cached.groups))
-			copy(groupsCopy, cached.groups)
 			return ClusterCredential{
 				ImpersonateUser:   cached.username,
-				ImpersonateGroups: groupsCopy,
+				ImpersonateGroups: slices.Clone(cached.groups),
+				AuthProvider:      config.AuthModeOpenShift,
+				IdentityAuthority: m.identityAuthority,
 			}, nil
 		}
 		// Expired — remove and re-validate.
@@ -214,19 +236,29 @@ func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Req
 	}
 
 	// Submit TokenReview against the home cluster.
-	review := &authv1.TokenReview{
-		Spec: authv1.TokenReviewSpec{Token: token},
+	var result *authv1.TokenReview
+	var err error
+	if m.backendPolicy {
+		result, err = reviewToken(ctx, m.k8sClient.AuthenticationV1().RESTClient(), token)
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, tokenReviewTimeout)
+		defer cancel()
+		result, err = m.k8sClient.AuthenticationV1().TokenReviews().Create(ctx, &authv1.TokenReview{
+			Spec: authv1.TokenReviewSpec{Token: token},
+		}, metav1.CreateOptions{})
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	result, err := m.k8sClient.AuthenticationV1().TokenReviews().Create(ctx, review, metav1.CreateOptions{})
 	if err != nil {
-		return ClusterCredential{}, fmt.Errorf("openshift: token review failed: %w", err)
+		if m.backendPolicy {
+			return ClusterCredential{}, err
+		}
+		// Keep the Kubernetes-mode internal-error response without upstream text.
+		return ClusterCredential{}, newTokenReviewError(err, errors.New("openshift: token review failed"))
 	}
-
-	if !result.Status.Authenticated {
+	if m.backendPolicy {
+		if err := validateTokenReview(result); err != nil {
+			return ClusterCredential{}, err
+		}
+	} else if !result.Status.Authenticated {
 		return ClusterCredential{}, ErrUnauthenticated
 	}
 
@@ -235,18 +267,17 @@ func (m *openShiftManager) Authenticate(_ context.Context, _ string, r *http.Req
 
 	// Copy the groups slice before caching so downstream mutations cannot
 	// corrupt the cache entry or cause cross-request data races.
-	groupsCopy := make([]string, len(groups))
-	copy(groupsCopy, groups)
-
 	m.tokenCache.Store(cacheKey, &cachedIdentity{
 		username:  username,
-		groups:    groupsCopy,
+		groups:    slices.Clone(groups),
 		expiresAt: time.Now().Add(m.cacheTTL),
 	})
 
 	return ClusterCredential{
 		ImpersonateUser:   username,
-		ImpersonateGroups: groupsCopy,
+		ImpersonateGroups: slices.Clone(groups),
+		AuthProvider:      config.AuthModeOpenShift,
+		IdentityAuthority: m.identityAuthority,
 	}, nil
 }
 

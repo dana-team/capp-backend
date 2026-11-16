@@ -30,6 +30,9 @@ func listClusters(mgr cluster.ClusterManager) gin.HandlerFunc {
 				}
 			}
 			slices.SortFunc(visible, func(a, b cluster.ClusterMeta) int { return strings.Compare(a.Name, b.Name) })
+			if _, _, ok := policy.RequireDiscovery(c, ""); !ok {
+				return
+			}
 			items = visible
 		}
 		c.JSON(http.StatusOK, gin.H{"items": items})

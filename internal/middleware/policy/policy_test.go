@@ -1,10 +1,13 @@
 package policy
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -99,6 +102,19 @@ func TestRequireNamespaceAccess(t *testing.T) {
 }
 
 func TestRequireDiscovery(t *testing.T) {
+	t.Run("deadline retains identity unavailable response", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+		defer cancel()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/clusters", nil)
+		_, _, ok := RequireDiscovery(c, "")
+		require.False(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, w.Code)
+		require.Contains(t, w.Body.String(), auth.ErrIdentityUnavailable.Error())
+		require.True(t, c.GetBool(string(policyDeniedKey)))
+	})
+
 	for _, tc := range []struct {
 		name, target          string
 		category              Category

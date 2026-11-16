@@ -69,3 +69,16 @@ Secret name.
 {{- define "capp-backend.secretName" -}}
 {{- printf "%s-secret" (include "capp-backend.fullname" .) }}
 {{- end }}
+
+{{/*
+Whether the home cluster is also an execution target (aliases share one binding).
+*/}}
+{{- define "capp-backend.hasLocalTarget" -}}
+{{- $local := false -}}
+{{- range .Values.config.clusters -}}
+{{- if eq .credential.inline.apiServer "https://kubernetes.default.svc" -}}
+{{- $local = true -}}
+{{- end -}}
+{{- end -}}
+{{- $local -}}
+{{- end }}
