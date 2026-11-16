@@ -6,9 +6,9 @@
 //  3. Initialise the structured logger.
 //  4. Build the Kubernetes scheme (registers all API types).
 //  5. Build the ClusterManager (connects to all configured clusters).
-//  6. Build the AuthManager based on auth.mode.
-//  7. Build and populate the resource handler registry.
-//  8. Build the HTTP Server and start listening.
+//  6. Build and populate the resource handler registry.
+//  7. Build the HTTP server and its configured authentication provider.
+//  8. Start listening.
 //  9. On SIGTERM/SIGINT: graceful shutdown with a 30-second drain timeout.
 package main
 
@@ -21,7 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/gitops"
@@ -40,12 +39,6 @@ import (
 // version is set at build time via -ldflags "-X main.version=vX.Y.Z". cappctl
 // clients at least one minor release behind it are warned to upgrade.
 var version = "dev"
-
-// cleanupStarter is implemented by auth managers that run background
-// cleanup tasks.
-type cleanupStarter interface {
-	StartCleanup(context.Context)
-}
 
 func main() {
 	var configPath string
@@ -94,19 +87,7 @@ func main() {
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	go clusterMgr.StartHealthChecks(rootCtx, 30)
 
-	// ── 5. Build AuthManager ──────────────────────────────────────────────────
-	authMgr, err := auth.New(cfg)
-	if err != nil {
-		logger.Fatal("failed to initialise auth manager", zap.Error(err))
-	}
-
-	// Start background cleanup if the auth manager implements it
-	// (e.g. openshift's token-validation cache eviction).
-	if cs, ok := authMgr.(cleanupStarter); ok {
-		go cs.StartCleanup(rootCtx)
-	}
-
-	// ── 6. Build GitOps client (optional) ─────────────────────────────────────
+	// ── 5. Build GitOps client (optional) ─────────────────────────────────────
 	var gitopsClient *gitops.Client
 	if cfg.GitOps.Enabled {
 		var err error
@@ -120,7 +101,7 @@ func main() {
 		)
 	}
 
-	// ── 7. Build resource registry ────────────────────────────────────────────
+	// ── 6. Build resource registry ────────────────────────────────────────────
 	enabledResources := map[string]bool{
 		"namespaces":    cfg.Resources.Namespaces.Enabled,
 		"capps":         cfg.Resources.Capps.Enabled,
@@ -149,11 +130,13 @@ func main() {
 		logger.Fatal("failed to initialise cfunc pools handler", zap.Error(err))
 	}
 	registry.Register(poolHandler)
-	// ── 8. Build and start HTTP server ────────────────────────────────────────
-	srv, err := server.New(cfg, version, authMgr, clusterMgr, registry, logger)
+	// ── 7. Build and start HTTP server ────────────────────────────────────────
+	srv, err := server.New(cfg, version, nil, clusterMgr, registry, logger)
 	if err != nil {
 		logger.Fatal("failed to initialise server", zap.Error(err))
 	}
+
+	go srv.StartAuthCleanup(rootCtx)
 
 	// Run in a goroutine so we can listen for signals concurrently.
 	serverErr := make(chan error, 1)
@@ -161,7 +144,7 @@ func main() {
 		serverErr <- srv.Start()
 	}()
 
-	// ── 9. Wait for shutdown signal ───────────────────────────────────────────
+	// ── 8. Wait for shutdown signal ───────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -174,7 +157,7 @@ func main() {
 		}
 	}
 
-	// ── 10. Graceful shutdown ─────────────────────────────────────────────────
+	// ── 9. Graceful shutdown ─────────────────────────────────────────────────
 	rootCancel() // stop health checks and auth cleanup
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)

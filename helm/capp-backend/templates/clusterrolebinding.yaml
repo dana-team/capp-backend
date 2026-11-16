@@ -1,11 +1,5 @@
 {{- if eq .Values.config.authorization.mode "backend-policy" }}
-{{- $local := false }}
-{{- range .Values.config.clusters }}
-{{- if eq .credential.inline.apiServer "https://kubernetes.default.svc" }}
-{{- $local = true }}
-{{- end }}
-{{- end }}
-{{- if $local }}
+{{- if eq (include "capp-backend.hasLocalTarget" .) "true" }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -14,6 +8,21 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "capp-backend.fullname" . }}-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.namespace }}
+{{- else if eq .Values.config.auth.mode "openshift" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "capp-backend.fullname" . }}-tokenreviewer
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "capp-backend.fullname" . }}-tokenreviewer
 subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccount.name }}

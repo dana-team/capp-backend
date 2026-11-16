@@ -20,7 +20,7 @@ data:
         - "https://console.example.com"
 
     authorization:
-      mode: kubernetes
+      mode: kubernetes # backend-policy supports ldap, openshift and passthrough
       restrictedBindingNamePrefixes: ["system:"]
 
     auth:
@@ -44,6 +44,11 @@ data:
       serviceName: "capp-backend"
       sampleRate: 0.1
 
+    # Backend-policy requires inline backend tokens on every target. Provision
+    # execution grants separately for these standalone manifests. TokenReview
+    # create is required on each passthrough target, or only at the OpenShift
+    # home workload account; LDAP needs none. Passthrough requires HTTPS/CA.
+    # Keep trust/mappings equivalent and restart all replicas after changes.
     clusters:
       - name: "production"
         displayName: "Production Cluster"
@@ -56,7 +61,8 @@ data:
         credential:
           inline:
             apiServer: "https://api.production.example.com:6443"
-            caCert: ""        # base64 PEM or omit for insecure
+            caCert: ""        # replace with the target's base64 PEM CA for every provider
+            insecure: false   # backend-policy passthrough forbids insecure: true
             token: ""         # injected via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
 
     resources:

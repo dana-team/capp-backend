@@ -2,16 +2,20 @@ package cluster
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/cert"
 )
 
 func TestNewSystemClients(t *testing.T) {
@@ -63,5 +67,41 @@ func TestNewSystemClientsInvalidConfiguration(t *testing.T) {
 	for _, cluster := range []*ClusterClient{nil, {}, {RestConfig: &rest.Config{}}} {
 		_, err := NewSystemClients(cluster)
 		require.Error(t, err)
+	}
+}
+
+func TestNewSystemClientsRejectRedirects(t *testing.T) {
+	var received atomic.Int64
+	destination := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(destination.Close)
+	for _, status := range []int{http.StatusFound, http.StatusTemporaryRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer backend-token" {
+					t.Error("review missing backend credential")
+				}
+				http.Redirect(w, r, destination.URL, status)
+			}))
+			t.Cleanup(upstream.Close)
+			cfg := &rest.Config{Host: upstream.URL, BearerToken: "backend-token", TLSClientConfig: rest.TLSClientConfig{
+				CAData: pem.EncodeToMemory(&pem.Block{Type: cert.CertificateBlockType, Bytes: upstream.Certificate().Raw}),
+			}}
+			clients, err := NewSystemClients(&ClusterClient{RestConfig: cfg, Scheme: runtime.NewScheme()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = clients.Kubernetes.AuthenticationV1().TokenReviews().Create(t.Context(), &authv1.TokenReview{
+				Spec: authv1.TokenReviewSpec{Token: "caller-token"},
+			}, metav1.CreateOptions{})
+			if err == nil {
+				t.Fatal("redirected review succeeded")
+			}
+		})
+	}
+	if received.Load() != 0 {
+		t.Fatal("redirect destination received credentials")
 	}
 }

@@ -10,8 +10,9 @@ import (
 
 // ldapManager authenticates passwords through LDAP and verifies access tokens locally.
 type ldapManager struct {
-	directory *ldapDirectory
-	tokens    *ldapTokens
+	directory         *ldapDirectory
+	tokens            *ldapTokens
+	identityAuthority string
 }
 
 func newLDAPManager(cfg config.LDAPConfig) (*ldapManager, error) {
@@ -23,7 +24,10 @@ func newLDAPManager(cfg config.LDAPConfig) (*ldapManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ldapManager{directory: directory, tokens: tokens}, nil
+	return &ldapManager{
+		directory: directory, tokens: tokens,
+		identityAuthority: sanitizeAuthority(cfg.Issuer),
+	}, nil
 }
 
 // Authenticate verifies a backend-issued bearer token without contacting LDAP.
@@ -32,7 +36,13 @@ func (m *ldapManager) Authenticate(_ context.Context, _ string, r *http.Request)
 	if err != nil {
 		return ClusterCredential{}, ErrUnauthenticated
 	}
-	return m.tokens.verify(token)
+	credential, err := m.tokens.verify(token)
+	if err != nil {
+		return ClusterCredential{}, err
+	}
+	credential.AuthProvider = config.AuthModeLDAP
+	credential.IdentityAuthority = m.identityAuthority
+	return credential, nil
 }
 
 // Login is unsupported because raw Kubernetes tokens cannot authenticate LDAP users.

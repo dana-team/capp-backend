@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
+	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -536,4 +542,41 @@ func TestHandlerCreateManagedNamespaceRecreated(t *testing.T) {
 	_, cm := membershipObjects(t, []authorization.Binding{})
 	require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(cm), cm))
 	require.Equal(t, "created-uid", cm.Annotations[authorization.NamespaceUIDAnnotation])
+}
+
+func TestHandlerAuditNamespaceOperation(t *testing.T) {
+	for _, tc := range []struct{ provider, outcome string }{
+		{config.AuthModeLDAP, "succeeded"},
+		{config.AuthModeLDAP, "failed"},
+		{config.AuthModeLDAP, "partial"},
+		{config.AuthModeOpenShift, "succeeded"},
+		{config.AuthModePassthrough, "succeeded"},
+	} {
+		t.Run(tc.provider+"/"+tc.outcome, func(t *testing.T) {
+			core, logs := observer.New(zap.InfoLevel)
+			h := &Handler{logger: zap.New(core)}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPatch, "/", nil)
+			c.Params = gin.Params{{Key: "cluster", Value: "c2"}}
+			c.Set(string(middleware.CredentialKey), auth.ClusterCredential{ImpersonateUser: "operator", AuthProvider: tc.provider, IdentityAuthority: "https://authority.example", BearerToken: "secret-token"})
+			op := &namespaceOperation{namespace: "team-a", policy: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{UID: "policy-uid", ResourceVersion: "42"}}, succeeded: tc.outcome == "succeeded"}
+			if tc.outcome == "partial" {
+				op.completed = []string{"namespace"}
+			}
+			h.auditNamespaceOperation(c, "namespace lifecycle mutation", op)
+			entries := logs.All()
+			if len(entries) != 1 {
+				t.Fatalf("auditNamespaceOperation() emitted %d records, want 1", len(entries))
+			}
+			fields := entries[0].ContextMap()
+			for key, want := range map[string]string{"caller": "operator", "authProvider": tc.provider, "identityAuthority": "https://authority.example", "outcome": tc.outcome, "cluster": "c2", "namespace": "team-a", "policyUID": "policy-uid", "policyVersion": "42"} {
+				if fields[key] != want {
+					t.Errorf("auditNamespaceOperation() %s = %v, want %q", key, fields[key], want)
+				}
+			}
+			if strings.Contains(fmt.Sprint(fields), "secret-token") {
+				t.Error("audit exposed bearer token")
+			}
+		})
+	}
 }
