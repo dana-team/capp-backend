@@ -21,10 +21,12 @@ ARG VERSION=dev
 # glibc. CGO_ENABLED=0 ensures pure Go networking is used (no cgo resolver).
 # The cache mounts keep modules and compiled packages across builds, so a
 # source change recompiles only the affected packages.
+# The build tags must match SERVER_GO_TAGS in the Makefile (explained there).
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w -X main.version=${VERSION}" -o bin/server ./cmd/server/...
+    go build -tags=nomsgpack,grpcnotrace \
+      -ldflags="-s -w -X main.version=${VERSION}" -o bin/server ./cmd/server/...
 
 # ── Stage 1b: Prebuilt binary ─────────────────────────────────────────────────
 FROM scratch AS prebuilt
