@@ -28,22 +28,21 @@ server:
 
 # ── Authentication ────────────────────────────────────────────────────────────
 authorization:
-  mode: kubernetes
+  mode: kubernetes # kubernetes | backend-policy; all three auth providers
   restrictedBindingNamePrefixes: ["system:"]
 
 auth:
   # mode controls how incoming requests are authenticated. Options:
   #
   #   passthrough (recommended for initial deployment)
-  #     The Authorization: Bearer <token> header from the client is forwarded
-  #     directly to the Kubernetes API server. No server-side session is
-  #     created. This preserves the current frontend security model and
-  #     requires no key management on the backend.
+  #     Kubernetes mode forwards the caller token for resource requests.
+  #     Backend-policy verifies it at each target with TokenReview, then uses
+  #     that target's backend token for resource requests. No login or refresh.
   #
   #   openshift (recommended for production deployments with OpenShift OAuth)
   #     POST /api/v1/auth/login authenticates users via OpenShift OAuth.
-  #     The backend impersonates users on managed clusters using per-cluster
-  #     service-account tokens. Fully stateless.
+  #     Home-cluster TokenReview verifies identity. Kubernetes mode impersonates
+  #     users; backend-policy checks assignments and uses target backend tokens.
   #
   #   ldap
   #     POST /api/v1/auth/login verifies directory credentials over TLS and
@@ -52,9 +51,9 @@ auth:
   mode: "passthrough"
 
   # OpenShift OAuth auth mode example:
-  # Authenticates users via OpenShift OAuth, impersonates them on managed clusters.
-  # Requires an OAuthClient registered in OpenShift and a service account with
-  # impersonate permissions on each managed cluster.
+  # Requires an OAuthClient and home workload-account TokenReview permission.
+  # Target accounts need impersonation permissions only in Kubernetes mode;
+  # backend-policy uses consolidated execution grants without impersonation.
   # auth:
   #   mode: openshift
   #   openshift:
@@ -149,8 +148,10 @@ tracing:
 # name appears in every API path: /api/v1/clusters/{name}/...
 #
 # Credential: set exactly ONE of kubeconfigPath or inline.
-# OpenShift and LDAP require inline.token for every cluster; use the inline
-# option and remove kubeconfigPath for those modes.
+# OpenShift, LDAP and every backend-policy provider require inline.token on
+# every target. Use inline and remove kubeconfigPath. Backend-policy passthrough
+# also requires HTTPS, a valid base64 PEM caCert and insecure: false, plus
+# TokenReview create permission for each target backend identity.
 # Sensitive values (token, secretKey) must be injected via environment variables
 # — never committed in this file.
 clusters:
@@ -162,7 +163,9 @@ clusters:
       # Option B: inline credentials.
       inline:
         apiServer: "https://127.0.0.1:45883"
-        # caCert: ""        # base64-encoded PEM CA. Omit to skip TLS verification.
+        # Set the target's base64 PEM CA for verified inline TLS in every provider.
+        # caCert: "<base64-encoded PEM CA bundle>"
+        # insecure: false   # backend-policy passthrough forbids insecure: true.
         token: ""           # inject via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
     # policyNamespace is required in backend-policy mode;
     # the lists are optional.

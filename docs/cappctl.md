@@ -30,7 +30,7 @@ Add `bin/cappctl` to your `PATH`, or copy the binary to `/usr/local/bin/cappctl`
 warning: cappctl v0.5.2 is older than capp-backend v0.6.2; upgrade cappctl to v0.6 or later to avoid unexpected errors
 ```
 
-The warning also appears when the request fails, since an outdated CLI is a likely cause. Patch-level differences, a newer CLI, and unversioned `dev` builds on either side produce no warning. Shell completion never prints it. The backend logs each outdated request as `outdated client` with the client name (`cappctl`), its version, the backend version and the response status. In OpenShift and LDAP modes the log also names the user; passthrough mode does not know who the user is.
+The warning also appears when the request fails, since an outdated CLI is a likely cause. Patch-level differences, a newer CLI, and unversioned `dev` builds on either side produce no warning. Shell completion never prints it. The backend logs each outdated request as `outdated client` with the client name (`cappctl`), its version, the backend version and the response status. When the authentication chain supplies a verified user, the log also names that user; Kubernetes-mode passthrough has no verified username.
 
 ---
 
@@ -82,9 +82,11 @@ LDAP contexts store the access token, expiry, and context metadata only. They ne
 
 ## Backend-policy deployments
 
-Authorization mode is selected by the server, independently of the CLI's authentication mode. For a backend-policy deployment, use normal LDAP login (`cappctl login --server https://capp.example.com --context prod --auth-mode ldap`) and log in again when the access token expires. No end-user Kubernetes token or RoleBinding is needed. `GET /api/v1/auth/mode` reports authentication mode, not authorization mode.
+Authorization mode is selected by the server, independently of the CLI's authentication mode. Backend-policy supports all three authentication providers with unchanged login commands: LDAP login and explicit re-login after expiry, OpenShift browser/password/direct-token login and refresh, or passthrough token import. No new authorization flag or second migration token is required. Backend-policy assignments replace user RoleBindings for API access; passthrough still requires a caller token accepted by the requested target. `GET /api/v1/auth/mode` reports authentication mode, not authorization mode.
 
-Viewer/editor grants control reads; editor is required for mutations and Git sync. Operator status alone grants no Capp access. All-namespace lists contain only authorized namespaces inside the cluster allowlist. Migration requires editor at both endpoints, including copy-only requests. A 403 policy denial is not fixed by supplying a Kubernetes token; a 503 policy-unavailable response can reflect initial synchronization or pending namespace association.
+Viewer/editor grants control reads; editor is required for mutations and Git sync. Operator status alone grants no Capp access. All-namespace lists contain only authorized namespaces inside the cluster allowlist. Migration requires editor at both endpoints, including copy-only requests. A 403 `POLICY_DENIED` requires checking verified identity, assignments and namespace boundaries; a 503 `POLICY_UNAVAILABLE` can reflect initial synchronization or pending namespace association.
+
+OpenShift verifies tokens at its home authority; passthrough verifies at each requested target and may resolve the same token to different users/groups. In backend-policy mode, rejected identities return 401; unavailable reviewers return 503 `INTERNAL_ERROR` with `identity verification is unavailable`. Passthrough cluster discovery returns no partial list if any reviewer is unavailable, 401 if all reject, or an empty successful list when accepted identities have no visible targets. Migration conceals destination rejection or reviewer outage behind 403 `POLICY_DENIED`; source reviewer outages retain 503. See [provider verification](backend-policy.md#provider-verification-and-discovery).
 
 Use the namespace HTTP API for operator membership/quota workflows and full bindings/revision handling. See [backend-policy operations](backend-policy.md#existing-namespace-api) for examples, recovery and deployment prerequisites. Kubernetes-mode CLI usage remains unchanged.
 

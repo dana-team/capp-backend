@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Pluggable authentication** — Three modes: `passthrough`, `openshift` (OpenShift OAuth), and `ldap` (directory password login with backend-issued access tokens). OpenShift uses Kubernetes impersonation; LDAP supports Kubernetes impersonation or backend-policy authorization.
+- **Pluggable authentication** — Three modes: `passthrough`, `openshift` (OpenShift OAuth), and `ldap` (directory password login with backend-issued access tokens). All three support Kubernetes or backend-policy authorization.
 - **Multi-cluster support** — Configure any number of clusters; each is health-checked every 30 seconds.
 - **Capp CRUD** — Full create / read / update / delete for `Capp` resources across namespaces.
 - **Namespace listing** — Returns namespaces according to the active authorization mode and configured namespace boundary.
@@ -18,7 +18,7 @@
 
 - **Go** 1.25 or later (for building from source)
 - One or more Kubernetes/OpenShift clusters with the [`container-app-operator`](https://github.com/dana-team/container-app-operator) installed (provides the `rcs.dana.io/v1alpha1` API group)
-- For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered, and a service account with `impersonate` permissions on each managed cluster
+- For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered and home-cluster TokenReview permission; target service accounts need impersonation permissions in Kubernetes mode or consolidated backend permissions in backend-policy mode
 - For `ldap` auth mode: direct LDAPS directory access, a search account, support for binding as the target user, Ed25519 signing keys, and per-cluster system credentials (impersonation permissions in Kubernetes mode; consolidated backend permissions in backend-policy mode)
 
 ## Getting Started
@@ -50,7 +50,7 @@ Configuration is loaded from a YAML file specified with the `--config` flag (e.g
 
 ### Authorization mode
 
-`authorization.mode` defaults to `kubernetes`. With LDAP, `backend-policy` uses application viewer/editor assignments and configured namespace operators, with one backend credential per cluster and no user impersonation. See the [adoption and operations guide](docs/backend-policy.md) for configuration, Secret-read access, infrastructure permissions, namespace API examples, and manual cutover/rollback. This describes the implementation in this source tree, not release availability or completed deployment validation.
+`authorization.mode` defaults to `kubernetes`. With LDAP, OpenShift or passthrough authentication, `backend-policy` uses application viewer/editor assignments and configured namespace operators, with one backend credential per cluster and no user impersonation. See the [adoption and operations guide](docs/backend-policy.md) for configuration, Secret-read access, infrastructure permissions, namespace API examples, and manual cutover/rollback. This describes the implementation in this source tree, not release availability or completed deployment validation.
 
 ### Full reference
 
@@ -103,7 +103,7 @@ auth:
     burst: 40
 
 authorization:
-  mode: kubernetes  # kubernetes | backend-policy (LDAP only)
+  mode: kubernetes  # kubernetes | backend-policy (all three auth modes)
   restrictedBindingNamePrefixes: ["system:"]  # Required in backend-policy; [] disables prefix restrictions
 
 logging:
@@ -137,13 +137,14 @@ clusters:
     allowedNamespaces: []         # Empty = no extra name filter; mode-specific authorization still applies
     gitOpsPath: ""                # Sub-path within gitops.pathPrefix for this cluster
     credential:
-      # Option A: kubeconfig file
+      # Option A: kubeconfig file (Kubernetes-mode passthrough)
       kubeconfigPath: "/home/user/.kube/config"
-      # Option B: inline credentials
+      # Option B: inline credentials (remove kubeconfigPath when using this option)
       inline:
         apiServer: "https://my-cluster:6443"
         caCert: "<base64-encoded PEM>"
-        token: "<service-account-token>"
+        token: ""  # Inject via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
+        insecure: false
 
 resources:
   namespaces:
@@ -160,7 +161,7 @@ resources:
 
 ### `passthrough` (default)
 
-The client's `Authorization: Bearer <token>` header is forwarded directly to each Kubernetes API server. No server-side state is created. Suitable for initial deployment and setups where clients already hold cluster tokens.
+Clients supply their existing `Authorization: Bearer <token>` header; login and refresh remain unsupported. In Kubernetes authorization mode, the token is forwarded to the Kubernetes API for resource access. In backend-policy mode, each requested target verifies it with TokenReview before policy checks. The backend identity authenticates both review and resource calls; the caller token appears only in the review body. A token may resolve to different usernames/groups at different targets, and review results are reused only within that HTTP request. In backend-policy mode, each target requires inline backend credentials, an HTTPS API endpoint, a valid base64 PEM `caCert`, and `insecure: false`; remove `kubeconfigPath`. See [verification and discovery errors](docs/backend-policy.md#provider-verification-and-discovery).
 
 ### `openshift`
 
@@ -170,7 +171,7 @@ Authenticates users via the OpenShift OAuth server of the cluster where the back
 
 **Programmatic flow:** Any valid OpenShift bearer token can be passed directly in the `Authorization: Bearer <token>` header. The backend validates it via the Kubernetes TokenReview API.
 
-On every authenticated request, the backend extracts the user's identity (username + groups) from the token and **impersonates** that user when making requests to managed clusters. Each managed cluster must have a service account token configured (`credential.inline.token`) with `impersonate` permissions on `users` and `groups` resources.
+The backend verifies the token with its in-cluster home TokenReview service, preserving the returned username and groups. Successful results are cached for `auth.openshift.tokenCacheTTLSeconds`; execution targets never review the caller token. Kubernetes authorization mode impersonates the verified user using each target's service account, which needs `impersonate` on `users` and `groups`. Backend-policy mode instead checks assignments and executes with each target's backend token, without impersonation. The workload service account needs home-cluster TokenReview permission in either mode. Confirm that the configured OAuth server and home reviewer represent the intended authority.
 
 Requires `auth.openshift.apiServer`, `auth.openshift.clientId`, `auth.openshift.clientSecret`, `auth.openshift.redirectUri`, and an inline token for every configured cluster.
 

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,10 +24,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
@@ -227,7 +231,7 @@ func migrationRouter(t *testing.T, targets map[string]requestpolicy.Target, sour
 	rules, err := requestpolicy.NewRoutes("")
 	require.NoError(t, err)
 	r := gin.New()
-	r.Use(requestpolicy.New(policyIdentity("editor"), mgr, rules, targets, logger))
+	r.Use(requestpolicy.New(policyIdentity("editor"), config.AuthModePassthrough, mgr, rules, targets, logger))
 	newCappsHandler(t, false, nil, mgr, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
 	return r
 }
@@ -317,7 +321,7 @@ func TestPrepareMigrationCredentials(t *testing.T) {
 	rules, err := requestpolicy.NewRoutes("")
 	require.NoError(t, err)
 	r := gin.New()
-	r.Use(requestpolicy.New(policyIdentity("editor"), mgr, rules, targets, zap.NewNop()))
+	r.Use(requestpolicy.New(policyIdentity("editor"), config.AuthModePassthrough, mgr, rules, targets, zap.NewNop()))
 	r.POST("/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate", func(c *gin.Context) {
 		source, destination, ok := requestpolicy.PrepareMigration(c, "c2", "team-a")
 		require.True(t, ok)
@@ -329,4 +333,204 @@ func TestPrepareMigrationCredentials(t *testing.T) {
 	})
 	w := policyRequest(r, http.MethodPost, "/api/v1/clusters/c1/namespaces/team-a/capps/app/migrate", "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
+func TestMigrate(t *testing.T) {
+	for _, mode := range []string{config.AuthModePassthrough, config.AuthModeOpenShift} {
+		t.Run(mode, func(t *testing.T) {
+			scenarios := []string{"copy", "move", "source denied", "source unavailable", "destination denied", "destination unhealthy", "unknown destination", "same target", "same target denied", "identical endpoints", "malformed body"}
+			if mode == config.AuthModePassthrough {
+				scenarios = append(scenarios, "destination rejected", "destination unavailable")
+			}
+			for _, scenario := range scenarios {
+				t.Run(scenario, func(t *testing.T) {
+					sourceStore, observations, cm := policyStore(t, nil)
+					destinationUser := "destination-editor"
+					if mode == config.AuthModeOpenShift {
+						destinationUser = "editor"
+					}
+					destinationStore, _, _ := policyStore(t, func(cm *corev1.ConfigMap, _ *corev1.Namespace) {
+						role := authorization.RoleEditor
+						if scenario == "destination denied" {
+							role = authorization.RoleViewer
+						}
+						cm.Data["policy.json"] = aggregatePolicyJSON(t, "team-a", []authorization.Binding{{Kind: rbacv1.UserKind, Name: destinationUser, Role: role}})
+					})
+					execution := &migrationExecution{}
+					targetCluster, targetNamespace := "c2", "team-a"
+					status := http.StatusOK
+					switch scenario {
+					case "source denied", "destination denied", "destination rejected", "destination unavailable", "unknown destination", "same target denied":
+						status = http.StatusForbidden
+					case "source unavailable", "destination unhealthy":
+						status = http.StatusServiceUnavailable
+					case "identical endpoints", "malformed body":
+						status = http.StatusBadRequest
+					}
+					if scenario == "unknown destination" {
+						targetCluster = "missing"
+					}
+					if scenario == "identical endpoints" {
+						targetCluster = "c1"
+					}
+					if scenario == "same target" || scenario == "same target denied" {
+						targetCluster, targetNamespace = "c1", "team-b"
+					}
+					users := map[string]authv1.UserInfo{"c1": {Username: "editor"}, "c2": {Username: destinationUser}}
+					if scenario == "source denied" {
+						users["c1"] = authv1.UserInfo{Username: "alice"}
+					}
+					execution.targetCluster, execution.targetNamespace, execution.allowed = targetCluster, targetNamespace, status == http.StatusOK
+					p := newPolicyProvider(t, mode, users, execution.handler(t))
+					if scenario == "source unavailable" {
+						p.reviews["c1"].status.Store(http.StatusServiceUnavailable)
+					}
+					if scenario == "destination rejected" {
+						p.reviews["c2"].user.Store(nil)
+					}
+					if scenario == "destination unavailable" {
+						p.reviews["c2"].status.Store(http.StatusForbidden)
+					}
+					if scenario == "destination unhealthy" {
+						cc, err := p.manager.Get("c2")
+						require.NoError(t, err)
+						cc.SetHealthy(false)
+					}
+					if scenario == "same target" || scenario == "same target denied" {
+						ns := sourceStore.Lookup("team-a").Namespace.DeepCopy()
+						ns.Name = "team-b"
+						_, err := observations.CoreV1().Namespaces().Create(t.Context(), ns, metav1.CreateOptions{})
+						require.NoError(t, err)
+						cm = cm.DeepCopy()
+						cm.Name = "capp-assignment-team-b"
+						role := authorization.RoleEditor
+						if scenario == "same target denied" {
+							role = authorization.RoleViewer
+						}
+						cm.Data["policy.json"] = aggregatePolicyJSON(t, "team-b", []authorization.Binding{{Kind: rbacv1.UserKind, Name: "editor", Role: role}})
+						_, err = observations.CoreV1().ConfigMaps(cm.Namespace).Create(t.Context(), cm, metav1.CreateOptions{})
+						require.NoError(t, err)
+						require.Eventually(t, func() bool { return sourceStore.Lookup("team-b").Ready() }, 5*time.Second, time.Millisecond)
+					}
+					r := p.router(t, map[string]requestpolicy.Target{"c1": {Store: sourceStore, OperatorUsers: []string{"editor"}}, "c2": {Store: destinationStore, OperatorUsers: []string{destinationUser}}})
+					git := &policyGitRecorder{}
+					newCappsHandler(t, true, git, p.manager, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
+					body, err := json.Marshal(capps.MigrateRequest{TargetCluster: targetCluster, TargetNamespace: targetNamespace, DeleteSource: scenario == "move"})
+					require.NoError(t, err)
+					if scenario == "malformed body" {
+						body = []byte("{")
+					}
+					w := policyRequest(r, http.MethodPost, "/api/v1/clusters/c1/namespaces/team-a/capps/app/migrate", string(body))
+					require.Equal(t, status, w.Code, w.Body.String())
+					require.Equal(t, int64(1), p.reviews["c1"].calls.Load())
+					wantDestinationReviews := int64(1)
+					if mode != config.AuthModePassthrough || targetCluster != "c2" {
+						wantDestinationReviews = 0
+					}
+					switch scenario {
+					case "source denied", "source unavailable", "malformed body":
+						wantDestinationReviews = 0
+					}
+					require.Equal(t, wantDestinationReviews, p.reviews["c2"].calls.Load())
+					require.Zero(t, git.calls)
+					if status == http.StatusForbidden {
+						requirePolicyError(t, w, apierrors.CodeForbidden, apierrors.ReasonPolicyDenied)
+					}
+					if scenario == "source unavailable" {
+						requirePolicyError(t, w, apierrors.CodeInternal, "")
+						require.Contains(t, w.Body.String(), "identity verification is unavailable")
+					}
+					if scenario == "destination unhealthy" {
+						requirePolicyError(t, w, apierrors.CodeClusterUnhealthy, "")
+					}
+					execution.requireResult(t, w, scenario == "move")
+				})
+			}
+		})
+	}
+}
+
+type migrationExecution struct {
+	reads, creates, deletes        atomic.Int64
+	targetCluster, targetNamespace string
+	allowed                        bool
+}
+
+func (e *migrationExecution) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", runtime.ContentTypeJSON)
+		var body any
+		switch r.URL.Path {
+		case "/api":
+			body = metav1.APIVersions{Versions: []string{corev1.SchemeGroupVersion.Version}}
+		case "/apis":
+			body = metav1.APIGroupList{Groups: []metav1.APIGroup{{Name: cappv1alpha1.GroupVersion.Group, Versions: []metav1.GroupVersionForDiscovery{{GroupVersion: cappv1alpha1.GroupVersion.String(), Version: cappv1alpha1.GroupVersion.Version}}, PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: cappv1alpha1.GroupVersion.String(), Version: cappv1alpha1.GroupVersion.Version}}}}
+		case "/api/v1":
+			body = metav1.APIResourceList{GroupVersion: corev1.SchemeGroupVersion.String(), APIResources: []metav1.APIResource{{Name: "secrets", Kind: "Secret", Namespaced: true}, {Name: "configmaps", Kind: "ConfigMap", Namespaced: true}}}
+		case "/apis/" + cappv1alpha1.GroupVersion.String():
+			body = metav1.APIResourceList{GroupVersion: cappv1alpha1.GroupVersion.String(), APIResources: []metav1.APIResource{{Name: consts.CappResource, Kind: "Capp", Namespaced: true}}}
+		default:
+			if !e.allowed {
+				t.Error("failed migration reached resource execution")
+			}
+			switch r.Method {
+			case http.MethodGet:
+				e.reads.Add(1)
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/secrets"):
+					body = corev1.SecretList{TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "SecretList"}}
+				case strings.HasSuffix(r.URL.Path, "/configmaps"):
+					body = corev1.ConfigMapList{TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "ConfigMapList"}}
+				case r.Header.Get("Authorization") == "Bearer c1-backend-token" && strings.Contains(r.URL.Path, "/namespaces/team-a/"):
+					body = cappv1alpha1.Capp{TypeMeta: metav1.TypeMeta{APIVersion: cappv1alpha1.GroupVersion.String(), Kind: "Capp"}, ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"}}
+				default:
+					w.WriteHeader(http.StatusNotFound)
+					body = metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonNotFound, Code: http.StatusNotFound}
+				}
+			case http.MethodPost:
+				e.creates.Add(1)
+				requireHeader := "Bearer " + e.targetCluster + "-backend-token"
+				if r.Header.Get("Authorization") != requireHeader || !strings.Contains(r.URL.Path, "/namespaces/"+e.targetNamespace+"/") {
+					t.Error("creation used wrong endpoint")
+				}
+				var capp cappv1alpha1.Capp
+				if err := json.NewDecoder(r.Body).Decode(&capp); err != nil {
+					t.Error(err)
+				}
+				body = capp
+			case http.MethodDelete:
+				e.deletes.Add(1)
+				if r.Header.Get("Authorization") != "Bearer c1-backend-token" {
+					t.Error("deletion used destination credentials")
+				}
+				body = metav1.Status{TypeMeta: metav1.TypeMeta{APIVersion: metav1.Unversioned.String(), Kind: "Status"}, Status: metav1.StatusSuccess}
+			default:
+				t.Errorf("unexpected execution %s %s", r.Method, r.URL.Path)
+			}
+		}
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func (e *migrationExecution) requireResult(t *testing.T, w *httptest.ResponseRecorder, move bool) {
+	t.Helper()
+	if !e.allowed {
+		require.Zero(t, e.reads.Load())
+		require.Zero(t, e.creates.Load())
+		require.Zero(t, e.deletes.Load())
+		return
+	}
+	require.Equal(t, int64(4), e.reads.Load())
+	require.Equal(t, int64(1), e.creates.Load())
+	var response capps.MigrateResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	require.Equal(t, move, response.SourceDeleted)
+	wantDeletes := int64(0)
+	if move {
+		wantDeletes = 1
+	}
+	require.Equal(t, wantDeletes, e.deletes.Load())
 }
