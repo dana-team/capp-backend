@@ -27,6 +27,8 @@ type (
 	EnvVarSource       = common.EnvVarSource
 	KeySelector        = common.KeySelector
 	EnvVar             = common.EnvVar
+	SecretVolume       = common.SecretVolume
+	ConfigMapVolume    = common.ConfigMapVolume
 )
 
 // VolumeMount maps a volume into a container at a path.
@@ -94,20 +96,6 @@ type NFSVolume struct {
 	Server   string `json:"server"   binding:"required"`
 	Path     string `json:"path"     binding:"required"`
 	Capacity string `json:"capacity" binding:"required"` // e.g. "10Gi"
-}
-
-// SecretVolume mounts a Kubernetes Secret as a volume into the container.
-type SecretVolume struct {
-	Name       string `json:"name"       binding:"required"`
-	SecretName string `json:"secretName" binding:"required"`
-	MountPath  string `json:"mountPath"  binding:"required"`
-}
-
-// ConfigMapVolume mounts a Kubernetes ConfigMap as a volume into the container.
-type ConfigMapVolume struct {
-	Name          string `json:"name"          binding:"required"`
-	ConfigMapName string `json:"configMapName" binding:"required"`
-	MountPath     string `json:"mountPath"     binding:"required"`
 }
 
 // ScaleSpec configures autoscaling for a Capp.

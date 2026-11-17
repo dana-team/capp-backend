@@ -35,3 +35,17 @@ type EnvVar struct {
 	Value     string        `json:"value,omitempty"`
 	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
 }
+
+// SecretVolume mounts a Kubernetes Secret as a volume into the container.
+type SecretVolume struct {
+	Name       string `json:"name"       binding:"required"`
+	SecretName string `json:"secretName" binding:"required"`
+	MountPath  string `json:"mountPath"  binding:"required"`
+}
+
+// ConfigMapVolume mounts a Kubernetes ConfigMap as a volume into the container.
+type ConfigMapVolume struct {
+	Name          string `json:"name"          binding:"required"`
+	ConfigMapName string `json:"configMapName" binding:"required"`
+	MountPath     string `json:"mountPath"     binding:"required"`
+}

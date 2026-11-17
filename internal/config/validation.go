@@ -61,6 +61,7 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 	errs = append(errs, validateObservability(&cfg.Resources.Observability, len(cfg.Clusters))...)
 	errs = append(errs, validateCfunc(&cfg.Resources.Cfunc)...)
+	errs = append(errs, validateCfuncRouterURLs(cfg.Clusters)...)
 
 	if cfg.Metrics.Enabled {
 		if err := ValidateMetricsPath(cfg.Metrics.Path); err != nil {
@@ -553,7 +554,7 @@ func validateObservability(o *ObservabilityConfig, clusterCount int) []error {
 			"config: resources.observability.queryURL is required when resources.observability.enabled is true; "+
 				"set via CAPP_RESOURCES_OBSERVABILITY_QUERYURL environment variable",
 		))
-	} else if u, err := url.Parse(queryURL); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	} else if u, err := url.Parse(queryURL); err != nil || u.Host == "" || (u.Scheme != httpScheme && u.Scheme != httpsScheme) {
 		// The value is left out of the error because it can carry a token.
 		errs = append(errs, errors.New("config: resources.observability.queryURL must be an absolute http or https URL"))
 	}
@@ -651,12 +652,16 @@ func (o *ObservabilityConfig) MetricsWithoutClusterLabel() []string {
 
 // validateCfunc checks that the flavor and size maps are usable when enabled.
 func validateCfunc(e *CfuncConfig) []error {
+	const prefix = "config: resources.cfunc"
 	if !e.Enabled {
+		if e.Functions.Enabled {
+			return []error{fmt.Errorf("%s.functions.enabled needs %s.enabled", prefix, prefix)}
+		}
 		return nil
 	}
 
-	const prefix = "config: resources.cfunc"
 	var errs []error
+	errs = append(errs, validateCfuncFunctions(&e.Functions)...)
 
 	if strings.Contains(e.RegistryPrefix, "://") || strings.HasSuffix(e.RegistryPrefix, "/") {
 		errs = append(errs, fmt.Errorf("%s.registryPrefix must be a registry path with no scheme and no trailing slash", prefix))
@@ -722,6 +727,90 @@ func validateCfunc(e *CfuncConfig) []error {
 		}
 	}
 
+	return errs
+}
+
+// validateCfuncFunctions checks the git server and the limits of functions.
+// No message prints the token.
+func validateCfuncFunctions(f *CfuncFunctionsConfig) []error {
+	if !f.Enabled {
+		return nil
+	}
+
+	const prefix = "config: resources.cfunc.functions"
+	var errs []error
+
+	if err := validateHTTPSBaseURL(f.Git.BaseURL); err != nil {
+		errs = append(errs, fmt.Errorf("%s.git.baseURL: %w", prefix, err))
+	}
+	if f.Git.Token == "" {
+		errs = append(errs, fmt.Errorf("%s.git.token is required; set CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN", prefix))
+	}
+	if f.Git.Username == "" {
+		errs = append(errs, fmt.Errorf("%s.git.username is required", prefix))
+	}
+
+	for _, limit := range []struct {
+		key   string
+		value int
+	}{
+		{"maxTriggers", f.MaxTriggers},
+		{"maxTimeoutSeconds", f.MaxTimeoutSeconds},
+		{"defaultConcurrency", f.DefaultConcurrency},
+		{"maxConcurrency", f.MaxConcurrency},
+		{"minCronIntervalSeconds", f.MinCronIntervalSeconds},
+	} {
+		if limit.value < 1 {
+			errs = append(errs, fmt.Errorf("%s.%s must be 1 or greater, got %d", prefix, limit.key, limit.value))
+		}
+	}
+	if f.DefaultConcurrency > f.MaxConcurrency {
+		errs = append(errs, fmt.Errorf("%s.defaultConcurrency %d is larger than maxConcurrency %d",
+			prefix, f.DefaultConcurrency, f.MaxConcurrency))
+	}
+
+	return errs
+}
+
+const (
+	httpScheme  = "http"
+	httpsScheme = "https"
+)
+
+// validateHTTPSBaseURL requires an https URL with a host and nothing a
+// prefix match could be confused by: no credentials, query or fragment.
+func validateHTTPSBaseURL(raw string) error {
+	if raw == "" {
+		return errors.New("is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("is not a valid URL")
+	}
+	if parsed.Scheme != httpsScheme || parsed.Host == "" {
+		return errors.New("must be an https URL with a host")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("must not carry credentials, a query or a fragment")
+	}
+	return nil
+}
+
+// validateCfuncRouterURLs checks the optional Fission router URL of each cluster.
+func validateCfuncRouterURLs(clusters []ClusterConfig) []error {
+	var errs []error
+	for i, c := range clusters {
+		if c.CfuncRouterURL == "" {
+			continue
+		}
+		parsed, err := url.Parse(c.CfuncRouterURL)
+		if err != nil || (parsed.Scheme != httpScheme && parsed.Scheme != httpsScheme) || parsed.Host == "" ||
+			parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			errs = append(errs, fmt.Errorf(
+				"config: clusters[%d] (%q): cfuncRouterURL must be an http or https URL with a host and no credentials, query or fragment",
+				i, c.Name))
+		}
+	}
 	return errs
 }
 

@@ -15,8 +15,14 @@ import (
 )
 
 const (
-	// Fission honours spec.poolsize only for version 3 Environments.
-	environmentVersion = 3
+	// EnvironmentVersion is the interface version every pool is written
+	// with. Fission honours spec.poolsize only for version 3 Environments.
+	EnvironmentVersion = 3
+
+	// FissionEnabledLabel on a Namespace makes Fission serve the namespace
+	// when it runs with tenancy.mode=dynamic.
+	FissionEnabledLabel = "fission.io/enabled"
+	FissionEnabledValue = "true"
 
 	defaultPoolSize = 3
 
@@ -50,7 +56,7 @@ func ToK8s(req PoolRequest, existing *fissionv1.Environment, namespace string, c
 			Namespace: namespace,
 		},
 		Spec: fissionv1.EnvironmentSpec{
-			Version: environmentVersion,
+			Version: EnvironmentVersion,
 		},
 	}
 
@@ -351,8 +357,17 @@ func advancedFromK8s(env *fissionv1.Environment, resp PoolResponse, catalog *Cat
 
 // buildStatus maps the Environment's Status to the simplified PoolStatusResponse DTO.
 func buildStatus(env *fissionv1.Environment) PoolStatusResponse {
-	conditions := make([]Condition, 0, len(env.Status.Conditions))
-	for _, condition := range env.Status.Conditions {
+	return PoolStatusResponse{
+		ObservedGeneration: env.Status.ObservedGeneration,
+		Conditions:         ConditionsFromK8s(env.Status.Conditions),
+	}
+}
+
+// ConditionsFromK8s converts the status conditions of a Fission object. It
+// never returns nil, so a response always carries a list.
+func ConditionsFromK8s(in []metav1.Condition) []Condition {
+	conditions := make([]Condition, 0, len(in))
+	for _, condition := range in {
 		c := Condition{
 			Type:    condition.Type,
 			Status:  string(condition.Status),
@@ -364,5 +379,5 @@ func buildStatus(env *fissionv1.Environment) PoolStatusResponse {
 		}
 		conditions = append(conditions, c)
 	}
-	return PoolStatusResponse{ObservedGeneration: env.Status.ObservedGeneration, Conditions: conditions}
+	return conditions
 }

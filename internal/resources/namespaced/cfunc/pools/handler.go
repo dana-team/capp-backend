@@ -7,9 +7,12 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	fissionv1 "github.com/fission/fission/pkg/apis/core/v1"
 	"github.com/gin-gonic/gin"
+	authorizationv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -17,6 +20,7 @@ import (
 // Handler implements resources.ResourceHandler for cfunc pools.
 type Handler struct {
 	catalog *Catalog
+	onboard bool
 }
 
 // New returns a ready-to-use pool Handler that resolves flavors and sizes
@@ -27,7 +31,7 @@ func New(cfg config.CfuncConfig) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{catalog: catalog}, nil
+	return &Handler{catalog: catalog, onboard: cfg.OnboardNamespaces}, nil
 }
 
 // Name returns the handler's identifier.
@@ -116,12 +120,87 @@ func (h *Handler) create(c *gin.Context) {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
 	}
+	// The label comes first: a pool in a namespace Fission does not serve
+	// gets no pods, and a repeated request finds the label already there.
+	if h.onboard {
+		if err := onboardNamespace(c, k8sClient, namespace); err != nil {
+			apierrors.Respond(c, err)
+			return
+		}
+	}
 	if err := k8sClient.Create(c.Request.Context(), env); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
 
 	c.JSON(http.StatusCreated, FromK8s(env, h.catalog))
+}
+
+// onboardNamespace sets the label that makes Fission, in its dynamic tenancy
+// mode, serve the namespace. The caller's credential is tried first. A
+// namespace's users normally cannot change the namespace object itself, so
+// a refusal falls back to the backend's own cluster credential when the
+// request has one (passthrough mode has none) and the caller may create
+// pools in the namespace. The label is never removed
+// here: removing it makes Fission tear down what it runs in the namespace.
+func onboardNamespace(c *gin.Context, userClient client.Client, namespace string) error {
+	err := labelNamespace(c, userClient, namespace)
+	if !k8serrors.IsForbidden(err) {
+		return err
+	}
+	// The backend credential acts only for a caller who may create the pool.
+	// Without this check, a caller with no right in the namespace would get
+	// it labelled, and the label stays, before its create is refused.
+	review := &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace: namespace,
+				Verb:      "create",
+				Group:     fissionv1.SchemeGroupVersion.Group,
+				Resource:  "environments",
+			},
+		},
+	}
+	if reviewErr := userClient.Create(c.Request.Context(), review); reviewErr != nil {
+		return reviewErr
+	}
+	if !review.Status.Allowed {
+		return apierrors.NewForbidden(fmt.Sprintf("you may not create pools in namespace %s", namespace))
+	}
+	admin, ok := c.Get(string(middleware.AdminK8sClientKey))
+	if !ok {
+		return err
+	}
+	adminClient, ok := admin.(client.Client)
+	if !ok || adminClient == nil {
+		return err
+	}
+	adminErr := labelNamespace(c, adminClient, namespace)
+	if k8serrors.IsForbidden(adminErr) {
+		return apierrors.NewForbidden(fmt.Sprintf(
+			"namespace %s is not enabled for Fission, and neither the caller nor the backend may label it; ask a cluster administrator to set %s=%s on it",
+			namespace, FissionEnabledLabel, FissionEnabledValue))
+	}
+	// Any other failure, such as a timeout or a conflict, is not a missing
+	// right: it goes out as it is, so the cause is logged and the caller is
+	// not sent to an administrator for nothing.
+	return adminErr
+}
+
+func labelNamespace(c *gin.Context, k8sClient client.Client, namespace string) error {
+	var ns corev1.Namespace
+	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Name: namespace}, &ns); err != nil {
+		return err
+	}
+	if ns.Labels[FissionEnabledLabel] == FissionEnabledValue {
+		return nil
+	}
+	patch := client.MergeFrom(ns.DeepCopy())
+	if ns.Labels == nil {
+		ns.Labels = map[string]string{}
+	}
+	ns.Labels[FissionEnabledLabel] = FissionEnabledValue
+	return k8sClient.Patch(c.Request.Context(), &ns, patch)
 }
 
 // update handles PUT /api/v1/clusters/:cluster/namespaces/:namespace/cfunc/pools/:name
@@ -157,10 +236,10 @@ func (h *Handler) update(c *gin.Context) {
 
 	// Fission ignores the pool size below this version and makes the version
 	// immutable, so an update could only report values that have no effect.
-	if existing.Spec.Version < environmentVersion {
+	if existing.Spec.Version < EnvironmentVersion {
 		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf(
 			"pool %s is a version %d Environment that was not created through this API; Fission ignores the pool size below version %d and does not let the version change, so delete it and create it again",
-			name, existing.Spec.Version, environmentVersion)))
+			name, existing.Spec.Version, EnvironmentVersion)))
 		return
 	}
 

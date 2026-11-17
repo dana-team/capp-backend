@@ -2,6 +2,7 @@
 config:
   clusters:
     - name: test
+      cfuncRouterURL: https://fn.example.internal
       credential:
         inline:
           apiServer: https://example.com
@@ -28,5 +29,11 @@ config:
           image: "jvm-env:1.32.0"
           buildImage: "jvm-builder:1.32.0"
           keepArchive: true
+      onboardNamespaces: true
+      functions:
+        enabled: true
+        git:
+          baseURL: https://gitlab.example.internal
 secret:
   jwtSecretKey: test-secret
+  cfuncGitToken: test-token

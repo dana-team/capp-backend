@@ -9,6 +9,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +25,27 @@ func ListAggregate(c *gin.Context, list client.ObjectList, options ...client.Lis
 		return false
 	}
 	if err := decision.aggregate(c, list, options...); err != nil {
+		respondPolicyOperationError(c, err)
+		return false
+	}
+	return true
+}
+
+// ListAggregates fills several lists like ListAggregate, at the same time.
+// Each list goes through the same per-namespace access checks; they only
+// run next to each other. On failure it writes one HTTP error and returns
+// false.
+func ListAggregates(c *gin.Context, lists ...client.ObjectList) bool {
+	decision, ok := requestPolicyDecision(c)
+	if !Enabled(c) || !ok || decision.category != Aggregate || decision.aggregate == nil {
+		respondPolicyError(c, authorization.ErrDenied)
+		return false
+	}
+	var group errgroup.Group
+	for _, list := range lists {
+		group.Go(func() error { return decision.aggregate(c, list) })
+	}
+	if err := group.Wait(); err != nil {
 		respondPolicyOperationError(c, err)
 		return false
 	}

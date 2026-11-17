@@ -55,15 +55,17 @@ Here `C` is `/api/v1/clusters/:cluster` and `N` is `C/namespaces/:namespace`.
 | GET cluster/namespace discovery | Eligible viewer/editor namespaces, or operator administrative discovery |
 | GET `N` | Eligible viewer/editor or configured operator |
 | POST `C/namespaces`; PUT/PATCH/DELETE `N` | Configured operator only |
-| GET `N/{capps,configmaps,secrets,cfunc/pools}` and object detail | viewer or editor |
+| GET `N/{capps,configmaps,secrets,cfunc/pools,cfunc/functions}` and object detail | viewer or editor |
 | GET `N/{configmaps,secrets}/names` | viewer or editor |
 | GET `N/{configmaps,secrets}/:name/bound` | viewer or editor |
 | GET Capp revisions and revision detail | viewer or editor |
-| GET `C/{capps,configmaps,secrets,cfunc/pools}` | viewer or editor separately in each included namespace |
+| GET `C/{capps,configmaps,secrets,cfunc/pools,cfunc/functions}` | viewer or editor separately in each included namespace |
 | POST resource collections; PUT/DELETE resource objects | editor |
 | Capp revision rollback, Git sync/unsync, including Git effects in update/delete | editor; feature settings still apply |
 | Capp migration | editor at source **and** destination, even for copy-only or same-cluster requests |
 | Capp metrics APIs (`.../capps/:name/metrics[/:metric]`) | Denied, even for operators/editors; no Prometheus calls |
+| cfunc function test call (`.../cfunc/functions/:name/test`) | editor |
+| cfunc function logs (`.../cfunc/functions/:name/logs`) | Denied, even for operators/editors; pod logs are read with the caller's own cluster credential, which this mode does not have |
 
 Viewer reads include **Secret payloads** exposed by the existing API. There is no per-object ACL or field redaction. Disabling a resource route does not disable supporting operations of another enabled API: migration still copies managed Secrets and ConfigMaps. Review these compound operations before adoption.
 
@@ -171,6 +173,9 @@ Replace the context and example names for your target. The role name must match 
 | Core ResourceQuotas | get, create, update |
 | `fission.io` Environments (only when `resources.cfunc.enabled`) | get, list, create, update, delete |
 | `fission.io` Functions (only when `resources.cfunc.enabled`) | list |
+| `fission.io` Functions, Packages, HTTPTriggers, TimeTriggers (only when `resources.cfunc.functions.enabled`) | get, list, create, update, patch, delete |
+| `fission.io` Packages status (only when `resources.cfunc.functions.enabled`) | patch |
+| Core Namespaces (only when `resources.cfunc.onboardNamespaces`) | patch |
 
 Retain API discovery and `/version` reachability. The ClusterRoleBinding grants these permissions cluster-wide, including protected storage. Application policy checks, namespace restrictions and operator checks control user access; there is no separate Kubernetes permission boundary between resource execution and policy storage. Empty operator lists deny administration in the application without changing infrastructure grants. Namespace creation and policy writes do not create Kubernetes grants.
 

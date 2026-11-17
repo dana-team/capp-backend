@@ -28,6 +28,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	revhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
+	functionhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/functions"
 	poolhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/pools"
 	cmhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	secrethandler "github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
@@ -121,13 +122,15 @@ func main() {
 	}
 
 	// ── 7. Build resource registry ────────────────────────────────────────────
+	functionsEnabled := cfg.Resources.Cfunc.Enabled && cfg.Resources.Cfunc.Functions.Enabled
 	enabledResources := map[string]bool{
-		"namespaces":    cfg.Resources.Namespaces.Enabled,
-		"capps":         cfg.Resources.Capps.Enabled,
-		"capprevisions": cfg.Resources.Capprevisions.Enabled,
-		"configmaps":    cfg.Resources.Configmaps.Enabled,
-		"secrets":       cfg.Resources.Secrets.Enabled,
-		"cfuncpools":    cfg.Resources.Cfunc.Enabled,
+		"namespaces":     cfg.Resources.Namespaces.Enabled,
+		"capps":          cfg.Resources.Capps.Enabled,
+		"capprevisions":  cfg.Resources.Capprevisions.Enabled,
+		"configmaps":     cfg.Resources.Configmaps.Enabled,
+		"secrets":        cfg.Resources.Secrets.Enabled,
+		"cfuncpools":     cfg.Resources.Cfunc.Enabled,
+		"cfuncfunctions": functionsEnabled,
 	}
 	registry := resources.NewRegistry(enabledResources)
 	if unscoped := cfg.Resources.Observability.MetricsWithoutClusterLabel(); len(unscoped) > 0 {
@@ -142,13 +145,20 @@ func main() {
 	}
 	registry.Register(cappHandler)
 	registry.Register(revhandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
-	registry.Register(cmhandler.New())
-	registry.Register(secrethandler.New())
+	registry.Register(cmhandler.New().WithFunctionGuard(functionsEnabled))
+	registry.Register(secrethandler.New().WithFunctionGuard(functionsEnabled))
 	poolHandler, err := poolhandler.New(cfg.Resources.Cfunc)
 	if err != nil {
 		logger.Fatal("failed to initialise cfunc pools handler", zap.Error(err))
 	}
 	registry.Register(poolHandler)
+	if functionsEnabled {
+		functionHandler, err := functionhandler.New(cfg.Resources.Cfunc, cfg.Clusters)
+		if err != nil {
+			logger.Fatal("failed to initialise cfunc functions handler", zap.Error(err))
+		}
+		registry.Register(functionHandler)
+	}
 	// ── 8. Build and start HTTP server ────────────────────────────────────────
 	srv, err := server.New(cfg, version, authMgr, clusterMgr, registry, logger)
 	if err != nil {

@@ -25,7 +25,10 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	api "github.com/dana-team/capp-backend/pkg/api/boundcapps"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
+	fissionv1 "github.com/fission/fission/pkg/apis/core/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -68,6 +71,70 @@ func Find(ctx context.Context, k8sClient client.Client, namespace string, kind K
 		}
 	}
 	return resp, nil
+}
+
+// FunctionGuard makes a Secret or ConfigMap handler treat cfunc functions as
+// users of its resource: delete is refused while one reads it, and the bound
+// route lists them. The zero value is off, which is right for a backend that
+// does not serve cfunc functions, because the check lists Fission objects.
+type FunctionGuard struct {
+	Enabled bool
+}
+
+// Bound returns the cfunc functions that read the resource, or an empty
+// list when the guard is off.
+func (g FunctionGuard) Bound(ctx context.Context, k8sClient client.Client, namespace string, kind Kind, name string) ([]string, error) {
+	if !g.Enabled {
+		return []string{}, nil
+	}
+	return FindFunctions(ctx, k8sClient, namespace, kind, name)
+}
+
+// FindFunctions lists the cfunc functions in namespace that read the resource
+// of the given kind and name as files. Fission loads a function's Secrets and
+// ConfigMaps when a pod takes the function, so deleting one breaks the next
+// pod.
+//
+// Two answers of the list mean "none that this caller is concerned with" and
+// not a failure. A cluster without the Fission CRDs has no functions. And a
+// caller who may not list Functions cannot create one either: a Role that
+// grants Secrets and ConfigMaps but nothing of Fission worked before
+// functions existed and must go on working, so the guard is skipped for it
+// and does not turn its delete into a 403.
+func FindFunctions(ctx context.Context, k8sClient client.Client, namespace string, kind Kind, name string) ([]string, error) {
+	functions := &fissionv1.FunctionList{}
+	if err := k8sClient.List(ctx, functions, client.InNamespace(namespace)); err != nil {
+		if meta.IsNoMatchError(err) || k8serrors.IsForbidden(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+
+	bound := []string{}
+	for i := range functions.Items {
+		fn := &functions.Items[i]
+		if functionReferences(fn, kind, name) {
+			bound = append(bound, fn.Name)
+		}
+	}
+	return bound, nil
+}
+
+func functionReferences(fn *fissionv1.Function, kind Kind, name string) bool {
+	if kind == KindSecret {
+		for _, ref := range fn.Spec.Secrets {
+			if ref.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	for _, ref := range fn.Spec.ConfigMaps {
+		if ref.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ReloadEnabled reports whether the Capp annotations opt in to reload on change.

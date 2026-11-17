@@ -71,7 +71,7 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		declarations = append(declarations, declaration{method: method, path: namespacePath, rule: Rule{Category: Administration}})
 	}
-	for _, resource := range []string{"capps", "configmaps", "secrets", "cfunc/pools"} {
+	for _, resource := range []string{"capps", "configmaps", "secrets", "cfunc/pools", "cfunc/functions"} {
 		path := namespacePath + "/" + resource
 		declarations = append(declarations,
 			declaration{method: http.MethodGet, path: clusterPath + "/" + resource, rule: Rule{Category: Aggregate, AllowedRoles: read.AllowedRoles}},
@@ -88,6 +88,13 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 			)
 		}
 	}
+	functionPath := namespacePath + "/cfunc/functions/:name"
+	declarations = append(declarations,
+		declaration{method: http.MethodPost, path: functionPath + "/test", rule: write},
+		// Pod logs are read with the caller's own cluster credential, which
+		// this mode does not have.
+		declaration{method: http.MethodGet, path: functionPath + "/logs", rule: Rule{Category: Denied}},
+	)
 	cappPath := namespacePath + "/capps/:name"
 	declarations = append(declarations,
 		declaration{method: http.MethodGet, path: cappPath + "/revisions", rule: read},

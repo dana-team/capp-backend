@@ -307,3 +307,156 @@ func TestValidate_Cfunc(t *testing.T) {
 		})
 	}
 }
+
+func validCfuncFunctionsConfig() CfuncFunctionsConfig {
+	return CfuncFunctionsConfig{
+		Enabled:                true,
+		Git:                    CfuncGitConfig{BaseURL: "https://git.example", Token: "s3cr3t-token", Username: "oauth2"},
+		MaxTriggers:            10,
+		MaxTimeoutSeconds:      300,
+		DefaultConcurrency:     5,
+		MaxConcurrency:         20,
+		MinCronIntervalSeconds: 60,
+	}
+}
+
+func TestLoad_CfuncFunctionsDefaults(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	functions := cfg.Resources.Cfunc.Functions
+	assert.False(t, functions.Enabled)
+	assert.False(t, cfg.Resources.Cfunc.OnboardNamespaces)
+	assert.Equal(t, "oauth2", functions.Git.Username)
+	assert.Equal(t, 10, functions.MaxTriggers)
+	assert.Equal(t, 300, functions.MaxTimeoutSeconds)
+	assert.Equal(t, 500, functions.DefaultConcurrency, "the Fission default")
+	assert.Equal(t, 500, functions.MaxConcurrency)
+	assert.Equal(t, 60, functions.MinCronIntervalSeconds)
+}
+
+func TestLoad_CfuncGitTokenFromEnv(t *testing.T) {
+	t.Setenv("CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN", "from-env")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	assert.Equal(t, "from-env", cfg.Resources.Cfunc.Functions.Git.Token)
+}
+
+func TestValidate_CfuncFunctions(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*CfuncConfig)
+		errContain string
+	}{
+		{name: "valid"},
+		{
+			name:   "functions off — no validation",
+			mutate: func(e *CfuncConfig) { e.Functions = CfuncFunctionsConfig{} },
+		},
+		{
+			name:       "functions on while cfunc is off",
+			mutate:     func(e *CfuncConfig) { e.Enabled = false },
+			errContain: "functions.enabled needs",
+		},
+		{
+			name:       "no base URL",
+			mutate:     func(e *CfuncConfig) { e.Functions.Git.BaseURL = "" },
+			errContain: "git.baseURL: is required",
+		},
+		{
+			name:       "http base URL",
+			mutate:     func(e *CfuncConfig) { e.Functions.Git.BaseURL = "http://git.example" },
+			errContain: "must be an https URL",
+		},
+		{
+			name:       "base URL with credentials",
+			mutate:     func(e *CfuncConfig) { e.Functions.Git.BaseURL = "https://user:pw@git.example" },
+			errContain: "must not carry credentials",
+		},
+		{
+			name:       "no token",
+			mutate:     func(e *CfuncConfig) { e.Functions.Git.Token = "" },
+			errContain: "git.token is required",
+		},
+		{
+			name:       "no username",
+			mutate:     func(e *CfuncConfig) { e.Functions.Git.Username = "" },
+			errContain: "git.username is required",
+		},
+		{
+			name:       "zero trigger limit",
+			mutate:     func(e *CfuncConfig) { e.Functions.MaxTriggers = 0 },
+			errContain: "maxTriggers must be 1 or greater",
+		},
+		{
+			name:       "zero timeout limit",
+			mutate:     func(e *CfuncConfig) { e.Functions.MaxTimeoutSeconds = 0 },
+			errContain: "maxTimeoutSeconds must be 1 or greater",
+		},
+		{
+			name:       "zero cron interval",
+			mutate:     func(e *CfuncConfig) { e.Functions.MinCronIntervalSeconds = 0 },
+			errContain: "minCronIntervalSeconds must be 1 or greater",
+		},
+		{
+			name:       "default concurrency above the maximum",
+			mutate:     func(e *CfuncConfig) { e.Functions.DefaultConcurrency = 21 },
+			errContain: "defaultConcurrency 21 is larger than maxConcurrency 20",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfunc := validCfuncConfig()
+			cfunc.Functions = validCfuncFunctionsConfig()
+			if tc.mutate != nil {
+				tc.mutate(&cfunc)
+			}
+
+			errs := validateCfunc(&cfunc)
+
+			if tc.errContain == "" {
+				assert.Empty(t, errs)
+				return
+			}
+			require.NotEmpty(t, errs)
+			joined := ""
+			for _, err := range errs {
+				joined += err.Error() + "\n"
+			}
+			assert.Contains(t, joined, tc.errContain)
+			assert.NotContains(t, joined, "s3cr3t-token", "a validation error must never print the git token")
+		})
+	}
+}
+
+func TestValidate_CfuncRouterURLs(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "unset", url: ""},
+		{name: "https", url: "https://fn.example"},
+		{name: "in-cluster http", url: "http://router.fission.svc"},
+		{name: "no scheme", url: "fn.example", wantErr: true},
+		{name: "other scheme", url: "ftp://fn.example", wantErr: true},
+		{name: "credentials", url: "https://u:p@fn.example", wantErr: true},
+		{name: "query", url: "https://fn.example?x=1", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateCfuncRouterURLs([]ClusterConfig{{Name: "prod", CfuncRouterURL: tc.url}})
+
+			if tc.wantErr {
+				require.Len(t, errs, 1)
+				assert.Contains(t, errs[0].Error(), `clusters[0] ("prod"): cfuncRouterURL`)
+				return
+			}
+			assert.Empty(t, errs)
+		})
+	}
+}

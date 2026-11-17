@@ -22,9 +22,18 @@ rules:
   - apiGroups: ["fission.io"]
     resources: ["environments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- if (dig "resources" "cfunc" "functions" "enabled" false .Values.config) }}
+  - apiGroups: ["fission.io"]
+    resources: ["functions", "packages", "httptriggers", "timetriggers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["fission.io"]
+    resources: ["packages/status"]
+    verbs: ["patch"]
+  {{- else }}
   - apiGroups: ["fission.io"]
     resources: ["functions"]
     verbs: ["list"]
+  {{- end }}
   {{- end }}
   {{- if .Values.rbac.openShiftProjects }}
   - apiGroups: ["", "project.openshift.io"]

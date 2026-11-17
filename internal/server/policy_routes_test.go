@@ -12,6 +12,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
+	"github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/functions"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/pools"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
@@ -63,7 +64,7 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 }
 
 func policyRegistry(t testing.TB, optional bool) *resources.Registry {
-	r := resources.NewRegistry(map[string]bool{"configmaps": optional, "secrets": optional, "cfuncpools": optional})
+	r := resources.NewRegistry(map[string]bool{"configmaps": optional, "secrets": optional, "cfuncpools": optional, "cfuncfunctions": optional})
 	r.Register(newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}))
 	r.Register(revisions.New(false, nil, config.CappSizes{}))
 	r.Register(configmaps.New())
@@ -71,6 +72,11 @@ func policyRegistry(t testing.TB, optional bool) *resources.Registry {
 	poolHandler, err := pools.New(config.CfuncConfig{})
 	require.NoError(t, err)
 	r.Register(poolHandler)
+	functionHandler, err := functions.New(config.CfuncConfig{
+		Functions: config.CfuncFunctionsConfig{Git: config.CfuncGitConfig{BaseURL: "https://git.example"}},
+	}, nil)
+	require.NoError(t, err)
+	r.Register(functionHandler)
 	return r
 }
 
