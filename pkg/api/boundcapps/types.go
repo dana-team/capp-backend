@@ -8,7 +8,7 @@ package boundcapps
 // Response is returned by GET .../secrets/:name/bound and .../configmaps/:name/bound.
 type Response struct {
 	// BoundCapps lists every Capp in the namespace that references the resource,
-	// from its pod template or (Secrets only) its log or Kafka source settings.
+	// from its pod template or (Secrets only) its log settings.
 	BoundCapps []string `json:"boundCapps"`
 	// ToReload lists the subset of BoundCapps that restart when the resource
 	// changes: opted-in Capps whose pod template references it.

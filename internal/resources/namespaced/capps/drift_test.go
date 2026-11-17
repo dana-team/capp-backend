@@ -17,7 +17,6 @@ import (
 func fullCappRequest() CappRequest {
 	timeout := int64(30)
 	min, max, delay := int32(1), int32(5), int32(60)
-	consumers := int32(2)
 	port := int32(3000)
 	canary, full := int64(10), int64(100)
 	return CappRequest{
@@ -59,23 +58,6 @@ func fullCappRequest() CappRequest {
 		ConfigMapVolumes:            []ConfigMapVolume{{Name: "cm-vol", ConfigMapName: "my-cm", MountPath: "/config"}},
 		ImagePullSecrets:            []string{"ghcr-pull-secret"},
 		ReloadOnBoundResourceChange: true,
-		EventSourcesSpec: &EventSourcesSpec{Sources: []SourceConfig{
-			{
-				Name:             "ping1",
-				URI:              "/events",
-				PingSourceConfig: &PingSourceConfig{Schedule: "*/5 * * * *", Data: `{"msg":"hi"}`},
-			},
-			{
-				Name: "kafka1",
-				KafkaSourceConfig: &KafkaSourceConfig{
-					BootstrapServers: []string{"kafka:9092"},
-					Topics:           []string{"events"},
-					ConsumerGroup:    "cg1",
-					Consumers:        &consumers,
-					SecretRef:        "kafka-creds",
-				},
-			},
-		}},
 	}
 }
 
@@ -130,7 +112,6 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.NFSVolumes[0].Server, capp.Spec.VolumesSpec.NFSVolumes[0].Server, "NFSVolumes.Server not written by ToK8s")
 		assert.Equal(t, req.NFSVolumes[0].Path, capp.Spec.VolumesSpec.NFSVolumes[0].Path, "NFSVolumes.Path not written by ToK8s")
 		assert.Len(t, capp.Spec.ConfigurationSpec.Template.Spec.Volumes, len(req.SecretVolumes)+len(req.ConfigMapVolumes), "SecretVolumes/ConfigMapVolumes not written by ToK8s")
-		assert.Len(t, capp.Spec.EventSourcesSpec.Sources, 2, "EventSourcesSpec.Sources not written by ToK8s")
 		assert.Equal(t, "true", capp.Annotations[consts.BoundResourceRolloutAnnotation], "ReloadOnBoundResourceChange not written by ToK8s")
 	})
 
@@ -169,9 +150,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.SecretVolumes[0].SecretName, resp.SecretVolumes[0].SecretName, "SecretVolumes.SecretName not read by FromK8s")
 		assert.Len(t, resp.ConfigMapVolumes, 1, "ConfigMapVolumes not read by FromK8s")
 		assert.Equal(t, req.ConfigMapVolumes[0].ConfigMapName, resp.ConfigMapVolumes[0].ConfigMapName, "ConfigMapVolumes.ConfigMapName not read by FromK8s")
-		require.NotNil(t, resp.EventSourcesSpec, "EventSourcesSpec not read by FromK8s")
 		assert.Equal(t, req.ReloadOnBoundResourceChange, resp.ReloadOnBoundResourceChange, "ReloadOnBoundResourceChange not read by FromK8s")
-		assert.Len(t, resp.EventSourcesSpec.Sources, 2, "EventSourcesSpec.Sources not read by FromK8s")
 	})
 }
 
@@ -193,7 +172,6 @@ func TestCappSpecFieldsHandled(t *testing.T) {
 				"RouteSpec":         "",
 				"LogSpec":           "",
 				"VolumesSpec":       "",
-				"EventSourcesSpec":  "",
 			},
 		},
 		{
@@ -264,35 +242,6 @@ func TestCappSpecFieldsHandled(t *testing.T) {
 			typ:  reflect.TypeOf(cappv1alpha1.NFSVolume{}),
 			handled: map[string]string{
 				"Name": "", "Server": "", "Path": "", "Capacity": "",
-			},
-		},
-		{
-			name: "EventSourcesSpec",
-			typ:  reflect.TypeOf(cappv1alpha1.EventSourcesSpec{}),
-			handled: map[string]string{
-				"Sources": "",
-			},
-		},
-		{
-			name: "SourceConfiguration",
-			typ:  reflect.TypeOf(cappv1alpha1.SourceConfiguration{}),
-			handled: map[string]string{
-				"Name": "", "URI": "", "PingSourceConfiguration": "", "KafkaSourceConfiguration": "",
-			},
-		},
-		{
-			name: "PingSourceConfiguration",
-			typ:  reflect.TypeOf(cappv1alpha1.PingSourceConfiguration{}),
-			handled: map[string]string{
-				"Schedule": "", "Data": "",
-			},
-		},
-		{
-			name: "KafkaSourceConfiguration",
-			typ:  reflect.TypeOf(cappv1alpha1.KafkaSourceConfiguration{}),
-			handled: map[string]string{
-				"BootstrapServers": "", "Topics": "", "ConsumerGroup": "", "Consumers": "",
-				"SecretRef": "mapped as flat string, not LocalObjectReference",
 			},
 		},
 	}

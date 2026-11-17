@@ -48,10 +48,10 @@ type Response = api.Response
 // Find lists the Capps in namespace that reference the resource of the given
 // kind and name.
 //
-// Secrets referenced only by spec.logSpec.passwordSecret or a Kafka source's
-// secretRef are bound (so deleting them is refused) but never reloaded: the
-// operator reads those Secrets for log shipping and the KafkaSource, not the
-// Capp's pods, so restarting the pods would not pick up the change.
+// Secrets referenced only by spec.logSpec.passwordSecret are bound (so
+// deleting them is refused) but never reloaded: the operator reads those
+// Secrets for log shipping, not the Capp's pods, so restarting the pods would
+// not pick up the change.
 func Find(ctx context.Context, k8sClient client.Client, namespace string, kind Kind, name string) (Response, error) {
 	cappList := &cappv1alpha1.CappList{}
 	if err := k8sClient.List(ctx, cappList, client.InNamespace(namespace)); err != nil {
@@ -216,20 +216,9 @@ func pruneVersions(versions map[string]string, spec *corev1.PodSpec) {
 }
 
 // specReferences reports whether Capp settings outside the pod template use the
-// resource: the log shipping password Secret and Kafka source credentials.
+// resource: the log shipping password Secret.
 func specReferences(spec *cappv1alpha1.CappSpec, kind Kind, name string) bool {
-	if kind != KindSecret {
-		return false
-	}
-	if spec.LogSpec.PasswordSecret == name {
-		return true
-	}
-	for _, src := range spec.EventSourcesSpec.Sources {
-		if src.KafkaSourceConfiguration != nil && src.KafkaSourceConfiguration.SecretRef.Name == name {
-			return true
-		}
-	}
-	return false
+	return kind == KindSecret && spec.LogSpec.PasswordSecret == name
 }
 
 // references reports whether any container or volume in the pod spec uses the resource.

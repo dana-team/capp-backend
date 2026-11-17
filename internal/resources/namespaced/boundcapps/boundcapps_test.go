@@ -217,23 +217,11 @@ func TestTriggerRollouts_JoinsErrors(t *testing.T) {
 func TestFind_SpecReferencesAreBoundButNotReloaded(t *testing.T) {
 	logCapp := cappWith("logs", true, corev1.PodSpec{})
 	logCapp.Spec.LogSpec.PasswordSecret = "target"
-	kafkaCapp := cappWith("kafka", true, corev1.PodSpec{})
-	kafkaCapp.Spec.EventSourcesSpec.Sources = []cappv1alpha1.SourceConfiguration{
-		{Name: "ping", PingSourceConfiguration: &cappv1alpha1.PingSourceConfiguration{Schedule: "* * * * *"}},
-		{Name: "k", KafkaSourceConfiguration: &cappv1alpha1.KafkaSourceConfiguration{
-			BootstrapServers: []string{"kafka:9092"}, Topics: []string{"t"},
-			SecretRef: corev1.LocalObjectReference{Name: "target"},
-		}},
-	}
-	otherKafka := cappWith("other-kafka", true, corev1.PodSpec{})
-	otherKafka.Spec.EventSourcesSpec.Sources = []cappv1alpha1.SourceConfiguration{
-		{Name: "k", KafkaSourceConfiguration: &cappv1alpha1.KafkaSourceConfiguration{SecretRef: corev1.LocalObjectReference{Name: "other"}}},
-	}
-	k8sClient := testutil.FakeClient(t, logCapp, kafkaCapp, otherKafka)
+	k8sClient := testutil.FakeClient(t, logCapp)
 
 	resp, err := Find(context.Background(), k8sClient, "ns1", KindSecret, "target")
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"logs", "kafka"}, resp.BoundCapps)
+	assert.ElementsMatch(t, []string{"logs"}, resp.BoundCapps)
 	assert.Empty(t, resp.ToReload)
 
 	// The same names are not ConfigMap references.

@@ -101,7 +101,7 @@ hostname.
 | 503 | Source policy state is unavailable (`POLICY_UNAVAILABLE`), or a cluster is unhealthy (`CLUSTER_UNHEALTHY`). Backend-policy checks destination health only after destination authorization succeeds. |
 
 **Webhook rejections (403):** The target cluster may reject the Capp due to
-hostname pattern mismatch, scale limit violations, or Kafka consumer limits.
+hostname pattern mismatch or scale limit violations.
 The webhook error message is returned directly. Adjust the Capp spec or the
 target cluster's `CappConfig` to resolve.
 

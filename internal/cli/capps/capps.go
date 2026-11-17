@@ -337,7 +337,6 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				SecretVolumes:    current.SecretVolumes,
 				ConfigMapVolumes: current.ConfigMapVolumes,
 				ImagePullSecrets: current.ImagePullSecrets,
-				EventSourcesSpec: current.EventSourcesSpec,
 
 				ReloadOnBoundResourceChange: current.ReloadOnBoundResourceChange,
 			}
