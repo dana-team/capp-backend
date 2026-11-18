@@ -107,6 +107,9 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 		declaration{method: http.MethodPost, path: cappPath + "/migrate", rule: Rule{Category: Migration, AllowedRoles: write.AllowedRoles}},
 		declaration{method: http.MethodGet, path: cappPath + "/metrics", rule: Rule{Category: Denied}},
 		declaration{method: http.MethodGet, path: cappPath + "/metrics/:metric", rule: Rule{Category: Denied}},
+		// Pods and their logs are watched with the caller's own cluster
+		// credential, which this mode does not have.
+		declaration{method: http.MethodGet, path: cappPath + "/logs", rule: Rule{Category: Denied}},
 	)
 	if metricsPath != "" {
 		if err := config.ValidateMetricsPath(metricsPath); err != nil {

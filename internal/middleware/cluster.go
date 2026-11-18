@@ -91,6 +91,7 @@ func Cluster(mgr cluster.ClusterManager) gin.HandlerFunc {
 		c.Set(string(K8sClientKey), k8sClient)
 		c.Set(string(AdminK8sClientKey), adminClient)
 		c.Set(string(PodLogsKey), cluster.PodLogsFor(cc, cred))
+		c.Set(string(PodStreamKey), cluster.PodStreamFor(cc, cred))
 		c.Set(string(ClusterMetaKey), cc.Meta)
 		c.Next()
 	}

@@ -150,6 +150,7 @@ resources:
     enabled: true
   capps:
     enabled: true
+    maxLogStreams: 100   # open log streams per instance; more get 503
   configmaps:
     enabled: true
   secrets:
@@ -296,6 +297,7 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Enable Git sync / re-sync |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Disable Git sync |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate` | ✓ | Migrate Capp to another cluster/namespace; requires `targetHostname` on copy when source has a hostname |
+| `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/logs` | ✓ | Live logs of the Capp's pods as Server-Sent Events (`?pod=`, `?container=`, `?tailLines=`, or `?podSinceTime=<pod>=<time>` per pod plus `?sinceTime=` to resume); Kubernetes authorization mode only, denied in backend-policy mode |
 | `GET` | `/api/v1/clusters/:cluster/configmaps` | ✓ | List all ConfigMaps across namespaces |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | List ConfigMaps in a namespace |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | Create a ConfigMap |

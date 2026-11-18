@@ -296,12 +296,22 @@ type ResourceToggle struct {
 	Enabled bool `mapstructure:"enabled"`
 }
 
+// CappsConfig is the capps handler's toggle plus the settings of its log
+// stream.
+type CappsConfig struct {
+	ResourceToggle `mapstructure:",squash"`
+	// MaxLogStreams caps the Capp log streams one backend instance serves
+	// at a time; a stream opens up to 20 pod log requests to the cluster.
+	// A stream over the cap is refused with 503. Default: 100.
+	MaxLogStreams int `mapstructure:"maxLogStreams"`
+}
+
 // ResourcesConfig is a collection of per-resource feature flags.
 // Disabling a resource removes its routes entirely at startup — no 404s,
 // no handler overhead.
 type ResourcesConfig struct {
 	Namespaces    ResourceToggle `mapstructure:"namespaces"`
-	Capps         ResourceToggle `mapstructure:"capps"`
+	Capps         CappsConfig    `mapstructure:"capps"`
 	Capprevisions ResourceToggle `mapstructure:"capprevisions"`
 	Configmaps    ResourceToggle `mapstructure:"configmaps"`
 	Secrets       ResourceToggle `mapstructure:"secrets"`
@@ -824,6 +834,7 @@ func setDefaults(v *viper.Viper) {
 	// Resources — all enabled by default
 	v.SetDefault("resources.namespaces.enabled", true)
 	v.SetDefault("resources.capps.enabled", true)
+	v.SetDefault("resources.capps.maxLogStreams", 100)
 	v.SetDefault("resources.capprevisions.enabled", true)
 	v.SetDefault("resources.configmaps.enabled", true)
 	v.SetDefault("resources.secrets.enabled", true)

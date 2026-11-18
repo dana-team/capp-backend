@@ -65,6 +65,7 @@ Here `C` is `/api/v1/clusters/:cluster` and `N` is `C/namespaces/:namespace`.
 | Capp migration | editor at source **and** destination, even for copy-only or same-cluster requests |
 | Capp metrics APIs (`.../capps/:name/metrics[/:metric]`) | Denied, even for operators/editors; no Prometheus calls |
 | cfunc function test call (`.../cfunc/functions/:name/test`) | editor |
+| Capp log stream (`.../capps/:name/logs`) | Denied, even for operators/editors; pods are watched and logs read with the caller's own cluster credential, which this mode does not have |
 | cfunc function logs (`.../cfunc/functions/:name/logs`) | Denied, even for operators/editors; pod logs are read with the caller's own cluster credential, which this mode does not have |
 
 Viewer reads include **Secret payloads** exposed by the existing API. There is no per-object ACL or field redaction. Disabling a resource route does not disable supporting operations of another enabled API: migration still copies managed Secrets and ConfigMaps. Review these compound operations before adoption.

@@ -37,6 +37,9 @@ type Handler struct {
 	sizes         config.CappSizes
 	observability config.ObservabilityConfig
 	prometheus    promv1.API
+	// logStreams holds one token per open log stream; its capacity is
+	// resources.capps.maxLogStreams.
+	logStreams chan struct{}
 }
 
 // New returns a ready-to-use Capp Handler. When gitops is disabled, pass nil
@@ -49,13 +52,23 @@ type Handler struct {
 // is a startup-time configuration failure, not a condition the metrics
 // endpoints should have to handle at request time.
 func New(gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes, observability config.ObservabilityConfig) (*Handler, error) {
-	h := &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, clusterMgr: clusterMgr, sizes: sizes, observability: observability}
+	h := &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, clusterMgr: clusterMgr, sizes: sizes, observability: observability,
+		logStreams: make(chan struct{}, defaultMaxLogStreams)}
 	prometheus, err := newPrometheusAPI(observability)
 	if err != nil {
 		return nil, fmt.Errorf("building prometheus client: %w", err)
 	}
 	h.prometheus = prometheus
 	return h, nil
+}
+
+// WithMaxLogStreams sets how many log streams the handler serves at a time
+// (resources.capps.maxLogStreams). A value below 1 keeps the default.
+func (h *Handler) WithMaxLogStreams(n int) *Handler {
+	if n >= 1 {
+		h.logStreams = make(chan struct{}, n)
+	}
+	return h
 }
 
 // Name returns the handler's identifier, matching the resources.capps config key.
@@ -80,6 +93,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.DELETE("/:name/rollout/strategy", h.removeRolloutStrategy)
 	ns.GET("/:name/metrics", h.listMetrics)
 	ns.GET("/:name/metrics/:metric", h.queryMetric)
+	ns.GET("/:name/logs", h.logs)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

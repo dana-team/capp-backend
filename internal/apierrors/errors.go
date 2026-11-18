@@ -48,6 +48,7 @@ const (
 	CodeCfuncSourceFailed     = "CFUNC_SOURCE_FAILED"
 	CodeCfuncSourceBusy       = "CFUNC_SOURCE_BUSY"
 	CodeCfuncRouterFailed     = "CFUNC_ROUTER_FAILED"
+	CodeLogStreamsBusy        = "LOG_STREAMS_BUSY"
 )
 
 // ReasonPolicyDenied is the public reason for an authorization policy denial.
@@ -200,6 +201,16 @@ func NewCfuncSourceBusy(err error) *APIError {
 		Message: "the backend is busy cloning other repositories; nothing was changed, retry the request",
 		Status:  http.StatusServiceUnavailable,
 		cause:   err,
+	}
+}
+
+// NewLogStreamsBusy returns a 503 error when the backend serves as many log
+// streams as resources.capps.maxLogStreams allows.
+func NewLogStreamsBusy() *APIError {
+	return &APIError{
+		Code:    CodeLogStreamsBusy,
+		Message: "the backend serves as many log streams as it allows; retry later",
+		Status:  http.StatusServiceUnavailable,
 	}
 }
 
