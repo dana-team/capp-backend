@@ -80,6 +80,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.DELETE("/:name/rollout/strategy", h.removeRolloutStrategy)
 	ns.GET("/:name/metrics", h.listMetrics)
 	ns.GET("/:name/metrics/:metric", h.queryMetric)
+	ns.GET("/:name/logs", h.logs)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

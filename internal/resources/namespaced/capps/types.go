@@ -57,6 +57,18 @@ type (
 	RolloutActionRequest      = api.RolloutActionRequest
 	MigrateRequest            = api.MigrateRequest
 	MigrateResponse           = api.MigrateResponse
+	LogLine                   = api.LogLine
+	LogPodEvent               = api.LogPodEvent
+	LogNotice                 = api.LogNotice
+)
+
+const (
+	LogEventLine       = api.LogEventLine
+	LogEventPodStarted = api.LogEventPodStarted
+	LogEventPodEnded   = api.LogEventPodEnded
+	LogEventNotice     = api.LogEventNotice
+	LogEventError      = api.LogEventError
+	LogEventEnd        = api.LogEventEnd
 )
 
 const (
