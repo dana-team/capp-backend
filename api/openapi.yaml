@@ -1146,9 +1146,9 @@ components:
             type: string
           description: |
             Capps in the namespace that reference the resource: env, envFrom,
-            volumes and projected volumes, plus for Secrets imagePullSecrets,
-            logSpec.passwordSecret and Kafka source secretRef. Deleting the
-            resource is refused while this list is non-empty.
+            volumes and projected volumes, plus for Secrets imagePullSecrets
+            and logSpec.passwordSecret. Deleting the resource is refused while
+            this list is non-empty.
           example: [web, worker]
         toReload:
           type: array
@@ -1157,7 +1157,7 @@ components:
           description: |
             Subset of boundCapps restarted when the resource's data changes:
             Capps with reloadOnBoundResourceChange enabled that use it in their
-            pod template. Log and Kafka references never trigger a restart.
+            pod template. Log references never trigger a restart.
           example: [web]
         boundFunctions:
           type: array
@@ -1546,8 +1546,6 @@ components:
           items:
             type: string
           example: [ghcr-pull-secret]
-        eventSourcesSpec:
-          $ref: '#/components/schemas/EventSourcesSpec'
         reloadOnBoundResourceChange:
           type: boolean
           description: |
@@ -1564,7 +1562,7 @@ components:
           type: string
           description: |
             One of: "Ready", "VolumesReady", "ServingReady", "RouteReady",
-            "EventingReady", "LoggingReady".
+            "LoggingReady", "Available", "RolloutSucceeded".
           example: Ready
         status:
           type: string
@@ -1579,107 +1577,6 @@ components:
         message:
           type: string
           example: Capp is ready
-
-    PingSourceConfig:
-      type: object
-      required: [schedule]
-      properties:
-        schedule:
-          type: string
-          description: Cron expression defining when the PingSource fires.
-          example: "*/5 * * * *"
-        data:
-          type: string
-          description: JSON payload sent on each trigger. Must be valid JSON.
-          example: '{"msg":"hello"}'
-
-    KafkaSourceConfig:
-      type: object
-      required: [bootstrapServers, topics, secretRef]
-      properties:
-        bootstrapServers:
-          type: array
-          minItems: 1
-          items:
-            type: string
-          example: ["broker1:9092", "broker2:9092"]
-        topics:
-          type: array
-          minItems: 1
-          items:
-            type: string
-          example: ["topic-a"]
-        consumerGroup:
-          type: string
-          description: Kafka consumer group ID. Optional; operator assigns one when unset.
-          example: my-group
-        consumers:
-          type: integer
-          minimum: 1
-          description: Number of parallel consumers for this source.
-          example: 2
-        secretRef:
-          type: string
-          description: Name of the Secret in the Capp namespace with Kafka credentials.
-          example: kafka-creds
-
-    SourceConfig:
-      type: object
-      required: [name]
-      description: |
-        A single Knative Eventing source attached to the Capp.
-        Exactly one of pingSourceConfiguration or kafkaSourceConfiguration must be set.
-      properties:
-        name:
-          type: string
-          description: Unique logical name for this source within the Capp.
-          example: ping-src
-        uri:
-          type: string
-          description: Relative path appended to the Capp Knative Service address (e.g. "/events").
-          example: /events
-        pingSourceConfiguration:
-          $ref: '#/components/schemas/PingSourceConfig'
-        kafkaSourceConfiguration:
-          $ref: '#/components/schemas/KafkaSourceConfig'
-
-    EventSourcesSpec:
-      type: object
-      properties:
-        sources:
-          type: array
-          items:
-            $ref: '#/components/schemas/SourceConfig'
-
-    EventSourceStatusResponse:
-      type: object
-      properties:
-        name:
-          type: string
-          description: Name of the underlying event source resource.
-          example: ping-src
-        type:
-          type: string
-          description: Condition type from the underlying source resource.
-          example: Ready
-        status:
-          type: string
-          enum: ["True", "False", Unknown]
-          example: "True"
-        reason:
-          type: string
-          example: EventSourceReady
-        message:
-          type: string
-          example: PingSource is ready.
-
-    EventingStatusResponse:
-      type: object
-      properties:
-        eventSources:
-          type: array
-          items:
-            $ref: '#/components/schemas/EventSourceStatusResponse'
 
     StateStatusResponse:
       type: object
@@ -1700,8 +1597,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConditionResponse'
-        eventingStatus:
-          $ref: '#/components/schemas/EventingStatusResponse'
         stateStatus:
           $ref: '#/components/schemas/StateStatusResponse'
         rollout:
@@ -1786,8 +1681,6 @@ components:
           items:
             type: string
           example: [ghcr-pull-secret]
-        eventSourcesSpec:
-          $ref: '#/components/schemas/EventSourcesSpec'
         reloadOnBoundResourceChange:
           type: boolean
           description: Whether the Capp restarts when a referenced Secret or ConfigMap is updated.
