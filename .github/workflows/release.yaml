@@ -406,14 +406,18 @@ jobs:
             ```
 
             ### Helm chart
+            Prepare complete provider, per-target policy/trust and credential values using the
+            [backend-policy configuration guide](https://github.com/dana-team/capp-backend/blob/${{ steps.version.outputs.TAG }}/docs/backend-policy.md#configuration-and-namespace-boundaries).
+            Explicit `config.authorization.mode: backend-policy` is required; Kubernetes authorization is retired.
+            Complete population qualification and the documented cleanup/recovery prerequisites before upgrading.
+            Recovery requires a qualified earlier image/chart/configuration and reconciled revocations, not a same-release mode switch.
             ```bash
             helm install capp-backend \
               oci://ghcr.io/dana-team/helm-charts/capp-backend \
               --version ${{ steps.version.outputs.TAG }} \
-              --set secret.jwtSecretKey="<your-secret>" \
-              --set config.clusters[0].name="production" \
-              --set config.clusters[0].credential.inline.apiServer="https://api.your-cluster.com" \
-              --set secret.clusterTokens[0]="<your-cluster-token>"
+              --namespace capp-platform-system --create-namespace \
+              --values backend-policy-values.yaml \
+              --values protected-secret-values.yaml
             ```
 
             ### capp-mcp Helm chart

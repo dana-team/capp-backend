@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/authorization"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources"
@@ -36,6 +35,7 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				t.Cleanup(func() { stopPolicyServer(t, srv) })
 				engine, ok := srv.httpServer.Handler.(*gin.Engine)
 				require.True(t, ok)
 				metricsPath := ""
@@ -65,7 +65,7 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 
 func policyRegistry(t testing.TB, optional bool) *resources.Registry {
 	r := resources.NewRegistry(map[string]bool{"configmaps": optional, "secrets": optional, "cfuncpools": optional, "cfuncfunctions": optional})
-	r.Register(newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}))
+	r.Register(newCappsHandler(t, false, nil, config.ObservabilityConfig{}))
 	r.Register(revisions.New(false, nil, config.CappSizes{}))
 	r.Register(configmaps.New())
 	r.Register(secrets.New())
@@ -82,9 +82,9 @@ func policyRegistry(t testing.TB, optional bool) *resources.Registry {
 
 // newCappsHandler builds a capps handler for policy tests, failing the test
 // when the observability config cannot produce a Prometheus client.
-func newCappsHandler(t testing.TB, gitopsEnabled bool, git capps.GitOpsSyncer, mgr cluster.ClusterManager, observability config.ObservabilityConfig) *capps.Handler {
+func newCappsHandler(t testing.TB, gitopsEnabled bool, git capps.GitOpsSyncer, observability config.ObservabilityConfig) *capps.Handler {
 	t.Helper()
-	h, err := capps.New(gitopsEnabled, git, mgr, config.CappSizes{}, observability)
+	h, err := capps.New(gitopsEnabled, git, config.CappSizes{}, observability)
 	require.NoError(t, err)
 	return h
 }

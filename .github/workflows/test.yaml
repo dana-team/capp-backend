@@ -149,12 +149,14 @@ jobs:
       - name: Lint chart
         run: |
           helm lint helm/capp-backend \
+            --set config.authorization.mode=backend-policy \
             --set config.clusters[0].name=test \
             --set config.clusters[0].credential.inline.apiServer=https://example.com
 
       - name: Template chart
         run: |
           helm template capp-backend helm/capp-backend \
+            --set config.authorization.mode=backend-policy \
             --set config.clusters[0].name=test \
             --set config.clusters[0].credential.inline.apiServer=https://example.com \
             --set secret.jwtSecretKey=test-secret \

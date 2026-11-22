@@ -24,7 +24,7 @@ spec:
         labels:
           {{- include "capp-backend.selectorLabels" . | nindent 10 }}
       spec:
-        {{- if and (or (eq .Values.config.authorization.mode "backend-policy") (eq .Values.config.auth.mode "openshift") (eq .Values.config.auth.mode "ldap")) .Values.serviceAccount.name }}
+        {{- if .Values.serviceAccount.name }}
         serviceAccountName: {{ .Values.serviceAccount.name }}
         {{- end }}
         {{- with .Values.imagePullSecrets }}

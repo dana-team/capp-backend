@@ -10,13 +10,11 @@ import (
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	fissionv1 "github.com/fission/fission/pkg/apis/core/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -85,7 +83,7 @@ func testCatalog(t *testing.T) *Catalog {
 func engine(t *testing.T, objects ...client.Object) (*testutil.EngineHelper, client.Client) {
 	t.Helper()
 	k8sClient := testutil.FakeClient(t, objects...)
-	return testutil.NewEngineHelper(t, k8sClient, mustHandler(t, testConfig())), k8sClient
+	return testutil.NewEngineHelper(t, k8sClient, mustHandler(t, testConfig()), "ns1", "ns2"), k8sClient
 }
 
 func stored(t *testing.T, k8sClient client.Client, name string) *fissionv1.Environment {
@@ -515,7 +513,7 @@ func TestList_ClusterWithoutFissionIsNotSupported(t *testing.T) {
 	k8sClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
 		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error { return noMatch },
 	})
-	h := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, testConfig()))
+	h := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, testConfig()), "ns1", "ns2")
 
 	for _, path := range []string{nsPath, "/cfunc/pools"} {
 		assert.Equal(t, http.StatusNotImplemented, h.Get(path).Code, path)
@@ -765,7 +763,7 @@ func TestDelete_IgnoresFunctionsOfASameNamedEnvironmentElsewhere(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, h.Delete(nsPath+"/py").Code)
 }
 
-func TestCreate_OnboardsTheNamespace(t *testing.T) {
+func TestOnboardNamespace(t *testing.T) {
 	namespace := func(labels map[string]string) *corev1.Namespace {
 		return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns1", Labels: labels}}
 	}
@@ -779,7 +777,7 @@ func TestCreate_OnboardsTheNamespace(t *testing.T) {
 
 	t.Run("off by default", func(t *testing.T) {
 		k8sClient := testutil.FakeClient(t, namespace(nil))
-		h := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, testConfig()))
+		h := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, testConfig()), "ns1", "ns2")
 
 		require.Equal(t, http.StatusCreated, h.PostJSON(nsPath, request).Code)
 		assert.NotContains(t, labelsOf(t, k8sClient), FissionEnabledLabel)
@@ -795,59 +793,17 @@ func TestCreate_OnboardsTheNamespace(t *testing.T) {
 		assert.Equal(t, map[string]string{"team": "a", FissionEnabledLabel: "true"}, labelsOf(t, k8sClient))
 	})
 
-	// callerWith returns a client whose namespace patch is refused and
-	// whose access review answers mayCreatePools.
-	callerWith := func(mayCreatePools bool) interceptor.Funcs {
-		return interceptor.Funcs{
-			Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, _ client.Patch, _ ...client.PatchOption) error {
-				return k8serrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, obj.GetName(), fmt.Errorf("no"))
-			},
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if review, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
-					attributes := review.Spec.ResourceAttributes
-					review.Status.Allowed = mayCreatePools && attributes.Verb == "create" &&
-						attributes.Group == "fission.io" && attributes.Resource == "environments" && attributes.Namespace == "ns1"
-					return nil
-				}
-				if _, isPool := obj.(*fissionv1.Environment); isPool && !mayCreatePools {
-					return k8serrors.NewForbidden(schema.GroupResource{Group: "fission.io", Resource: "environments"}, obj.GetName(), fmt.Errorf("no"))
-				}
-				return c.Create(ctx, obj, opts...)
-			},
-		}
+	forbidden := interceptor.Funcs{
+		Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, _ client.Patch, _ ...client.PatchOption) error {
+			return k8serrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, obj.GetName(), fmt.Errorf("no"))
+		},
 	}
-	forbidden := callerWith(true)
-
-	t.Run("a caller who may not create pools gets no label from the backend credential", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.OnboardNamespaces = true
-		userClient := testutil.FakeClientWithInterceptors(t, callerWith(false), namespace(nil))
-		adminClient := testutil.FakeClient(t, namespace(nil))
-		h := testutil.NewEngineHelperWithAdmin(t, userClient, adminClient, cluster.ClusterMeta{}, mustHandler(t, cfg))
-
-		w := h.PostJSON(nsPath, request)
-
-		require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-		assert.NotContains(t, labelsOf(t, adminClient), FissionEnabledLabel, "the backend must not label a namespace for a caller with no right in it")
-	})
-
-	t.Run("falls back to the backend credential when the caller is refused", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.OnboardNamespaces = true
-		userClient := testutil.FakeClientWithInterceptors(t, forbidden, namespace(nil))
-		adminClient := testutil.FakeClient(t, namespace(nil))
-		h := testutil.NewEngineHelperWithAdmin(t, userClient, adminClient, cluster.ClusterMeta{}, mustHandler(t, cfg))
-
-		require.Equal(t, http.StatusCreated, h.PostJSON(nsPath, request).Code)
-		assert.Equal(t, "true", labelsOf(t, adminClient)[FissionEnabledLabel])
-	})
 
 	t.Run("says what to do when nobody may label the namespace", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.OnboardNamespaces = true
 		userClient := testutil.FakeClientWithInterceptors(t, forbidden, namespace(nil))
-		adminClient := testutil.FakeClientWithInterceptors(t, forbidden, namespace(nil))
-		h := testutil.NewEngineHelperWithAdmin(t, userClient, adminClient, cluster.ClusterMeta{}, mustHandler(t, cfg))
+		h := testutil.NewEngineHelper(t, userClient, mustHandler(t, cfg))
 
 		w := h.PostJSON(nsPath, request)
 
@@ -861,13 +817,12 @@ func TestCreate_OnboardsTheNamespace(t *testing.T) {
 	t.Run("a backend failure that is not a refusal is not reported as one", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.OnboardNamespaces = true
-		userClient := testutil.FakeClientWithInterceptors(t, forbidden, namespace(nil))
-		adminClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+		userClient := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
 			Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
 				return k8serrors.NewTimeoutError("the api server is slow", 1)
 			},
 		}, namespace(nil))
-		h := testutil.NewEngineHelperWithAdmin(t, userClient, adminClient, cluster.ClusterMeta{}, mustHandler(t, cfg))
+		h := testutil.NewEngineHelper(t, userClient, mustHandler(t, cfg))
 
 		w := h.PostJSON(nsPath, request)
 

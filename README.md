@@ -4,10 +4,10 @@
 
 ## Features
 
-- **Pluggable authentication** — Three modes: `passthrough`, `openshift` (OpenShift OAuth), and `ldap` (directory password login with backend-issued access tokens). All three support Kubernetes or backend-policy authorization.
+- **Pluggable authentication** — Three modes: `passthrough`, `openshift` (OpenShift OAuth), and `ldap` (directory password login with backend-issued access tokens). All three use backend-policy authorization.
 - **Multi-cluster support** — Configure any number of clusters; each is health-checked every 30 seconds.
 - **Capp CRUD** — Full create / read / update / delete for `Capp` resources across namespaces.
-- **Namespace listing** — Returns namespaces according to the active authorization mode and configured namespace boundary.
+- **Namespace listing** — Returns namespaces according to application assignments, operator authority and the configured namespace boundary.
 - **Interactive API docs** — Embedded [Scalar](https://scalar.com/) UI served at `/docs` alongside a raw OpenAPI 3.1 spec at `/openapi.yaml`. Both work in air-gapped environments (assets are compiled into the binary).
 - **Observability** — Structured JSON logging (zap), Prometheus metrics (`/metrics`), and optional OTLP tracing.
 - **Rate limiting** — Token-bucket rate limiter on all endpoints (configurable; on by default).
@@ -18,8 +18,8 @@
 
 - **Go** 1.25 or later (for building from source)
 - One or more Kubernetes/OpenShift clusters with the [`container-app-operator`](https://github.com/dana-team/container-app-operator) installed (provides the `rcs.dana.io/v1alpha1` API group)
-- For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered and home-cluster TokenReview permission; target service accounts need impersonation permissions in Kubernetes mode or consolidated backend permissions in backend-policy mode
-- For `ldap` auth mode: direct LDAPS directory access, a search account, support for binding as the target user, Ed25519 signing keys, and per-cluster system credentials (impersonation permissions in Kubernetes mode; consolidated backend permissions in backend-policy mode)
+- For `openshift` auth mode: an OpenShift cluster with an OAuthClient registered and home-cluster TokenReview permission; target service accounts need consolidated backend permissions
+- For `ldap` auth mode: direct LDAPS directory access, a search account, support for binding as the target user, Ed25519 signing keys, and per-cluster backend credentials with consolidated backend permissions
 
 ## Getting Started
 
@@ -50,7 +50,7 @@ Configuration is loaded from a YAML file specified with the `--config` flag (e.g
 
 ### Authorization mode
 
-`authorization.mode` defaults to `kubernetes`. With LDAP, OpenShift or passthrough authentication, `backend-policy` uses application viewer/editor assignments and configured namespace operators, with one backend credential per cluster and no user impersonation. See the [adoption and operations guide](docs/backend-policy.md) for configuration, Secret-read access, infrastructure permissions, namespace API examples, and manual cutover/rollback. This describes the implementation in this source tree, not release availability or completed deployment validation.
+`authorization.mode: backend-policy` is required explicitly in YAML or through `CAPP_AUTHORIZATION_MODE`. Omitted, null, empty, `kubernetes` and unknown values fail startup; Helm likewise requires `config.authorization.mode: backend-policy`. Legacy Kubernetes authorization is retired. With LDAP, OpenShift or passthrough authentication, `backend-policy` uses application viewer/editor assignments and configured namespace operators, with one backend credential per cluster and no user impersonation. See the [adoption and operations guide](docs/backend-policy.md) for configuration, Secret-read access, infrastructure permissions, namespace API examples, and manual cutover/rollback. This describes the implementation in this source tree, not release availability or completed deployment validation.
 
 ### Full reference
 
@@ -103,7 +103,7 @@ auth:
     burst: 40
 
 authorization:
-  mode: kubernetes  # kubernetes | backend-policy (all three auth modes)
+  mode: backend-policy  # Required explicitly for all three auth modes
   restrictedBindingNamePrefixes: ["system:"]  # Required in backend-policy; [] disables prefix restrictions
 
 logging:
@@ -134,17 +134,19 @@ gitops:
 clusters:
   - name: "local"                 # Used as path parameter in /api/v1/clusters/:cluster
     displayName: "Local Cluster"  # Human-readable label for the UI
-    allowedNamespaces: []         # Empty = no extra name filter; mode-specific authorization still applies
+    allowedNamespaces: []         # Empty = no extra name filter; policy authorization still applies
     gitOpsPath: ""                # Sub-path within gitops.pathPrefix for this cluster
     credential:
-      # Option A: kubeconfig file (Kubernetes-mode passthrough)
-      kubeconfigPath: "/home/user/.kube/config"
-      # Option B: inline credentials (remove kubeconfigPath when using this option)
       inline:
         apiServer: "https://my-cluster:6443"
         caCert: "<base64-encoded PEM>"
         token: ""  # Inject via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
         insecure: false
+    authorization:
+      policyNamespace: capp-platform-system
+      protectedNamespaces: [kube-system, kube-public, kube-node-lease]
+      operatorUsers: [alice]
+      operatorGroups: []
 
 resources:
   namespaces:
@@ -161,7 +163,7 @@ resources:
 
 ### `passthrough` (default)
 
-Clients supply their existing `Authorization: Bearer <token>` header; login and refresh remain unsupported. In Kubernetes authorization mode, the token is forwarded to the Kubernetes API for resource access. In backend-policy mode, each requested target verifies it with TokenReview before policy checks. The backend identity authenticates both review and resource calls; the caller token appears only in the review body. A token may resolve to different usernames/groups at different targets, and review results are reused only within that HTTP request. In backend-policy mode, each target requires inline backend credentials, an HTTPS API endpoint, a valid base64 PEM `caCert`, and `insecure: false`; remove `kubeconfigPath`. See [verification and discovery errors](docs/backend-policy.md#provider-verification-and-discovery).
+Clients supply their existing `Authorization: Bearer <token>` header; login and refresh remain unsupported. Each requested target verifies it with TokenReview before policy checks. The backend identity authenticates both review and resource calls; the caller token appears only in the review body. A token may resolve to different usernames/groups at different targets, and review results are reused only within that HTTP request. Each target requires inline backend credentials, an HTTPS API endpoint, a valid base64 PEM `caCert`, and `insecure: false`; remove `kubeconfigPath`. See [verification and discovery errors](docs/backend-policy.md#provider-verification-and-discovery).
 
 ### `openshift`
 
@@ -171,13 +173,13 @@ Authenticates users via the OpenShift OAuth server of the cluster where the back
 
 **Programmatic flow:** Any valid OpenShift bearer token can be passed directly in the `Authorization: Bearer <token>` header. The backend validates it via the Kubernetes TokenReview API.
 
-The backend verifies the token with its in-cluster home TokenReview service, preserving the returned username and groups. Successful results are cached for `auth.openshift.tokenCacheTTLSeconds`; execution targets never review the caller token. Kubernetes authorization mode impersonates the verified user using each target's service account, which needs `impersonate` on `users` and `groups`. Backend-policy mode instead checks assignments and executes with each target's backend token, without impersonation. The workload service account needs home-cluster TokenReview permission in either mode. Confirm that the configured OAuth server and home reviewer represent the intended authority.
+The backend verifies the token with its in-cluster home TokenReview service, preserving the returned username and groups. Successful results are cached for `auth.openshift.tokenCacheTTLSeconds`; execution targets never review the caller token. The backend checks assignments and executes with each target's backend token, without impersonation. The workload service account needs home-cluster TokenReview permission. Confirm that the configured OAuth server and home reviewer represent the intended authority.
 
 Requires `auth.openshift.apiServer`, `auth.openshift.clientId`, `auth.openshift.clientSecret`, `auth.openshift.redirectUri`, and an inline token for every configured cluster.
 
 ### `ldap`
 
-Authenticates a username and password through directory search-and-bind. The search account finds exactly one user, then a separate TLS-protected connection verifies that user's password. Only after successful group resolution does the backend issue an EdDSA access JWT. Resource requests verify the token locally without contacting LDAP. Kubernetes authorization mode impersonates its canonical username and groups using each cluster's configured service-account token; backend-policy mode checks application assignments and uses the configured backend service-account token. The user's access token is never forwarded to Kubernetes.
+Authenticates a username and password through directory search-and-bind. The search account finds exactly one user, then a separate TLS-protected connection verifies that user's password. Only after successful group resolution does the backend issue an EdDSA access JWT. Resource requests verify the token locally without contacting LDAP. Backend policy checks application assignments and uses the configured backend service-account token. The user's access token is never forwarded to Kubernetes.
 
 **API and web integration:** Send credentials over HTTPS to `POST /api/v1/auth/login`. For example, this illustrative request uses placeholder credentials:
 
@@ -210,11 +212,11 @@ LDAP has no refresh sessions, OAuth browser routes, ADFS SSO, or MFA. `POST /api
 | Token issuance/internal failure | 500 / `INTERNAL_ERROR` | `internal server error` |
 | Kubernetes denies a resource operation | 403 | Existing authorization error response |
 
-**Directory and RBAC prerequisites:** Use an `ldaps://` endpoint; the default port is 636 when omitted. Certificates and hostnames are verified; StartTLS and plaintext connections are unsupported. `caCert` is a base64 PEM CA bundle; leaving it empty uses system roots. Configure valid search DNs and filters with exactly one `{username}` or `{userDN}` placeholder respectively. Both timeouts and token lifetimes must be positive. The returned username and group attributes must be unambiguous, preserve the case used in Kubernetes or application policy bindings, and contain neither surrounding whitespace nor reserved `system:` identities.
+**Directory and RBAC prerequisites:** Use an `ldaps://` endpoint; the default port is 636 when omitted. Certificates and hostnames are verified; StartTLS and plaintext connections are unsupported. `caCert` is a base64 PEM CA bundle; leaving it empty uses system roots. Configure valid search DNs and filters with exactly one `{username}` or `{userDN}` placeholder respectively. Both timeouts and token lifetimes must be positive. The returned username and group attributes must be unambiguous, preserve the case used in application policy bindings, and contain neither surrounding whitespace nor reserved `system:` identities.
 
 **Search bases and referrals:** User or group searches returning LDAP referrals are rejected with HTTP 503 (`directory service unavailable`). AD domain-root searches can return referrals, so choose `userBaseDN` and `groupBaseDN` OU/container bases that cover the required users and groups without returning referrals.
 
-The default group filter covers direct membership only. Nested and primary-group membership are not guaranteed; configure directory-supported filters for the required coverage. An empty group result is valid. In Kubernetes authorization mode, user-based or implicit `system:authenticated` grants still apply, and operators must create matching User/Group RoleBindings on each managed cluster. Every LDAP cluster needs `credential.inline.token`; kubeconfig-only credentials are not accepted. That token needs impersonation permissions only in Kubernetes authorization mode. In backend-policy mode, configure the consolidated backend role and binding as described in the [guide](docs/backend-policy.md). The chart's `capp-user` role includes Projects access used by namespace listing, but operators still choose which identities receive that role.
+The default group filter covers direct membership only. Nested and primary-group membership are not guaranteed; configure directory-supported filters for the required coverage. An empty group result is valid. Every LDAP cluster needs `credential.inline.token`; kubeconfig-only credentials are not accepted. Configure the consolidated backend role and binding as described in the [guide](docs/backend-policy.md).
 
 **Keys and rotation:** All replicas need consistent issuer, audience, signing/trust configuration, and synchronized clocks. Use PEM Ed25519 keys and key IDs containing only lowercase ASCII letters, digits, `-`, or `_`. The active public key is derived from the private key. `verificationKeys` maps additional key IDs to public PEM keys in mounted YAML; a conflicting active key is rejected at startup. Tokens identify the signing key with `kid` and include `iss`, `aud`, canonical `sub`, `groups` (including an empty array), `iat`, `exp`, and `token_use: access`. Verification uses only configured local keys and allows no clock-skew leeway.
 
@@ -226,45 +228,11 @@ AD account, password, and group changes affect newly issued tokens. Existing tok
 
 **Login-abuse and lockout ownership:** Directory operators own AD account-lockout policy and recovery. The optional backend limiter is per client IP and per instance, not per directory account or fleet-wide. Platform operators provide any distributed gateway controls; this backend adds no distributed limiter. Automation owners must stop on rejected credentials and rotate stale secrets rather than retry bad passwords. Passwords are transient; do not log login bodies, passwords, tokens, private keys, or raw directory diagnostics.
 
-### Adding Clusters (openshift and ldap modes)
+### Adding clusters
 
-The steps below apply to **Kubernetes authorization mode** with `openshift` or `ldap` authentication. For backend-policy, use [infrastructure onboarding](docs/backend-policy.md#infrastructure-onboarding-and-rotation).
+For every provider, follow [infrastructure onboarding](docs/backend-policy.md#infrastructure-onboarding-and-rotation) to provision protected policy storage, a target backend service account and its consolidated grants. Configure the target endpoint, CA, policy settings and target-issued token through `secret.clusterTokens[N]` or `CAPP_CLUSTERS_N_CREDENTIAL_INLINE_TOKEN`. Passthrough also needs TokenReview permission on each target; OpenShift reviews only at home, and LDAP requires no reviewer.
 
-1. **Create a ServiceAccount** on the target cluster with impersonation permissions:
-   ```yaml
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRole
-   metadata:
-     name: capp-backend-impersonator
-   rules:
-     - apiGroups: [""]
-       resources: ["users", "groups"]
-       verbs: ["impersonate"]
-     - apiGroups: ["authentication.k8s.io"]
-       # OpenShift only: omit this rule for LDAP.
-       resources: ["tokenreviews"]
-       verbs: ["create"]
-   ---
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRoleBinding
-   metadata:
-     name: capp-backend-impersonator
-   roleRef:
-     apiGroup: rbac.authorization.k8s.io
-     kind: ClusterRole
-     name: capp-backend-impersonator
-   subjects:
-     - kind: ServiceAccount
-       name: capp-backend
-       namespace: capp-platform-system
-   ```
-
-2. **Generate a long-lived token** for the ServiceAccount:
-   ```bash
-   kubectl create token capp-backend -n capp-platform-system --duration=8760h
-   ```
-
-3. **Add the cluster** to `config.clusters` and provide the token via the corresponding `secret.clusterTokens[N]` entry or `CAPP_CLUSTERS_N_CREDENTIAL_INLINE_TOKEN` environment variable.
+Before upgrading an existing installation, complete the [upgrade, cleanup and earlier-release recovery procedure](docs/backend-policy.md#manual-cutover-and-rollback). Existing assignments need no conversion; Kubernetes RoleBindings are never imported automatically.
 
 ## API Reference
 
@@ -326,7 +294,7 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions/:name/test` | ✓ | Call the function one time through one of its http triggers; 501 without `cfuncRouterURL` |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/cfunc/functions/:name/logs` | ✓ | Recent log lines of the pods that serve the function now |
 | `GET` | `/healthz` | — | Liveness probe |
-| `GET` | `/readyz` | — | Readiness probe (≥1 healthy cluster; backend-policy also requires its initial policy/namespace sync) |
+| `GET` | `/readyz` | — | Readiness probe (≥1 healthy cluster with initial policy/namespace sync) |
 | `GET` | `/metrics` | — | Prometheus metrics (if enabled) |
 
 ### Pulling images from a private registry
@@ -410,7 +378,7 @@ curl -X POST "$BACKEND/api/v1/clusters/$CLUSTER/namespaces/$NS/cfunc/pools" \
 - **`DELETE`** returns 409 while a Function in the same namespace uses the pool. The check is partial: a Function in another namespace can name the pool and is not seen, so deleting the pool breaks it.
 - A cluster without the Fission CRDs answers 501 `NOT_SUPPORTED`.
 - **Known Fission limit with `tenancy.mode=dynamic` (measured on v1.27.0).** In a namespace that was onboarded while Fission runs, Fission does not reuse a function's pod: every request takes a new pod from the pool, and the pods stay until the idle time passes. A function that gets more requests in that time than its `concurrency` answers 429, and the pool is drained and refilled all the time. In a namespace Fission knew at start (for example `default`), twelve requests in a row used one pod. The cause is in Fission's executor, which checks a pod through a cache of the namespaces known at start. Until Fission fixes it, prefer `tenancy.mode=cluster`, or `static` with the namespaces listed, for clusters with real traffic, and leave `onboardNamespaces` off there. `cluster` mode was not tested here.
-- **`onboardNamespaces: true`** makes the first pool of a namespace set the label `fission.io/enabled=true` on that namespace, which is how a Fission that runs with `tenancy.mode=dynamic` starts to serve it. The caller's credential is tried first. When it is refused, the backend's own cluster credential is used, but only for a caller who may create pools in that namespace (a SelfSubjectAccessReview), so one of the two needs `patch` on namespaces. The label is never removed.
+- **`onboardNamespaces: true`** makes the first pool of a namespace set the label `fission.io/enabled=true` on that namespace, which is how a Fission that runs with `tenancy.mode=dynamic` starts to serve it. The authorized backend credential needs `patch` on namespaces. If it cannot label the namespace, a cluster administrator must set the label before pool creation. The label is never removed.
 
 #### Functions
 
@@ -618,7 +586,7 @@ CAPP_AUTH_LDAP_BINDPASSWORD='<search-account-password>'
 CAPP_AUTH_LDAP_SIGNINGPRIVATEKEY='<PEM-Ed25519-private-key>'
 ```
 
-For Helm, set `config.auth.mode=ldap` and configure directory settings and public verification keys under `config.auth.ldap`. Supply `secret.ldapBindPassword` and `secret.ldapSigningPrivateKey` at install time (use `--set-file secret.ldapSigningPrivateKey=/path/to/key.pem` for the PEM file). Both Deployment and Capp workloads inject these through Secret references; neither private value is rendered into the ConfigMap. Provide per-cluster tokens through `secret.clusterTokens`. The chart creates and binds the configured service account for OpenShift and LDAP; OAuth annotations and TokenReview permissions remain OpenShift-only. Use an HTTPS ingress or route for password login.
+For Helm, explicitly set `config.authorization.mode=backend-policy` with the per-target policy settings in the [configuration guide](docs/backend-policy.md#configuration-and-namespace-boundaries). For LDAP, set `config.auth.mode=ldap` and configure directory settings and public verification keys under `config.auth.ldap`. Supply `secret.ldapBindPassword` and `secret.ldapSigningPrivateKey` at install time (use `--set-file secret.ldapSigningPrivateKey=/path/to/key.pem` for the PEM file). Both Deployment and Capp workloads inject these through Secret references; neither private value is rendered into the ConfigMap. Provide per-cluster tokens through `secret.clusterTokens`. The chart selects the configured service account for all providers. OAuth annotations are OpenShift-only; TokenReview permissions belong on the OpenShift home workload account or each passthrough target backend account. Use an HTTPS ingress or route for password login.
 
 > **Note:** In `openshift` mode, the backend is fully stateless — no sessions are stored. Multiple replicas work without shared state. Token validation results are cached in-memory per pod.
 

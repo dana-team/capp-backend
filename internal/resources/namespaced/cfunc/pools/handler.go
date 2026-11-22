@@ -7,11 +7,9 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	fissionv1 "github.com/fission/fission/pkg/apis/core/v1"
 	"github.com/gin-gonic/gin"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -136,55 +134,16 @@ func (h *Handler) create(c *gin.Context) {
 	c.JSON(http.StatusCreated, FromK8s(env, h.catalog))
 }
 
-// onboardNamespace sets the label that makes Fission, in its dynamic tenancy
-// mode, serve the namespace. The caller's credential is tried first. A
-// namespace's users normally cannot change the namespace object itself, so
-// a refusal falls back to the backend's own cluster credential when the
-// request has one (passthrough mode has none) and the caller may create
-// pools in the namespace. The label is never removed
-// here: removing it makes Fission tear down what it runs in the namespace.
-func onboardNamespace(c *gin.Context, userClient client.Client, namespace string) error {
-	err := labelNamespace(c, userClient, namespace)
-	if !k8serrors.IsForbidden(err) {
-		return err
-	}
-	// The backend credential acts only for a caller who may create the pool.
-	// Without this check, a caller with no right in the namespace would get
-	// it labelled, and the label stays, before its create is refused.
-	review := &authorizationv1.SelfSubjectAccessReview{
-		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
-			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Namespace: namespace,
-				Verb:      "create",
-				Group:     fissionv1.SchemeGroupVersion.Group,
-				Resource:  "environments",
-			},
-		},
-	}
-	if reviewErr := userClient.Create(c.Request.Context(), review); reviewErr != nil {
-		return reviewErr
-	}
-	if !review.Status.Allowed {
-		return apierrors.NewForbidden(fmt.Sprintf("you may not create pools in namespace %s", namespace))
-	}
-	admin, ok := c.Get(string(middleware.AdminK8sClientKey))
-	if !ok {
-		return err
-	}
-	adminClient, ok := admin.(client.Client)
-	if !ok || adminClient == nil {
-		return err
-	}
-	adminErr := labelNamespace(c, adminClient, namespace)
-	if k8serrors.IsForbidden(adminErr) {
+// onboardNamespace labels the namespace using the authorized backend client.
+// The label is never removed: removing it tears down the namespace's Fission workloads.
+func onboardNamespace(c *gin.Context, k8sClient client.Client, namespace string) error {
+	err := labelNamespace(c, k8sClient, namespace)
+	if k8serrors.IsForbidden(err) {
 		return apierrors.NewForbidden(fmt.Sprintf(
-			"namespace %s is not enabled for Fission, and neither the caller nor the backend may label it; ask a cluster administrator to set %s=%s on it",
+			"namespace %s is not enabled for Fission, and the backend may not label it; ask a cluster administrator to set %s=%s on it",
 			namespace, FissionEnabledLabel, FissionEnabledValue))
 	}
-	// Any other failure, such as a timeout or a conflict, is not a missing
-	// right: it goes out as it is, so the cause is logged and the caller is
-	// not sent to an administrator for nothing.
-	return adminErr
+	return err
 }
 
 func labelNamespace(c *gin.Context, k8sClient client.Client, namespace string) error {

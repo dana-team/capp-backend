@@ -232,7 +232,7 @@ func migrationRouter(t *testing.T, targets map[string]requestpolicy.Target, sour
 	require.NoError(t, err)
 	r := gin.New()
 	r.Use(requestpolicy.New(policyIdentity("editor"), config.AuthModePassthrough, mgr, rules, targets, logger))
-	newCappsHandler(t, false, nil, mgr, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
+	newCappsHandler(t, false, nil, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
 	return r
 }
 
@@ -414,7 +414,7 @@ func TestMigrate(t *testing.T) {
 					}
 					r := p.router(t, map[string]requestpolicy.Target{"c1": {Store: sourceStore, OperatorUsers: []string{"editor"}}, "c2": {Store: destinationStore, OperatorUsers: []string{destinationUser}}})
 					git := &policyGitRecorder{}
-					newCappsHandler(t, true, git, p.manager, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
+					newCappsHandler(t, true, git, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
 					body, err := json.Marshal(capps.MigrateRequest{TargetCluster: targetCluster, TargetNamespace: targetNamespace, DeleteSource: scenario == "move"})
 					require.NoError(t, err)
 					if scenario == "malformed body" {

@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -117,23 +118,45 @@ func observabilityConfig(queryURL string) config.ObservabilityConfig {
 	}
 }
 
-// metricsEngine mounts the handler under /clusters/:cluster like the real
-// router, so the cluster name reaches the query.
-func metricsEngine(t *testing.T, obs config.ObservabilityConfig, k8sClient client.Client) *gin.Engine {
+// metricsEngine exercises retained query helpers under an authorized resource
+// decision. Production metrics routes remain denied by the fixed API policy map.
+func metricsEngine(t *testing.T, obs config.ObservabilityConfig, k8sClient client.Client, middleware ...gin.HandlerFunc) *gin.Engine {
 	t.Helper()
-	_, e := gin.CreateTestContext(httptest.NewRecorder())
-	e.Use(func(c *gin.Context) {
-		c.Set(string(middleware.K8sClientKey), k8sClient)
-		c.Next()
-	})
-	h, err := New(false, nil, nil, makeSizes(), obs)
+	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "prod"}}
+	cc.SetHealthy(true)
+	mgr := &testutil.MockClusterManager{GetFn: func(string) (*cluster.ClusterClient, error) { return cc, nil }}
+	e := gin.New()
+	e.Use(middleware...)
+	e.Use(testutil.PolicyMiddleware(t, mgr, map[string]policy.Target{"prod": {Store: testutil.PolicyStore(t, "team-a"), ExecutionClient: k8sClient}}))
+	h, err := New(false, nil, makeSizes(), obs)
 	require.NoError(t, err)
-	h.RegisterRoutes(e.Group("/clusters/:cluster"))
+	e.GET("/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name", func(c *gin.Context) {
+		metric := c.Query("unitMetric")
+		if metric == "" {
+			h.listMetrics(c)
+			return
+		}
+		c.Params = append(c.Params, gin.Param{Key: "metric", Value: metric})
+		h.queryMetric(c)
+	})
 	return e
 }
 
+func metricUnitPath(path string) string {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		panic(err)
+	}
+	base, metric, _ := strings.Cut(parsed.Path, "/metrics")
+	parsed.Path = "/api/v1" + base
+	query := parsed.Query()
+	query.Set("unitMetric", strings.TrimPrefix(metric, "/"))
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
 func getMetrics(e *gin.Engine, path string) *httptest.ResponseRecorder {
-	return testutil.ServeHTTP(e, http.MethodGet, path, nil)
+	return testutil.ServeHTTP(e, http.MethodGet, metricUnitPath(path), nil)
 }
 
 func errorCode(t *testing.T, w *httptest.ResponseRecorder) string {
@@ -349,7 +372,7 @@ func TestQueryMetric_ClientDisconnectSkipsErrorResponse(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, metricsBase+"/cpu", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, metricUnitPath(metricsBase+"/cpu"), nil).WithContext(ctx)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -531,17 +554,12 @@ func TestQueryMetric_UnreachableErrorDropsURL(t *testing.T) {
 	fp.Close()
 
 	var logged []error
-	_, e := gin.CreateTestContext(httptest.NewRecorder())
-	e.Use(func(c *gin.Context) {
-		c.Set(string(middleware.K8sClientKey), testutil.FakeClient(t, makeCapp("web", "team-a")))
+	e := metricsEngine(t, observabilityConfig(queryURL), testutil.FakeClient(t, makeCapp("web", "team-a")), func(c *gin.Context) {
 		c.Next()
 		for _, ginErr := range c.Errors {
 			logged = append(logged, ginErr.Err)
 		}
 	})
-	h, err := New(false, nil, nil, makeSizes(), observabilityConfig(queryURL))
-	require.NoError(t, err)
-	h.RegisterRoutes(e.Group("/clusters/:cluster"))
 
 	w := getMetrics(e, metricsBase+"/cpu")
 

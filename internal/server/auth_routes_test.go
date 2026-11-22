@@ -231,6 +231,7 @@ func TestNew(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { stopPolicyServer(t, s) })
 			for i := range 2 {
 				w := httptest.NewRecorder()
 				s.httpServer.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"Alice","password":"secret"}`)))

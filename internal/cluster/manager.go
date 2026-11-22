@@ -6,13 +6,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ClusterManager manages all configured Kubernetes cluster connections.
@@ -26,15 +24,6 @@ type ClusterManager interface {
 	// including their current health status.
 	List() []ClusterMeta
 
-	// ClientFor creates a controller-runtime client scoped to the given
-	// ClusterCredential. In passthrough mode, cred.BearerToken overrides
-	// the base RestConfig's token for this request only — the shared base
-	// config is never mutated.
-	//
-	// Returns an error only if the underlying K8s client factory fails, which
-	// in practice only happens for malformed rest.Config values.
-	ClientFor(cluster *ClusterClient, cred auth.ClusterCredential) (client.Client, error)
-
 	// IsNamespaceAllowed returns true if the given namespace is accessible on
 	// this cluster. Always returns true when AllowedNamespaces is empty.
 	IsNamespaceAllowed(cluster *ClusterClient, namespace string) bool
@@ -45,10 +34,6 @@ type ClusterManager interface {
 	//
 	//   go mgr.StartHealthChecks(ctx, 30)
 	StartHealthChecks(ctx context.Context, intervalSeconds int)
-
-	// IsAnyHealthy returns true if at least one cluster is currently healthy.
-	// Used by the /readyz probe.
-	IsAnyHealthy() bool
 }
 
 // defaultClusterManager is the production ClusterManager implementation.
@@ -145,41 +130,6 @@ func (m *defaultClusterManager) List() []ClusterMeta {
 	return metas
 }
 
-// ClientFor builds a per-request controller-runtime client. The base
-// RestConfig is copied so that injecting the caller's bearer token does not
-// affect other in-flight requests.
-func (m *defaultClusterManager) ClientFor(cluster *ClusterClient, cred auth.ClusterCredential) (client.Client, error) {
-	return client.New(requestConfig(cluster, cred), client.Options{Scheme: cluster.Scheme})
-}
-
-// requestConfig returns the cluster's REST config with the caller's
-// credential applied.
-func requestConfig(cluster *ClusterClient, cred auth.ClusterCredential) *rest.Config {
-	// Copy the base config to avoid mutating the shared struct.
-	reqCfg := rest.CopyConfig(cluster.RestConfig)
-
-	// Override the token with the caller's credential when provided.
-	// In passthrough mode, every request carries a different user token.
-	// In openshift mode, cred may carry impersonation headers while the base cluster token is used for authentication.
-	if cred.BearerToken != "" {
-		reqCfg.BearerToken = cred.BearerToken
-		// Clear any token file path so BearerToken takes precedence.
-		reqCfg.BearerTokenFile = ""
-	}
-
-	// Apply impersonation headers when present (openshift auth mode).
-	// The base config's service-account token is used for authentication,
-	// while Impersonate-User/Group headers enforce the end-user's RBAC identity.
-	if cred.ImpersonateUser != "" {
-		reqCfg.Impersonate = rest.ImpersonationConfig{
-			UserName: cred.ImpersonateUser,
-			Groups:   cred.ImpersonateGroups,
-		}
-	}
-
-	return reqCfg
-}
-
 // IsNamespaceAllowed returns true if namespace is in the allowed list,
 // or if the allowed list is empty (meaning all namespaces are permitted).
 func (m *defaultClusterManager) IsNamespaceAllowed(cluster *ClusterClient, namespace string) bool {
@@ -210,16 +160,6 @@ func (m *defaultClusterManager) StartHealthChecks(ctx context.Context, intervalS
 			m.runHealthChecks()
 		}
 	}
-}
-
-// IsAnyHealthy returns true if at least one cluster is currently healthy.
-func (m *defaultClusterManager) IsAnyHealthy() bool {
-	for _, cc := range m.clusters {
-		if cc.healthy.Load() {
-			return true
-		}
-	}
-	return false
 }
 
 // runHealthChecks checks all clusters and updates their health status.

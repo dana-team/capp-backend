@@ -11,11 +11,9 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
-	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -34,22 +32,6 @@ func GinTestContext(t *testing.T) (*httptest.ResponseRecorder, *gin.Context) {
 	return w, c
 }
 
-func GinTestContextWithClient(t *testing.T, k8sClient client.Client) (*httptest.ResponseRecorder, *gin.Context) {
-	t.Helper()
-	w, c := GinTestContext(t)
-	c.Set(string(middleware.K8sClientKey), k8sClient)
-	return w, c
-}
-
-func GinTestContextWithAllClients(t *testing.T, userClient, adminClient client.Client, meta cluster.ClusterMeta) (*httptest.ResponseRecorder, *gin.Context) {
-	t.Helper()
-	w, c := GinTestContext(t)
-	c.Set(string(middleware.K8sClientKey), userClient)
-	c.Set(string(middleware.AdminK8sClientKey), adminClient)
-	c.Set(string(middleware.ClusterMetaKey), meta)
-	return w, c
-}
-
 func TestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s, err := k8s.BuildScheme()
@@ -63,7 +45,7 @@ func TestScheme(t *testing.T) *runtime.Scheme {
 // scheme and optional seed objects.
 func FakeClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
-	return fake.NewClientBuilder().WithScheme(TestScheme(t)).WithObjects(objects...).Build()
+	return fake.NewClientBuilder().WithScheme(TestScheme(t)).WithRESTMapper(ResourceMapper()).WithObjects(objects...).Build()
 }
 
 // FakeClientWithInterceptors creates a fake client with custom interceptor
@@ -71,66 +53,10 @@ func FakeClient(t *testing.T, objects ...client.Object) client.Client {
 func FakeClientWithInterceptors(t *testing.T, funcs interceptor.Funcs, objects ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().
-		WithScheme(TestScheme(t)).
+		WithScheme(TestScheme(t)).WithRESTMapper(ResourceMapper()).
 		WithObjects(objects...).
 		WithInterceptorFuncs(funcs).
 		Build()
-}
-
-// FakeClientAllowSAR creates a fake client where all SelfSubjectAccessReview
-// creations succeed with Allowed=true, enabling tests to exercise authorized paths.
-func FakeClientAllowSAR(t *testing.T, objects ...client.Object) client.Client {
-	t.Helper()
-	return fake.NewClientBuilder().
-		WithScheme(TestScheme(t)).
-		WithObjects(objects...).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if sar, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
-					sar.Status.Allowed = true
-					return nil
-				}
-				return c.Create(ctx, obj, opts...)
-			},
-		}).Build()
-}
-
-// FakeClientAllowNamespacedSAR creates a fake client that allows namespace-scoped
-// SARs (those with a Namespace set) but denies cluster-scoped ones. This simulates
-// a user who has access to a specific namespace but is not a cluster admin.
-func FakeClientAllowNamespacedSAR(t *testing.T, objects ...client.Object) client.Client {
-	t.Helper()
-	return fake.NewClientBuilder().
-		WithScheme(TestScheme(t)).
-		WithObjects(objects...).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if sar, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
-					attrs := sar.Spec.ResourceAttributes
-					sar.Status.Allowed = attrs != nil && attrs.Namespace != ""
-					return nil
-				}
-				return c.Create(ctx, obj, opts...)
-			},
-		}).Build()
-}
-
-// FakeClientDenySAR creates a fake client where all SelfSubjectAccessReview
-// creations return Allowed=false, simulating a user with no permissions.
-func FakeClientDenySAR(t *testing.T, objects ...client.Object) client.Client {
-	t.Helper()
-	return fake.NewClientBuilder().
-		WithScheme(TestScheme(t)).
-		WithObjects(objects...).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if sar, ok := obj.(*authorizationv1.SelfSubjectAccessReview); ok {
-					sar.Status.Allowed = false
-					return nil
-				}
-				return c.Create(ctx, obj, opts...)
-			},
-		}).Build()
 }
 
 // JSONBody marshals v to JSON and returns it as an *bytes.Buffer suitable for
@@ -158,34 +84,6 @@ type RouteRegistrar interface {
 	RegisterRoutes(rg *gin.RouterGroup)
 }
 
-// EngineWithClient creates a Gin test engine that injects k8sClient into the
-// context via middleware, then registers the handler's routes.
-func EngineWithClient(t *testing.T, k8sClient client.Client, handler RouteRegistrar) *gin.Engine {
-	t.Helper()
-	_, engine := gin.CreateTestContext(httptest.NewRecorder())
-	engine.Use(func(c *gin.Context) {
-		c.Set(string(middleware.K8sClientKey), k8sClient)
-		c.Next()
-	})
-	handler.RegisterRoutes(engine.Group(""))
-	return engine
-}
-
-// EngineWithAdminClient creates a Gin test engine that injects both a user
-// client, an admin client, and cluster metadata into the context.
-func EngineWithAdminClient(t *testing.T, userClient, adminClient client.Client, meta cluster.ClusterMeta, handler RouteRegistrar) *gin.Engine {
-	t.Helper()
-	_, engine := gin.CreateTestContext(httptest.NewRecorder())
-	engine.Use(func(c *gin.Context) {
-		c.Set(string(middleware.K8sClientKey), userClient)
-		c.Set(string(middleware.AdminK8sClientKey), adminClient)
-		c.Set(string(middleware.ClusterMetaKey), meta)
-		c.Next()
-	})
-	handler.RegisterRoutes(engine.Group(""))
-	return engine
-}
-
 // EngineHelper wraps a gin.Engine with convenience methods that reduce
 // boilerplate in handler tests.
 type EngineHelper struct {
@@ -194,15 +92,15 @@ type EngineHelper struct {
 }
 
 // NewEngineHelper creates an EngineHelper backed by EngineWithClient.
-func NewEngineHelper(t *testing.T, k8sClient client.Client, handler RouteRegistrar) *EngineHelper {
+func NewEngineHelper(t *testing.T, k8sClient client.Client, handler RouteRegistrar, aggregateNamespaces ...string) *EngineHelper {
 	t.Helper()
-	return &EngineHelper{t: t, Engine: EngineWithClient(t, k8sClient, handler)}
+	return &EngineHelper{t: t, Engine: EngineWithClient(t, k8sClient, handler, aggregateNamespaces...)}
 }
 
-// NewEngineHelperWithAdmin creates an EngineHelper backed by EngineWithAdminClient.
-func NewEngineHelperWithAdmin(t *testing.T, userClient, adminClient client.Client, meta cluster.ClusterMeta, handler RouteRegistrar) *EngineHelper {
+// NewEngineHelperWithMetadata creates an EngineHelper backed by EngineWithMetadata.
+func NewEngineHelperWithMetadata(t *testing.T, k8sClient client.Client, meta cluster.ClusterMeta, handler RouteRegistrar, aggregateNamespaces ...string) *EngineHelper {
 	t.Helper()
-	return &EngineHelper{t: t, Engine: EngineWithAdminClient(t, userClient, adminClient, meta, handler)}
+	return &EngineHelper{t: t, Engine: EngineWithMetadata(t, k8sClient, meta, handler, aggregateNamespaces...)}
 }
 
 // NewEngineHelperFrom creates an EngineHelper from an existing gin.Engine.
@@ -211,36 +109,38 @@ func NewEngineHelperFrom(t *testing.T, engine *gin.Engine) *EngineHelper {
 	return &EngineHelper{t: t, Engine: engine}
 }
 
+const resourceRoutePrefix = "/api/v1/clusters/test"
+
 func (h *EngineHelper) Get(path string) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodGet, path, nil)
+	return ServeHTTP(h.Engine, http.MethodGet, resourceRoutePrefix+path, nil)
 }
 
 func (h *EngineHelper) Post(path string, body io.Reader) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodPost, path, body)
+	return ServeHTTP(h.Engine, http.MethodPost, resourceRoutePrefix+path, body)
 }
 
 func (h *EngineHelper) PostJSON(path string, v any) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodPost, path, JSONBody(h.t, v))
+	return ServeHTTP(h.Engine, http.MethodPost, resourceRoutePrefix+path, JSONBody(h.t, v))
 }
 
 func (h *EngineHelper) Put(path string, body io.Reader) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodPut, path, body)
+	return ServeHTTP(h.Engine, http.MethodPut, resourceRoutePrefix+path, body)
 }
 
 func (h *EngineHelper) PutJSON(path string, v any) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodPut, path, JSONBody(h.t, v))
+	return ServeHTTP(h.Engine, http.MethodPut, resourceRoutePrefix+path, JSONBody(h.t, v))
 }
 
 func (h *EngineHelper) Patch(path string, body io.Reader) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodPatch, path, body)
+	return ServeHTTP(h.Engine, http.MethodPatch, resourceRoutePrefix+path, body)
 }
 
 func (h *EngineHelper) PatchJSON(path string, v any) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodPatch, path, JSONBody(h.t, v))
+	return ServeHTTP(h.Engine, http.MethodPatch, resourceRoutePrefix+path, JSONBody(h.t, v))
 }
 
 func (h *EngineHelper) Delete(path string) *httptest.ResponseRecorder {
-	return ServeHTTP(h.Engine, http.MethodDelete, path, nil)
+	return ServeHTTP(h.Engine, http.MethodDelete, resourceRoutePrefix+path, nil)
 }
 
 // -- Mock AuthManager --
@@ -301,10 +201,8 @@ func (m *MockAuthManager) OAuthExchange(ctx context.Context, code, redirectURI s
 type MockClusterManager struct {
 	GetFn                func(name string) (*cluster.ClusterClient, error)
 	ListFn               func() []cluster.ClusterMeta
-	ClientForFn          func(cc *cluster.ClusterClient, cred auth.ClusterCredential) (client.Client, error)
 	IsNamespaceAllowedFn func(cc *cluster.ClusterClient, namespace string) bool
 	StartHealthChecksFn  func(ctx context.Context, intervalSeconds int)
-	IsAnyHealthyFn       func() bool
 }
 
 func (m *MockClusterManager) Get(name string) (*cluster.ClusterClient, error) {
@@ -321,13 +219,6 @@ func (m *MockClusterManager) List() []cluster.ClusterMeta {
 	return nil
 }
 
-func (m *MockClusterManager) ClientFor(cc *cluster.ClusterClient, cred auth.ClusterCredential) (client.Client, error) {
-	if m.ClientForFn != nil {
-		return m.ClientForFn(cc, cred)
-	}
-	return nil, nil
-}
-
 func (m *MockClusterManager) IsNamespaceAllowed(cc *cluster.ClusterClient, namespace string) bool {
 	if m.IsNamespaceAllowedFn != nil {
 		return m.IsNamespaceAllowedFn(cc, namespace)
@@ -339,11 +230,4 @@ func (m *MockClusterManager) StartHealthChecks(ctx context.Context, intervalSeco
 	if m.StartHealthChecksFn != nil {
 		m.StartHealthChecksFn(ctx, intervalSeconds)
 	}
-}
-
-func (m *MockClusterManager) IsAnyHealthy() bool {
-	if m.IsAnyHealthyFn != nil {
-		return m.IsAnyHealthyFn()
-	}
-	return true
 }

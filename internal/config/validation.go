@@ -911,12 +911,8 @@ func validateGitOpsPaths(clusters []ClusterConfig) []error {
 }
 
 func validateAuthorization(cfg *Config) []error {
-	switch cfg.Authorization.Mode {
-	case "", AuthorizationModeKubernetes:
-		return nil
-	case AuthorizationModeBackendPolicy:
-	default:
-		return []error{errors.New("config: authorization.mode must be kubernetes or backend-policy")}
+	if cfg.Authorization.Mode != AuthorizationModeBackendPolicy {
+		return []error{errors.New("config: authorization.mode must be explicitly set to backend-policy")}
 	}
 	var errs []error
 	if cfg.Authorization.RestrictedBindingNamePrefixes == nil {

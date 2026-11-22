@@ -33,7 +33,7 @@ type Server struct {
 	authManager   auth.AuthManager
 }
 
-// New builds the Gin engine and starts authorization observation when enabled.
+// New builds the Gin engine and starts authorization observation.
 // Namespace handlers are assembled here; registry supplies the other resources.
 // Call Stop to release workers, even when Start has not been called.
 // version is the backend build version; it is compared with the version of each
@@ -48,35 +48,23 @@ func New(
 	registry *resources.Registry,
 	logger *zap.Logger,
 ) (*Server, error) {
-	var authorization *authorizationRuntime
-	var rules *policy.Routes
-	if cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy {
-		metricsPath := ""
-		if cfg.Metrics.Enabled {
-			metricsPath = cfg.Metrics.Path
-		}
-		var err error
-		rules, err = policy.NewRoutes(metricsPath)
-		if err != nil {
-			return nil, err
-		}
-		authorization, err = newAuthorization(cfg, clusterMgr)
-		if err != nil {
-			return nil, err
-		}
+	metricsPath := ""
+	if cfg.Metrics.Enabled {
+		metricsPath = cfg.Metrics.Path
+	}
+	rules, err := policy.NewRoutes(metricsPath)
+	if err != nil {
+		return nil, err
+	}
+	authorization, err := newAuthorization(cfg, clusterMgr)
+	if err != nil {
+		return nil, err
 	}
 	if authMgr == nil {
-		var reviewers map[string]auth.TokenReviewer
-		if authorization != nil {
-			reviewers = authorization.reviewers
-		}
-		var err error
-		authMgr, err = auth.New(cfg, auth.Dependencies{TargetReviewers: reviewers})
+		authMgr, err = auth.New(cfg, auth.Dependencies{TargetReviewers: authorization.reviewers})
 		if err != nil {
-			if authorization != nil {
-				for _, reconciler := range authorization.reconcilers {
-					reconciler.Close()
-				}
+			for _, reconciler := range authorization.reconcilers {
+				reconciler.Close()
 			}
 			return nil, err
 		}
@@ -102,9 +90,7 @@ func New(
 		))
 	}
 
-	if authorization != nil {
-		engine.Use(policy.New(authMgr, cfg.Auth.Mode, clusterMgr, rules, authorization.targets, logger))
-	}
+	engine.Use(policy.New(authMgr, cfg.Auth.Mode, clusterMgr, rules, authorization.targets, logger))
 
 	// ── Observability endpoints (no auth required) ────────────────────────────
 	engine.GET("/healthz", healthz)
@@ -142,33 +128,18 @@ func New(
 
 	// ── Cluster endpoints (listing only — no cluster middleware needed) ────────
 	clusterListGroup := engine.Group("/api/v1/clusters")
-	if authorization == nil {
-		clusterListGroup.Use(middleware.Auth(authMgr))
-	}
 	clusterListGroup.GET("", listClusters(clusterMgr))
 	clusterListGroup.GET("/:cluster", getCluster(clusterMgr))
 
 	// ── Resource endpoints ───────────────────────────────────────────────────
-	// All resource routes live under /api/v1/clusters/:cluster and require
-	// both authentication and cluster resolution. Kubernetes mode uses the group
-	// middleware below; backend-policy mode uses the global policy chain.
+	// The global policy chain authenticates and authorizes every resource route.
 	resourceGroup := engine.Group("/api/v1/clusters/:cluster")
-	if authorization == nil {
-		resourceGroup.Use(middleware.Auth(authMgr))
-		resourceGroup.Use(middleware.Cluster(clusterMgr))
-	}
 	if cfg.Resources.Namespaces.Enabled {
-		if authorization != nil {
-			registry.Register(namespaces.NewWithAdministration(logger, authorization.administration))
-		} else {
-			registry.Register(namespaces.New(logger))
-		}
+		registry.Register(namespaces.NewWithAdministration(logger, authorization.administration))
 	}
 	registry.Mount(resourceGroup)
 
-	if authorization != nil {
-		authorization.start(logger)
-	}
+	authorization.start(logger)
 
 	return &Server{
 		httpServer: &http.Server{
@@ -226,27 +197,19 @@ func healthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// readyz requires a healthy target and, in backend-policy mode, completed
+// readyz requires a healthy target and completed
 // initial observations on that same target. Transient watch failures do not
 // discard previously synchronized state.
 func readyz(clusterMgr cluster.ClusterManager, authorization *authorizationRuntime) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var ready bool
-		var reason string
-		if authorization != nil {
-			ready = authorization.ready(clusterMgr)
-			reason = "no healthy synchronized clusters available"
-		} else {
-			ready = clusterMgr.IsAnyHealthy()
-			reason = "no healthy clusters available"
-		}
+		ready := authorization != nil && authorization.ready(clusterMgr)
 		if ready {
 			c.JSON(http.StatusOK, gin.H{"status": "ready"})
 			return
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "not ready",
-			"reason": reason,
+			"reason": "no healthy synchronized clusters available",
 		})
 	}
 }

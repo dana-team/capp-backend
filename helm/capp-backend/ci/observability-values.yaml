@@ -1,5 +1,7 @@
 # Used by CI to render the chart with observability enabled.
 config:
+  authorization:
+    mode: backend-policy
   clusters:
     - name: test
       credential:

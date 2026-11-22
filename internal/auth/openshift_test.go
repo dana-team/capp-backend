@@ -13,10 +13,6 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	authv1 "k8s.io/api/authentication/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 )
 
 const (
@@ -24,45 +20,8 @@ const (
 	oAuthAuthorizeURLSuffix = "/oauth/authorize"
 )
 
-// extractTokenReview safely extracts the TokenReview from a reactor action.
-func extractTokenReview(action k8stesting.Action) *authv1.TokenReview {
-	ca, ok := action.(k8stesting.CreateAction)
-	if !ok {
-		return nil
-	}
-	review, ok := ca.GetObject().(*authv1.TokenReview)
-	if !ok {
-		return nil
-	}
-	return review
-}
-
-// tokenReviewReactor returns a reactor that responds to TokenReview create
-// calls with the given authentication result.
-func tokenReviewReactor(authenticated bool, username string, groups []string) k8stesting.ReactionFunc {
-	return func(action k8stesting.Action) (bool, runtime.Object, error) {
-		review := extractTokenReview(action)
-		if review == nil {
-			return false, nil, nil
-		}
-		review.Status = authv1.TokenReviewStatus{
-			Authenticated: authenticated,
-			User: authv1.UserInfo{
-				Username: username,
-				Groups:   groups,
-			},
-		}
-		return true, review, nil
-	}
-}
-
-func newTestOpenShiftManager(t *testing.T, oauthServer *httptest.Server, reactor k8stesting.ReactionFunc) *openShiftManager {
+func newTestOpenShiftManager(t *testing.T, oauthServer *httptest.Server) *openShiftManager {
 	t.Helper()
-
-	fakeClient := fake.NewClientset()
-	if reactor != nil {
-		fakeClient.PrependReactor("create", "tokenreviews", reactor)
-	}
 
 	osCfg := &config.OpenShiftConfig{
 		APIServer:            oauthServer.URL,
@@ -76,7 +35,6 @@ func newTestOpenShiftManager(t *testing.T, oauthServer *httptest.Server, reactor
 	return &openShiftManager{
 		cfg:        osCfg,
 		httpClient: oauthServer.Client(),
-		k8sClient:  fakeClient,
 		oauthMeta: &oauthServerMeta{
 			AuthorizationEndpoint: oauthServer.URL + oAuthAuthorizeURLSuffix,
 			TokenEndpoint:         oauthServer.URL + oAuthTokenURLSuffix,
@@ -86,120 +44,7 @@ func newTestOpenShiftManager(t *testing.T, oauthServer *httptest.Server, reactor
 	}
 }
 
-func TestOpenShift_Authenticate_ValidToken(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-
-	reactor := tokenReviewReactor(true, "jane", []string{"developers", "system:authenticated"})
-	mgr := newTestOpenShiftManager(t, srv, reactor)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer valid-token")
-
-	cred, err := mgr.Authenticate(context.Background(), "any-cluster", req)
-	require.NoError(t, err)
-	assert.Equal(t, "jane", cred.ImpersonateUser)
-	assert.Equal(t, []string{"developers", "system:authenticated"}, cred.ImpersonateGroups)
-	assert.Empty(t, cred.BearerToken)
-}
-
-func TestOpenShift_Authenticate_InvalidToken(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-
-	reactor := tokenReviewReactor(false, "", nil)
-	mgr := newTestOpenShiftManager(t, srv, reactor)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer bad-token")
-
-	_, err := mgr.Authenticate(context.Background(), "any-cluster", req)
-	assert.ErrorIs(t, err, ErrUnauthenticated)
-}
-
-func TestOpenShift_Authenticate_NoHeader(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-
-	mgr := newTestOpenShiftManager(t, srv, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	_, err := mgr.Authenticate(context.Background(), "any-cluster", req)
-	assert.ErrorIs(t, err, ErrUnauthenticated)
-}
-
-func TestOpenShift_Authenticate_CacheHit(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-
-	callCount := 0
-	reactor := func(action k8stesting.Action) (bool, runtime.Object, error) {
-		callCount++
-		review := extractTokenReview(action)
-		if review == nil {
-			return false, nil, nil
-		}
-		review.Status = authv1.TokenReviewStatus{
-			Authenticated: true,
-			User:          authv1.UserInfo{Username: "jane", Groups: []string{"devs"}},
-		}
-		return true, review, nil
-	}
-
-	mgr := newTestOpenShiftManager(t, srv, reactor)
-
-	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
-	req1.Header.Set("Authorization", "Bearer my-token")
-	cred1, err := mgr.Authenticate(context.Background(), "", req1)
-	require.NoError(t, err)
-	assert.Equal(t, "jane", cred1.ImpersonateUser)
-	assert.Equal(t, 1, callCount)
-
-	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
-	req2.Header.Set("Authorization", "Bearer my-token")
-	cred2, err := mgr.Authenticate(context.Background(), "", req2)
-	require.NoError(t, err)
-	assert.Equal(t, "jane", cred2.ImpersonateUser)
-	assert.Equal(t, 1, callCount) // Cache hit.
-}
-
-func TestOpenShift_Authenticate_CacheExpired(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	defer srv.Close()
-
-	callCount := 0
-	reactor := func(action k8stesting.Action) (bool, runtime.Object, error) {
-		callCount++
-		review := extractTokenReview(action)
-		if review == nil {
-			return false, nil, nil
-		}
-		review.Status = authv1.TokenReviewStatus{
-			Authenticated: true,
-			User:          authv1.UserInfo{Username: "jane", Groups: []string{"devs"}},
-		}
-		return true, review, nil
-	}
-
-	mgr := newTestOpenShiftManager(t, srv, reactor)
-	mgr.cacheTTL = 1 * time.Millisecond
-
-	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
-	req1.Header.Set("Authorization", "Bearer my-token")
-	_, err := mgr.Authenticate(context.Background(), "", req1)
-	require.NoError(t, err)
-	assert.Equal(t, 1, callCount)
-
-	time.Sleep(5 * time.Millisecond)
-
-	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
-	req2.Header.Set("Authorization", "Bearer my-token")
-	_, err = mgr.Authenticate(context.Background(), "", req2)
-	require.NoError(t, err)
-	assert.Equal(t, 2, callCount) // Cache expired.
-}
-
-func TestOpenShift_OAuthExchange_ValidCode(t *testing.T) {
+func TestOpenShiftManagerOAuthExchangeValidCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == oAuthTokenURLSuffix {
 			w.Header().Set("Content-Type", "application/json")
@@ -215,7 +60,7 @@ func TestOpenShift_OAuthExchange_ValidCode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	pair, err := mgr.OAuthExchange(context.Background(), "auth-code", "")
 	require.NoError(t, err)
 	assert.Equal(t, "access-tok", pair.AccessToken)
@@ -223,20 +68,20 @@ func TestOpenShift_OAuthExchange_ValidCode(t *testing.T) {
 	assert.False(t, pair.ExpiresAt.IsZero())
 }
 
-func TestOpenShift_OAuthExchange_InvalidCode(t *testing.T) {
+func TestOpenShiftManagerOAuthExchangeInvalidCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, err := mgr.OAuthExchange(context.Background(), "bad-code", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
-func TestOpenShift_Refresh_ValidToken(t *testing.T) {
+func TestOpenShiftManagerRefreshValidToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == oAuthTokenURLSuffix {
 			w.Header().Set("Content-Type", "application/json")
@@ -251,23 +96,23 @@ func TestOpenShift_Refresh_ValidToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	pair, err := mgr.Refresh(context.Background(), "old-refresh-token")
 	require.NoError(t, err)
 	assert.Equal(t, "new-access", pair.AccessToken)
 	assert.Equal(t, "new-refresh", pair.RefreshToken)
 }
 
-func TestOpenShift_Login_NotSupported(t *testing.T) {
+func TestOpenShiftManagerLoginNotSupported(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, err := mgr.Login(context.Background(), "cluster", "token")
 	assert.ErrorIs(t, err, ErrNotSupported)
 }
 
-func TestOpenShift_PasswordLogin_Success(t *testing.T) {
+func TestOpenShiftManagerPasswordLoginSuccess(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != oAuthAuthorizeURLSuffix {
@@ -288,7 +133,7 @@ func TestOpenShift_PasswordLogin_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	pair, err := mgr.PasswordLogin(context.Background(), "user", "pass")
 	require.NoError(t, err)
 	assert.Equal(t, "access-tok", pair.AccessToken)
@@ -296,7 +141,7 @@ func TestOpenShift_PasswordLogin_Success(t *testing.T) {
 	assert.False(t, pair.ExpiresAt.IsZero())
 }
 
-func TestOpenShift_PasswordLogin_BadCredentials(t *testing.T) {
+func TestOpenShiftManagerPasswordLoginBadCredentials(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != oAuthAuthorizeURLSuffix {
 			w.WriteHeader(http.StatusNotFound)
@@ -307,12 +152,12 @@ func TestOpenShift_PasswordLogin_BadCredentials(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, err := mgr.PasswordLogin(context.Background(), "user", "wrongpass")
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
-func TestOpenShift_PasswordLogin_QueryParamToken(t *testing.T) {
+func TestOpenShiftManagerPasswordLoginQueryParamToken(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != oAuthAuthorizeURLSuffix {
@@ -330,14 +175,14 @@ func TestOpenShift_PasswordLogin_QueryParamToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	pair, err := mgr.PasswordLogin(context.Background(), "user", "pass")
 	require.NoError(t, err)
 	assert.Equal(t, "qp-tok", pair.AccessToken)
 	assert.False(t, pair.ExpiresAt.IsZero())
 }
 
-func TestOpenShift_PasswordLogin_MissingExpiresIn(t *testing.T) {
+func TestOpenShiftManagerPasswordLoginMissingExpiresIn(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != oAuthAuthorizeURLSuffix {
@@ -355,14 +200,14 @@ func TestOpenShift_PasswordLogin_MissingExpiresIn(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	pair, err := mgr.PasswordLogin(context.Background(), "user", "pass")
 	require.NoError(t, err)
 	assert.Equal(t, "notok", pair.AccessToken)
 	assert.True(t, pair.ExpiresAt.IsZero()) // unknown expiry, not immediately expired
 }
 
-func TestOpenShift_PasswordLogin_OAuthErrorInRedirect(t *testing.T) {
+func TestOpenShiftManagerPasswordLoginOAuthErrorInRedirect(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != oAuthAuthorizeURLSuffix {
@@ -380,12 +225,12 @@ func TestOpenShift_PasswordLogin_OAuthErrorInRedirect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, err := mgr.PasswordLogin(context.Background(), "user", "pass")
 	assert.ErrorIs(t, err, ErrBadCredentials)
 }
 
-func TestOpenShift_PasswordLogin_ServerErrorInRedirect(t *testing.T) {
+func TestOpenShiftManagerPasswordLoginServerErrorInRedirect(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != oAuthAuthorizeURLSuffix {
@@ -403,17 +248,17 @@ func TestOpenShift_PasswordLogin_ServerErrorInRedirect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, err := mgr.PasswordLogin(context.Background(), "user", "pass")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrBadCredentials)
 }
 
-func TestOpenShift_GetAuthorizeURL(t *testing.T) {
+func TestOpenShiftManagerGetAuthorizeURL(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	authURL, state, err := mgr.GetAuthorizeURL("")
 	require.NoError(t, err)
 	assert.Contains(t, authURL, oAuthAuthorizeURLSuffix)
@@ -425,22 +270,22 @@ func TestOpenShift_GetAuthorizeURL(t *testing.T) {
 	assert.Contains(t, state, ".")
 }
 
-func TestOpenShift_GetAuthorizeURL_CustomRedirectURI(t *testing.T) {
+func TestOpenShiftManagerGetAuthorizeURLCustomRedirectURI(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	authURL, state, err := mgr.GetAuthorizeURL("http://localhost:18085/callback")
 	require.NoError(t, err)
 	assert.Contains(t, authURL, "redirect_uri="+url.QueryEscape("http://localhost:18085/callback"))
 	assert.NotEmpty(t, state)
 }
 
-func TestOpenShift_GetAuthorizeURL_UniqueStates(t *testing.T) {
+func TestOpenShiftManagerGetAuthorizeURLUniqueStates(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, state1, err := mgr.GetAuthorizeURL("")
 	require.NoError(t, err)
 	_, state2, err := mgr.GetAuthorizeURL("")
@@ -448,11 +293,11 @@ func TestOpenShift_GetAuthorizeURL_UniqueStates(t *testing.T) {
 	assert.NotEqual(t, state1, state2)
 }
 
-func TestOpenShift_ValidateState_Success(t *testing.T) {
+func TestOpenShiftManagerValidateStateSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, state, err := mgr.GetAuthorizeURL("")
 	require.NoError(t, err)
 
@@ -463,11 +308,11 @@ func TestOpenShift_ValidateState_Success(t *testing.T) {
 // Stateless tokens cannot be marked single-use without shared storage, so a
 // valid, unexpired state validates repeatedly. This is safe because the OAuth
 // authorization code is single-use at the token endpoint.
-func TestOpenShift_ValidateState_StatelessReplay(t *testing.T) {
+func TestOpenShiftManagerValidateStateStatelessReplay(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, state, err := mgr.GetAuthorizeURL("")
 	require.NoError(t, err)
 
@@ -476,11 +321,11 @@ func TestOpenShift_ValidateState_StatelessReplay(t *testing.T) {
 }
 
 // A tampered payload must fail signature verification.
-func TestOpenShift_ValidateState_TamperedSignature(t *testing.T) {
+func TestOpenShiftManagerValidateStateTamperedSignature(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	_, state, err := mgr.GetAuthorizeURL("")
 	require.NoError(t, err)
 
@@ -490,12 +335,12 @@ func TestOpenShift_ValidateState_TamperedSignature(t *testing.T) {
 
 // A state signed with a different client secret (i.e. not by this backend)
 // must be rejected.
-func TestOpenShift_ValidateState_WrongKey(t *testing.T) {
+func TestOpenShiftManagerValidateStateWrongKey(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
-	other := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
+	other := newTestOpenShiftManager(t, srv)
 	other.cfg.ClientSecret = "different-secret"
 	other.hmacKey = deriveStateKey(other.cfg.ClientSecret)
 
@@ -506,21 +351,21 @@ func TestOpenShift_ValidateState_WrongKey(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
 
-func TestOpenShift_ValidateState_UnknownState(t *testing.T) {
+func TestOpenShiftManagerValidateStateUnknownState(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 	err := mgr.ValidateState("nonexistent-state")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnauthenticated)
 }
 
-func TestOpenShift_ValidateState_Expired(t *testing.T) {
+func TestOpenShiftManagerValidateStateExpired(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	mgr := newTestOpenShiftManager(t, srv, nil)
+	mgr := newTestOpenShiftManager(t, srv)
 
 	// Craft a correctly-signed but already-expired state token.
 	payload := strconv.FormatInt(time.Now().Add(-time.Second).Unix(), 10) + ":deadbeef"

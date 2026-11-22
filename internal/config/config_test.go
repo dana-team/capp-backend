@@ -41,23 +41,43 @@ func loadTempConfig(t *testing.T, yaml string) *Config {
 	return cfg
 }
 
-func validInlineCredential() CredentialConfig {
+func validInlineCredential(t *testing.T) CredentialConfig {
+	t.Helper()
+	// Only certificate parsing matters here; no private key or live TLS is needed.
+	const ca = `-----BEGIN CERTIFICATE-----
+MIIBizCCATGgAwIBAgIUEx/IKWZRI/cp7pRYSmy7b07Jw7YwCgYIKoZIzj0EAwIw
+GjEYMBYGA1UEAwwPYXBpLmV4YW1wbGUuY29tMCAXDTI2MTExNjE0MzI1M1oYDzIx
+MjYxMDIzMTQzMjUzWjAaMRgwFgYDVQQDDA9hcGkuZXhhbXBsZS5jb20wWTATBgcq
+hkjOPQIBBggqhkjOPQMBBwNCAAQ04McdLS6fm51NwTv6SPFg12mGZrHm4YT4zzud
+mPfhMK3Gj5zGMhz+6Vj4WVBdVaKUQyc64R8I8TTUMQxQZet/o1MwUTAdBgNVHQ4E
+FgQUiq/ALbSTHcq8eaZoBuQXt4G+38MwHwYDVR0jBBgwFoAUiq/ALbSTHcq8eaZo
+BuQXt4G+38MwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEA1lTL
+hENUda843Ptq9PbGDlhoJ6Dqrwctkr5w2rBY4gYCICfZNmu+V98XyiNcvIrBfL/O
+Ahu9veNFD+cNMlSnxtu/
+-----END CERTIFICATE-----
+`
 	return CredentialConfig{
-		Inline: &InlineCredential{APIServer: "https://api.example.com"},
+		Inline: &InlineCredential{APIServer: "https://api.example.com", Token: "backend", CACert: base64.StdEncoding.EncodeToString([]byte(ca))},
 	}
 }
 
-func validClusterConfig(name string) ClusterConfig {
-	return ClusterConfig{Name: name, Credential: validInlineCredential()}
+func validClusterConfig(t *testing.T, name string) ClusterConfig {
+	t.Helper()
+	return ClusterConfig{Name: name, Credential: validInlineCredential(t)}
 }
 
-func passthroughConfig(clusters ...ClusterConfig) *Config {
+func passthroughConfig(t *testing.T, clusters ...ClusterConfig) *Config {
+	t.Helper()
 	if len(clusters) == 0 {
-		clusters = []ClusterConfig{validClusterConfig("prod")}
+		clusters = []ClusterConfig{validClusterConfig(t, "prod")}
+	}
+	for i := range clusters {
+		clusters[i].Authorization.PolicyNamespace = "policies"
 	}
 	return &Config{
-		Auth:     AuthConfig{Mode: "passthrough"},
-		Clusters: clusters,
+		Authorization: AuthorizationConfig{Mode: AuthorizationModeBackendPolicy, RestrictedBindingNamePrefixes: []string{}},
+		Auth:          AuthConfig{Mode: AuthModePassthrough},
+		Clusters:      clusters,
 	}
 }
 
@@ -186,7 +206,7 @@ func TestValidateMetrics(t *testing.T) {
 		{name: "similar prefix outside API", enabled: true, path: "/api-metrics"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := passthroughConfig()
+			cfg := passthroughConfig(t)
 			cfg.Metrics = MetricsConfig{Enabled: tc.enabled, Path: tc.path}
 			err := Validate(cfg)
 			if tc.wantError != "" {
@@ -199,8 +219,8 @@ func TestValidateMetrics(t *testing.T) {
 	}
 }
 
-func TestValidate_Happy(t *testing.T) {
-	assert.NoError(t, Validate(passthroughConfig()))
+func TestValidateHappy(t *testing.T) {
+	assert.NoError(t, Validate(passthroughConfig(t)))
 }
 
 func TestValidate_NoClusters(t *testing.T) {
@@ -210,30 +230,30 @@ func TestValidate_NoClusters(t *testing.T) {
 	assert.Contains(t, err.Error(), "at least one cluster")
 }
 
-func TestValidate_EmptyClusterName(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
+func TestValidateEmptyClusterName(t *testing.T) {
+	cfg := passthroughConfig(t, ClusterConfig{Name: "", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
 	err := Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "'name' is required")
 }
 
-func TestValidate_DuplicateClusterName(t *testing.T) {
-	c := validClusterConfig("dup")
-	cfg := passthroughConfig(c, c)
+func TestValidateDuplicateClusterName(t *testing.T) {
+	c := validClusterConfig(t, "dup")
+	cfg := passthroughConfig(t, c, c)
 	err := Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate cluster name")
 }
 
-func TestValidate_NoCredential(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "prod", Credential: CredentialConfig{}})
+func TestValidateNoCredential(t *testing.T) {
+	cfg := passthroughConfig(t, ClusterConfig{Name: "prod", Credential: CredentialConfig{}})
 	err := Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "either 'kubeconfigPath' or 'inline' must be set")
 }
 
-func TestValidate_InlineMissingAPIServer(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{
+func TestValidateInlineMissingAPIServer(t *testing.T) {
+	cfg := passthroughConfig(t, ClusterConfig{
 		Name:       "prod",
 		Credential: CredentialConfig{Inline: &InlineCredential{APIServer: ""}},
 	})
@@ -242,16 +262,16 @@ func TestValidate_InlineMissingAPIServer(t *testing.T) {
 	assert.Contains(t, err.Error(), "'apiServer' is required")
 }
 
-func TestValidate_UnknownAuthMode(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "prod", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
+func TestValidateUnknownAuthMode(t *testing.T) {
+	cfg := passthroughConfig(t, ClusterConfig{Name: "prod", Credential: CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}})
 	cfg.Auth.Mode = "magic"
 	err := Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auth.mode")
 }
 
-func TestValidate_OpenShift_Valid(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{
+func TestValidateOpenShiftValid(t *testing.T) {
+	cfg := passthroughConfig(t, ClusterConfig{
 		Name: "home",
 		Credential: CredentialConfig{
 			Inline: &InlineCredential{
@@ -267,8 +287,8 @@ func TestValidate_OpenShift_Valid(t *testing.T) {
 	assert.NoError(t, Validate(cfg))
 }
 
-func TestValidate_OpenShift_MissingRequiredFields(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{
+func TestValidateOpenShiftMissingRequiredFields(t *testing.T) {
+	cfg := passthroughConfig(t, ClusterConfig{
 		Name: "home",
 		Credential: CredentialConfig{
 			Inline: &InlineCredential{
@@ -293,16 +313,16 @@ func TestValidate_OpenShift_Defaults(t *testing.T) {
 	assert.Equal(t, 60, cfg.Auth.OpenShift.TokenCacheTTLSeconds)
 }
 
-func TestValidate_RateLimitMaxIPTrackedZero(t *testing.T) {
-	cfg := passthroughConfig()
+func TestValidateRateLimitMaxIPTrackedZero(t *testing.T) {
+	cfg := passthroughConfig(t)
 	cfg.Auth.RateLimit = RateLimitConfig{Enabled: true, RequestsPerSecond: 20, Burst: 40, MaxIPTracked: 0}
 	err := Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "maxIPTracked must be greater than 0")
 }
 
-func TestValidate_MultipleErrors(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{Name: "", Credential: CredentialConfig{KubeconfigPath: "/etc/k"}})
+func TestValidateMultipleErrors(t *testing.T) {
+	cfg := passthroughConfig(t, ClusterConfig{Name: "", Credential: CredentialConfig{KubeconfigPath: "/etc/k"}})
 	cfg.Auth.Mode = "bad"
 	err := Validate(cfg)
 	require.Error(t, err)
@@ -364,7 +384,7 @@ func TestLoad_GitOpsTimeoutDefault(t *testing.T) {
 	assert.Equal(t, 20, cfg.GitOps.TimeoutSeconds)
 }
 
-func TestValidate_GitOps(t *testing.T) {
+func TestValidateGitOps(t *testing.T) {
 	tests := []struct {
 		name       string
 		gitops     GitOpsConfig
@@ -404,9 +424,9 @@ func TestValidate_GitOps(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := validClusterConfig("prod")
+			c := validClusterConfig(t, "prod")
 			c.GitOpsPath = "default"
-			cfg := passthroughConfig(c)
+			cfg := passthroughConfig(t, c)
 			cfg.GitOps = tt.gitops
 			err := Validate(cfg)
 			if tt.wantErr {
@@ -419,7 +439,7 @@ func TestValidate_GitOps(t *testing.T) {
 	}
 }
 
-func TestValidate_GitOpsPath(t *testing.T) {
+func TestValidateGitOpsPath(t *testing.T) {
 	tests := []struct {
 		name       string
 		gitops     GitOpsConfig
@@ -449,9 +469,9 @@ func TestValidate_GitOpsPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := validClusterConfig("prod")
+			c := validClusterConfig(t, "prod")
 			c.GitOpsPath = tt.gitOpsPath
-			cfg := passthroughConfig(c)
+			cfg := passthroughConfig(t, c)
 			cfg.GitOps = tt.gitops
 			err := Validate(cfg)
 			if tt.wantErr {
@@ -733,7 +753,7 @@ func TestMetricsQuery_AllSeries(t *testing.T) {
 	assert.Equal(t, multi.Series, multi.AllSeries())
 }
 
-func TestValidate_Observability(t *testing.T) {
+func TestValidateObservability(t *testing.T) {
 	const queryURL = "http://observability.monitoring.svc:8428"
 	valid := func() MetricsQuery {
 		return MetricsQuery{
@@ -897,7 +917,7 @@ func TestValidate_Observability(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := passthroughConfig()
+			cfg := passthroughConfig(t)
 			cfg.Resources.Observability = tt.observability
 			err := Validate(cfg)
 			if tt.errContain == "" {
@@ -1118,7 +1138,7 @@ func TestValidateLDAP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := passthroughConfig()
+			cfg := passthroughConfig(t)
 			cfg.Clusters[0].Credential.Inline.Token = "sa-token"
 			cfg.Auth.Mode = AuthModeLDAP
 			cfg.Auth.LDAP = validLDAPConfig(t)
@@ -1137,7 +1157,7 @@ func TestValidateLDAP(t *testing.T) {
 func TestValidateLDAPModeIsolation(t *testing.T) {
 	for _, mode := range []string{AuthModePassthrough, AuthModeOpenShift} {
 		t.Run(mode, func(t *testing.T) {
-			cfg := passthroughConfig()
+			cfg := passthroughConfig(t)
 			cfg.Clusters[0].Credential.Inline.Token = "sa-token"
 			cfg.Auth.Mode = mode
 			cfg.Auth.OpenShift = validOpenShiftConfig()
@@ -1148,7 +1168,7 @@ func TestValidateLDAPModeIsolation(t *testing.T) {
 }
 
 func TestValidateLDAPClusterCredentials(t *testing.T) {
-	cfg := passthroughConfig()
+	cfg := passthroughConfig(t)
 	cfg.Auth.Mode = AuthModeLDAP
 	cfg.Auth.LDAP = validLDAPConfig(t)
 	cfg.Clusters[0].Credential = CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}
@@ -1158,7 +1178,7 @@ func TestValidateLDAPClusterCredentials(t *testing.T) {
 }
 
 func TestValidateLDAPRedactsSecrets(t *testing.T) {
-	cfg := passthroughConfig()
+	cfg := passthroughConfig(t)
 	cfg.Clusters[0].Credential.Inline.Token = "sa-token"
 	cfg.Auth.Mode = AuthModeLDAP
 	cfg.Auth.LDAP = validLDAPConfig(t)
@@ -1209,7 +1229,7 @@ func TestLoadAuthorization(t *testing.T) {
 		{name: "unrestricted", prefixes: "restrictedBindingNamePrefixes: []"},
 		{name: "custom", prefixes: "restrictedBindingNamePrefixes: [custom:]"},
 		{name: "empty prefix", prefixes: "restrictedBindingNamePrefixes: ['']", wantError: true},
-		{name: "inactive", mode: "kubernetes", wantNil: true},
+		{name: "retired mode", mode: "kubernetes", wantNil: true, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mode := tc.mode
@@ -1252,49 +1272,66 @@ func TestValidateAuthorization(t *testing.T) {
 			if errs := validateAuthorization(cfg); len(errs) == 0 {
 				t.Fatal("expected invalid authorization settings to fail")
 			}
-			cfg.Authorization.Mode = AuthorizationModeKubernetes
-			if errs := validateAuthorization(cfg); len(errs) != 0 {
-				t.Fatalf("inactive settings: %v", errs)
-			}
 		})
 	}
 }
 
-func TestLoadAuthorizationModeEnvironment(t *testing.T) {
-	t.Setenv("CAPP_AUTHORIZATION_MODE", AuthorizationModeBackendPolicy)
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatal(err)
+func TestLoadAuthorizationMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, env, want string
+		emptyEnv              bool
+	}{
+		{name: "omitted"},
+		{name: "null", yaml: "mode: null"},
+		{name: "empty", yaml: "mode: ''"},
+		{name: "retired", yaml: "mode: kubernetes", want: "kubernetes"},
+		{name: "unknown", yaml: "mode: unknown", want: "unknown"},
+		{name: "explicit YAML", yaml: "mode: backend-policy", want: AuthorizationModeBackendPolicy},
+		{name: "environment only", env: AuthorizationModeBackendPolicy, want: AuthorizationModeBackendPolicy},
+		{name: "environment overrides YAML", yaml: "mode: kubernetes", env: AuthorizationModeBackendPolicy, want: AuthorizationModeBackendPolicy},
+		{name: "retired environment overrides YAML", yaml: "mode: backend-policy", env: "kubernetes", want: "kubernetes"},
+		{name: "empty environment preserves YAML", yaml: "mode: backend-policy", emptyEnv: true, want: AuthorizationModeBackendPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CAPP_AUTHORIZATION_MODE", tc.env)
+			if tc.env == "" && !tc.emptyEnv {
+				require.NoError(t, os.Unsetenv("CAPP_AUTHORIZATION_MODE"))
+			}
+			cfg := loadTempConfig(t, "authorization:\n  restrictedBindingNamePrefixes: []\n  "+tc.yaml)
+			require.Equal(t, tc.want, cfg.Authorization.Mode)
+			errs := validateAuthorization(cfg)
+			if tc.want == AuthorizationModeBackendPolicy {
+				require.Empty(t, errs)
+			} else {
+				require.Len(t, errs, 1)
+				require.ErrorContains(t, errs[0], "authorization.mode must be explicitly set to backend-policy")
+			}
+		})
 	}
-	if cfg.Authorization.Mode != AuthorizationModeBackendPolicy {
-		t.Fatalf("mode = %q", cfg.Authorization.Mode)
-	}
-	if cfg.Authorization.RestrictedBindingNamePrefixes != nil {
-		t.Fatal("prefix restrictions must not have a compiled default")
-	}
+	t.Run("environment without file", func(t *testing.T) {
+		t.Setenv("CAPP_AUTHORIZATION_MODE", AuthorizationModeBackendPolicy)
+		cfg, err := Load("")
+		require.NoError(t, err)
+		require.Equal(t, AuthorizationModeBackendPolicy, cfg.Authorization.Mode)
+		require.Nil(t, cfg.Authorization.RestrictedBindingNamePrefixes)
+	})
 }
 
 func TestValidateBackendPolicyProviders(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.NotFoundHandler())
-	defer upstream.Close()
-	ca := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: cert.CertificateBlockType, Bytes: upstream.Certificate().Raw}))
 	for _, provider := range []string{AuthModeLDAP, AuthModeOpenShift, AuthModePassthrough} {
-		for _, mode := range []string{"", AuthorizationModeKubernetes, AuthorizationModeBackendPolicy} {
+		for _, mode := range []string{"", "kubernetes", "unknown", AuthorizationModeBackendPolicy} {
 			t.Run(provider+"/"+mode, func(t *testing.T) {
-				cfg := passthroughConfig()
+				cfg := passthroughConfig(t)
 				cfg.Auth = AuthConfig{Mode: provider, OpenShift: validOpenShiftConfig(), LDAP: validLDAPConfig(t)}
-				cfg.Authorization = AuthorizationConfig{Mode: mode, RestrictedBindingNamePrefixes: []string{}}
-				cfg.Clusters[0].Authorization.PolicyNamespace = "policies"
-				cfg.Clusters[0].Credential.Inline = &InlineCredential{APIServer: upstream.URL, CACert: ca, Token: "backend"}
-				if err := Validate(cfg); err != nil {
-					t.Fatalf("Validate(%s, %s) = %v, want success", provider, mode, err)
-				}
-				cfg.Clusters[0].Credential.Inline.Token = ""
+				cfg.Authorization.Mode = mode
 				err := Validate(cfg)
-				wantError := mode == AuthorizationModeBackendPolicy || provider != AuthModePassthrough
-				if (err != nil) != wantError || (err != nil && !strings.Contains(err.Error(), "credential.inline.token")) {
-					t.Fatalf("Validate(missing token, %s, %s) = %v, want token error %t", provider, mode, err, wantError)
+				if mode != AuthorizationModeBackendPolicy {
+					require.ErrorContains(t, err, "authorization.mode must be explicitly set to backend-policy")
+					return
 				}
+				require.NoError(t, err)
+				cfg.Clusters[0].Credential.Inline.Token = ""
+				require.ErrorContains(t, Validate(cfg), "credential.inline.token")
 			})
 		}
 	}
@@ -1322,7 +1359,7 @@ func TestValidatePassthroughReviewerTrust(t *testing.T) {
 		{"kubeconfig overrides safe inline", func(c *CredentialConfig) { c.KubeconfigPath = "private-secret" }, "credential.kubeconfigPath"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := passthroughConfig()
+			cfg := passthroughConfig(t)
 			cfg.Authorization = AuthorizationConfig{Mode: AuthorizationModeBackendPolicy, RestrictedBindingNamePrefixes: []string{}}
 			cfg.Clusters[0].Authorization.PolicyNamespace = "policies"
 			cfg.Clusters[0].Credential.Inline = &InlineCredential{APIServer: upstream.URL, CACert: ca, Token: "backend"}
@@ -1330,12 +1367,6 @@ func TestValidatePassthroughReviewerTrust(t *testing.T) {
 			err := Validate(cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "private-secret") {
 				t.Fatalf("Validate(%s) = %v, want sanitized %s error", tc.name, err, tc.want)
-			}
-			if cfg.Clusters[0].Credential.Inline != nil {
-				cfg.Authorization.Mode = AuthorizationModeKubernetes
-				if err := Validate(cfg); err != nil {
-					t.Fatalf("Validate(legacy %s) = %v, want unchanged acceptance", tc.name, err)
-				}
 			}
 		})
 	}
