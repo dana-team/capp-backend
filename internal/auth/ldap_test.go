@@ -25,7 +25,7 @@ func TestNewLDAPManager(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := cfg
 			tc.change(&input)
-			if _, err := New(&config.Config{Auth: config.AuthConfig{Mode: config.AuthModeLDAP, LDAP: input}}); err == nil {
+			if _, err := New(&config.Config{Auth: config.AuthConfig{Mode: config.AuthModeLDAP, LDAP: input}}, Dependencies{}); err == nil {
 				t.Fatal("New(ldap) accepted invalid configuration")
 			}
 		})
@@ -73,7 +73,10 @@ func TestLDAPManagerPasswordLogin(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Authenticate(issued token) error = %v", err)
 			}
-			want := ClusterCredential{ImpersonateUser: "Alice", ImpersonateGroups: tc.groups}
+			want := ClusterCredential{
+				ImpersonateUser: "Alice", ImpersonateGroups: tc.groups,
+				AuthProvider: config.AuthModeLDAP, IdentityAuthority: "capp",
+			}
 			if diff := cmp.Diff(want, credential); diff != "" {
 				t.Errorf("Authenticate() mismatch (-want +got):\n%s", diff)
 			}
@@ -153,9 +156,35 @@ func TestLDAPManagerAuthenticate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Authenticate(mixed-case bearer) error = %v", err)
 		}
-		want := ClusterCredential{ImpersonateUser: "Alice", ImpersonateGroups: []string{"Developers"}}
+		want := ClusterCredential{
+			ImpersonateUser: "Alice", ImpersonateGroups: []string{"Developers"},
+			AuthProvider: config.AuthModeLDAP, IdentityAuthority: "capp",
+		}
 		if diff := cmp.Diff(want, credential); diff != "" {
 			t.Errorf("Authenticate() mismatch (-want +got):\n%s", diff)
+		}
+	})
+	t.Run("authority comes from configured issuer", func(t *testing.T) {
+		cfg := m.directory.cfg
+		cfg.Issuer = "https://user:secret@issuer.example/ldap?secret=query#secret"
+		manager, err := newLDAPManager(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pair, err := manager.tokens.issue("Alice", []string{"Developers"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+		req.Header.Set("X-Identity-Authority", "https://untrusted.example")
+		req.Header.Set("X-Auth-Provider", "untrusted-provider")
+		credential, err := manager.Authenticate(t.Context(), "any-cluster", req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if credential.IdentityAuthority != "https://issuer.example/ldap" || credential.AuthProvider != config.AuthModeLDAP {
+			t.Errorf("Authenticate() metadata = %q, %q; want ldap and sanitized configured issuer", credential.AuthProvider, credential.IdentityAuthority)
 		}
 	})
 	m.tokens.now = func() time.Time { return pair.ExpiresAt }
@@ -209,7 +238,7 @@ func newLDAPAuthManager(t *testing.T) *ldapManager {
 	cfg.Issuer = keys.Issuer
 	cfg.Audience = keys.Audience
 	cfg.TokenTTLSeconds = keys.TokenTTLSeconds
-	manager, err := New(&config.Config{Auth: config.AuthConfig{Mode: config.AuthModeLDAP, LDAP: cfg}})
+	manager, err := New(&config.Config{Auth: config.AuthConfig{Mode: config.AuthModeLDAP, LDAP: cfg}}, Dependencies{})
 	if err != nil {
 		t.Fatalf("New(ldap) error = %v", err)
 	}

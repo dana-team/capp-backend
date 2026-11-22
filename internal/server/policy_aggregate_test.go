@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
@@ -22,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -275,10 +275,8 @@ func aggregateRouter(t *testing.T, target requestpolicy.Target, caller string, a
 	t.Helper()
 	cc := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "c1", AllowedNamespaces: allowed}}
 	cc.SetHealthy(true)
-	am := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
-		return auth.ClusterCredential{ImpersonateUser: caller}, nil
-	}}
-	r := policyRouter(t, am, policyManager(t, cc), target, logger)
+	identity := newPolicyProvider(t, config.AuthModePassthrough, map[string]authv1.UserInfo{"c1": {Username: caller}}, nil)
+	r := policyRouter(t, identity.auth, policyManager(t, cc), target, logger)
 	group := r.Group("/api/v1/clusters/:cluster")
 	newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
 	configmaps.New().RegisterRoutes(group)

@@ -274,6 +274,7 @@ func (h *Handler) auditNamespaceOperation(c *gin.Context, message string, op *na
 		outcome = "partial"
 	}
 	h.logger.Info(message, zap.String("caller", cred.ImpersonateUser),
+		zap.String("authProvider", cred.AuthProvider), zap.String("identityAuthority", cred.IdentityAuthority),
 		zap.String("method", c.Request.Method), zap.String("route", c.FullPath()),
 		zap.String("cluster", c.Param("cluster")), zap.String("namespace", op.namespace),
 		zap.String("outcome", outcome), zap.String("policyUID", uid), zap.String("policyVersion", revision),

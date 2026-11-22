@@ -14,6 +14,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
@@ -59,6 +60,7 @@ func TestNew(t *testing.T) {
 		{name: "directory unavailable", method: http.MethodGet, authErr: auth.ErrDirectoryUnavailable, status: http.StatusServiceUnavailable, code: apierrors.CodeInternal},
 		{name: "unexpected authentication failure", method: http.MethodGet, authErr: errors.New("private-auth-cause"), status: http.StatusInternalServerError, code: apierrors.CodeInternal},
 		{name: "empty verified username", method: http.MethodGet, status: http.StatusUnauthorized, code: apierrors.CodeUnauthorized},
+		{name: "invalid token for unknown cluster", method: http.MethodGet, authErr: auth.ErrUnauthenticated, path: "/api/v1/clusters/other/namespaces/team-a/configmaps/item", status: http.StatusUnauthorized, code: apierrors.CodeUnauthorized},
 		{name: "unknown cluster", method: http.MethodGet, user: "alice", path: "/api/v1/clusters/other/namespaces/team-a/configmaps/item", status: http.StatusNotFound, code: apierrors.CodeClusterNotFound},
 		{name: "unhealthy cluster", method: http.MethodGet, user: "alice", unhealthy: true, status: http.StatusServiceUnavailable, code: apierrors.CodeClusterUnhealthy},
 		{name: "protected namespace", method: http.MethodGet, user: "alice", path: "/api/v1/clusters/c1/namespaces/capp-system/configmaps/item", status: http.StatusForbidden, code: apierrors.CodeForbidden, reason: "POLICY_DENIED"},
@@ -84,7 +86,7 @@ func TestNew(t *testing.T) {
 			}
 			core, logs := observer.New(zap.InfoLevel)
 			am := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
-				return auth.ClusterCredential{ImpersonateUser: tt.user, ImpersonateGroups: tt.groups}, tt.authErr
+				return auth.ClusterCredential{ImpersonateUser: tt.user, ImpersonateGroups: tt.groups, AuthProvider: config.AuthModeLDAP, IdentityAuthority: "https://issuer.example"}, tt.authErr
 			}}
 			r := policyRouter(t, am, policyManager(t, cc), target, zap.New(core))
 			called := false
@@ -112,6 +114,13 @@ func TestNew(t *testing.T) {
 			audits := logs.FilterMessage("authorization decision").All()
 			require.Len(t, audits, 1)
 			fields := audits[0].ContextMap()
+			if tt.authErr != nil || tt.user == "" {
+				require.Empty(t, fields["authProvider"])
+				require.Empty(t, fields["identityAuthority"])
+			} else {
+				require.Equal(t, config.AuthModeLDAP, fields["authProvider"])
+				require.Equal(t, "https://issuer.example", fields["identityAuthority"])
+			}
 			require.Equal(t, tt.operator, fields["operator"])
 			if called {
 				require.Equal(t, "policy", fields["authority"])
@@ -171,14 +180,18 @@ func TestNewOperators(t *testing.T) {
 				target.Store = store
 			}
 			am := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
-				return auth.ClusterCredential{ImpersonateUser: tt.user, ImpersonateGroups: tt.groups}, nil
+				return auth.ClusterCredential{ImpersonateUser: tt.user, ImpersonateGroups: tt.groups, AuthProvider: config.AuthModeOpenShift, IdentityAuthority: "https://home.example"}, nil
 			}}
 			mgr := policyManager(t, nil)
 			get := mgr.GetFn
 			lookups := 0
 			mgr.GetFn = func(name string) (*cluster.ClusterClient, error) {
 				lookups++
-				cc, err := get(name)
+				lookupName := name
+				if name == "c2" {
+					lookupName = "c1"
+				}
+				cc, err := get(lookupName)
 				if cc != nil {
 					cc.Meta.AllowedNamespaces = tt.allowedNamespaces
 				}
@@ -220,6 +233,8 @@ func TestNewOperators(t *testing.T) {
 			audits := logs.FilterMessage("authorization decision").All()
 			require.Len(t, audits, 1)
 			fields := audits[0].ContextMap()
+			require.Equal(t, config.AuthModeOpenShift, fields["authProvider"])
+			require.Equal(t, "https://home.example", fields["identityAuthority"])
 			switch {
 			case !called:
 				require.Equal(t, "none", fields["authority"])
@@ -254,7 +269,9 @@ func TestNewPublicAndUnclassified(t *testing.T) {
 				authCalls++
 				return auth.ClusterCredential{ImpersonateUser: "alice"}, nil
 			}}
-			mgr := &testutil.MockClusterManager{GetFn: func(string) (*cluster.ClusterClient, error) {
+			mgr := &testutil.MockClusterManager{ListFn: func() []cluster.ClusterMeta {
+				return []cluster.ClusterMeta{{Name: "c1"}}
+			}, GetFn: func(string) (*cluster.ClusterClient, error) {
 				t.Error("unexpected cluster lookup")
 				return nil, cluster.ErrClusterNotFound
 			}}
@@ -383,7 +400,7 @@ func policyRouter(t *testing.T, am auth.AuthManager, mgr cluster.ClusterManager,
 	require.NoError(t, err)
 	r := gin.New()
 	r.Use(middleware.Logging(logger), middleware.Recovery(logger), middleware.CORS([]string{"*"}),
-		requestpolicy.New(am, mgr, rules, map[string]requestpolicy.Target{"c1": target}, logger))
+		requestpolicy.New(am, config.AuthModePassthrough, mgr, rules, map[string]requestpolicy.Target{"c1": target}, logger))
 	return r
 }
 
@@ -419,6 +436,7 @@ func policyManager(t *testing.T, cc *cluster.ClusterClient) *testutil.MockCluste
 func policyRequest(r http.Handler, method, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer caller-token")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w

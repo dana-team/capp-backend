@@ -222,7 +222,9 @@ type InlineCredential struct {
 	// silently skip verification.
 	Insecure bool `mapstructure:"insecure"`
 
-	// Token is the service-account or user bearer token.
+	// Token is the service-account or user bearer token. Required for every
+	// backend-policy target; it is injected through the existing environment
+	// configuration and changes take effect after restart.
 	Token string `mapstructure:"token"`
 }
 
@@ -230,7 +232,8 @@ type InlineCredential struct {
 // Exactly one of KubeconfigPath or Inline must be set.
 type CredentialConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file on disk.
-	// If set, Inline is ignored.
+	// If set, Inline is ignored. Backend-policy passthrough requires Inline
+	// without KubeconfigPath so reviewer trust and credentials are explicit.
 	KubeconfigPath string `mapstructure:"kubeconfigPath"`
 
 	// Inline holds credentials embedded directly in this config file.

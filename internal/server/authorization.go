@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
@@ -21,6 +22,7 @@ import (
 // Server.Stop cancels observation after HTTP shutdown returns, then waits within
 // the remaining deadline.
 type authorizationRuntime struct {
+	reviewers      map[string]auth.TokenReviewer
 	targets        map[string]policy.Target
 	administration map[string]*namespaces.Administration
 	workers        []func(context.Context) error
@@ -31,6 +33,7 @@ type authorizationRuntime struct {
 
 func newAuthorization(cfg *config.Config, mgr cluster.ClusterManager) (_ *authorizationRuntime, err error) {
 	a := &authorizationRuntime{
+		reviewers:      make(map[string]auth.TokenReviewer),
 		targets:        make(map[string]policy.Target),
 		administration: make(map[string]*namespaces.Administration),
 	}
@@ -51,6 +54,7 @@ func newAuthorization(cfg *config.Config, mgr cluster.ClusterManager) (_ *author
 		if err != nil {
 			return nil, fmt.Errorf("cluster %q system clients: %w", target.Name, err)
 		}
+		a.reviewers[target.Name] = auth.TokenReviewer{Client: system.Kubernetes.AuthenticationV1(), Authority: cc.RestConfig.Host}
 		opts := authorization.StoreOptions{
 			PolicyNamespace:               target.Authorization.PolicyNamespace,
 			ProtectedNamespaces:           target.Authorization.ProtectedNamespaces,
