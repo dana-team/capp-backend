@@ -219,12 +219,11 @@ func TestClientVersionLogsAuthenticatedUser(t *testing.T) {
 			wantStatus int
 		}{
 			{
-				name:       "openshift or ldap user",
+				name:       "verified user",
 				auth:       authenticate(auth.ClusterCredential{ImpersonateUser: "alice", ImpersonateGroups: []string{"devs"}}),
 				wantUser:   "alice",
 				wantStatus: http.StatusOK,
 			},
-			{name: "passthrough token", auth: authenticate(auth.ClusterCredential{BearerToken: token}), wantStatus: http.StatusOK},
 			{name: "authentication failed", auth: reject, wantStatus: http.StatusUnauthorized},
 			{name: "route without authentication", wantStatus: http.StatusOK},
 		} {

@@ -15,7 +15,6 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/authorization"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/gin-gonic/gin"
@@ -363,31 +362,6 @@ func TestHandlerCreateManagedNamespaceResponse(t *testing.T) {
 	require.True(t, item.CanEdit)
 }
 
-func TestHandlerKubernetesBindings(t *testing.T) {
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch} {
-		for _, bindings := range []string{"[]", "null"} {
-			t.Run(method+bindings, func(t *testing.T) {
-				e := engine(t, cluster.ClusterMeta{Name: "prod"}, []client.Object{managedNamespace("team-a")})
-				path := "/namespaces/team-a"
-				if method == http.MethodPost {
-					path = "/namespaces"
-				}
-				body := fmt.Sprintf(`{"name":"team-a","bindings":%s}`, bindings)
-				var status int
-				switch method {
-				case http.MethodPost:
-					status = e.Post(path, strings.NewReader(body)).Code
-				case http.MethodPut:
-					status = e.Put(path, strings.NewReader(body)).Code
-				case http.MethodPatch:
-					status = e.Patch(path, strings.NewReader(body)).Code
-				}
-				require.Equal(t, http.StatusBadRequest, status)
-			})
-		}
-	}
-}
-
 func TestHandlerGetManagedNamespaceObservation(t *testing.T) {
 	ns, policy := membershipObjects(t, []authorization.Binding{{Kind: rbacv1.UserKind, Name: "reader", Role: authorization.RoleViewer}})
 	ns.Labels[consts.ManagedNameSpaceLabelKey] = consts.ManagedLabelValue
@@ -417,7 +391,7 @@ func TestHandlerGetManagedNamespaceObservation(t *testing.T) {
 
 func TestHandlerListAuthorizedNamespaces(t *testing.T) {
 	objects := make([]runtime.Object, 0, 12)
-	for _, name := range []string{"zeta", "alpha", "unmanaged", "pending", "recreated", "capp-system"} {
+	for _, name := range []string{"zeta", "alpha", "unmanaged", "pending", "recreated", "capp-system", "rolebinding-only"} {
 		ns, policy := membershipObjects(t, []authorization.Binding{})
 		ns.Name = name
 		policy.Name = "capp-assignment-" + name
@@ -429,6 +403,14 @@ func TestHandlerListAuthorizedNamespaces(t *testing.T) {
 			delete(policy.Annotations, authorization.NamespaceUIDAnnotation)
 		case "recreated":
 			ns.UID = "replacement"
+		}
+		if name == "rolebinding-only" {
+			objects = append(objects, ns, &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: name + "-capp-access", Namespace: name},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "capp-user"},
+				Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "reader"}, {Kind: rbacv1.UserKind, Name: "editor"}},
+			})
+			continue
 		}
 		objects = append(objects, ns, policy)
 	}

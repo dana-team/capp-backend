@@ -39,17 +39,17 @@ type NamespaceItem struct {
 	// Nil when no ResourceQuota exists for the namespace.
 	Quota *QuotaInfo `json:"quota,omitempty"`
 
-	// Users contains Kubernetes-mode RoleBinding users or direct backend-policy editors.
+	// Users contains direct User/editor policy assignments.
 	// Nil when membership is unavailable, including an invalid policy.
 	Users *[]string `json:"users,omitempty"`
 
-	// Bindings and policy metadata are present only in backend-policy mode.
+	// Bindings contains the full policy assignment set when membership is available.
 	Bindings              *[]Binding `json:"bindings,omitempty"`
 	PolicyResourceVersion string     `json:"policyResourceVersion,omitempty"`
 	PolicyState           string     `json:"policyState,omitempty"`
 
-	// CanEdit is true when the authenticated user has admin-level permission
-	// to modify the namespace's quota and full user list (via PUT).
+	// CanEdit is true when the authenticated user is a configured operator
+	// allowed to modify the namespace's quota and membership.
 	CanEdit bool `json:"canEdit"`
 }
 

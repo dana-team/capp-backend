@@ -19,15 +19,16 @@ info:
     Use `GET /api/v1/auth/mode` to discover which mode the server is running.
     All resource endpoints require the `Authorization: Bearer <token>` header.
     LDAP tokens are verified locally and are not forwarded to Kubernetes.
-    Authorization mode selects impersonation or backend policy checks. LDAP has
+    Backend policy authorizes resource access. LDAP has
     no refresh sessions, OAuth browser routes, ADFS SSO, or MFA. Web clients must
     retain tokens securely and return to login on expiry.
 
     ## Authorization
 
-    `authorization.mode` defaults to `kubernetes`, retaining caller RBAC and
-    impersonation behavior. `backend-policy` supports LDAP, OpenShift and
-    passthrough and checks
+    `authorization.mode: backend-policy` is required explicitly; omitted, null,
+    empty, `kubernetes` and unknown values fail startup. Helm requires explicit
+    `config.authorization.mode: backend-policy`. Legacy authorization is retired.
+    LDAP, OpenShift and passthrough authentication remain supported. The backend checks
     application User/Group viewer/editor assignments before using the target's
     backend credential, without user impersonation or user RoleBindings.
     Observation, administration and authorized resource operations share this credential.
@@ -323,7 +324,7 @@ components:
           type: array
           items:
             type: string
-          description: Kubernetes-mode capp-user RoleBinding users, or backend-policy direct User/editor assignments (groups are not expanded). Omitted when membership is unavailable, including invalid policy.
+          description: Direct User/editor assignments (groups are not expanded). Omitted when membership is unavailable, including invalid policy.
           example: [alice, bob]
         bindings:
           type: array
@@ -339,7 +340,7 @@ components:
           description: Backend-policy operator reads of malformed owned policies, or operator list items with policy ownership, termination or namespace-UID conflicts; membership is omitted.
         canEdit:
           type: boolean
-          description: Kubernetes-mode administration permission, or configured operator authority in backend-policy mode; false for operator list items with policy ownership, termination or namespace-UID conflicts. Not ordinary resource access.
+          description: Configured operator authority; false for operator list items with policy ownership, termination or namespace-UID conflicts. Not ordinary resource access.
           example: false
 
     QuotaInfo:
@@ -390,7 +391,7 @@ components:
           example: 2
         canCreate:
           type: boolean
-          description: Kubernetes-mode namespace creation permission, or configured backend-policy operator authority (target allowlist/protection still applies).
+          description: Configured operator authority (target allowlist/protection still applies).
 
     NamespaceQuota:
       type: object
@@ -441,14 +442,13 @@ components:
         with a supplied revision conflicts. Omitted revisions apply to a fresh read
         with conditional writes, but do not detect edits since the client's last GET.
         Concurrent updates return 409 without silent retry. UID association may
-        change this revision. Inactive in Kubernetes authorization mode.
+        change this revision.
       example: "12345"
 
     CreateNamespaceRequest:
       type: object
       required: [name]
       description: |
-        Kubernetes mode retains quota/RoleBinding behavior and rejects bindings.
         Backend-policy requires an operator. Supply users OR bindings, never both
         (even empty); explicit null membership, duplicate input users/tuples and
         unknown fields are rejected. Bodies are limited to 512 KiB. Omitted
@@ -464,7 +464,7 @@ components:
           type: array
           items:
             type: string
-          description: Kubernetes-mode capp-user RoleBinding users, or backend-policy direct User/editor assignments.
+          description: Direct User/editor assignments.
           example: [alice, bob]
         bindings:
           type: array
@@ -479,8 +479,7 @@ components:
       type: object
       description: |
         Omit quota or membership to leave it unchanged. Quota decreases below
-        current usage are rejected. Kubernetes mode replaces the capp-user
-        RoleBinding via users and rejects bindings.
+        current usage are rejected.
         Backend-policy requires an operator. Users replaces only direct User/editor
         grants, preserving viewers and Group grants; bindings replaces the entire
         set and can repair malformed owned policy. PUT can initialize missing policy.
@@ -495,7 +494,7 @@ components:
           type: array
           items:
             type: string
-          description: Replacement users with the mode-specific scope described above.
+          description: Replacement direct User/editor assignments; other grants are preserved.
           example: [alice, bob]
         bindings:
           type: array
@@ -511,8 +510,7 @@ components:
     PatchNamespaceRequest:
       type: object
       description: |
-        Kubernetes mode adds users to the existing capp-user RoleBinding and rejects
-        bindings. Backend-policy requires an operator and an existing valid policy
+        Backend-policy requires an operator and an existing valid policy
         (404 if missing; 409 if invalid). Add users as direct editors OR binding tuples;
         preserve other grants and treat already-stored tuples as no-ops. Omitted
         membership is a no-op. PATCH cannot remove grants or change quota.
@@ -2436,8 +2434,7 @@ paths:
       tags: [clusters]
       summary: List all configured clusters
       description: |
-        Kubernetes mode returns configured clusters. Backend-policy returns
-        operator-visible clusters or clusters with eligible viewer/editor namespaces.
+        Returns operator-visible clusters or clusters with eligible viewer/editor namespaces.
         Targets with missing or initially unsynchronized nonoperator stores are
         omitted. The response is 200 with an empty items array if no clusters are
         visible. Operator visibility does not require store synchronization.
@@ -2492,13 +2489,9 @@ paths:
       tags: [namespaces]
       summary: List namespaces in a cluster
       description: |
-        Returns Kubernetes namespaces (or OpenShift Projects) the authenticated
-        user has access to. Only namespaces labeled `dana.io/capp-ns=true` are
-        returned. In Kubernetes authorization mode, vanilla Kubernetes uses
-        SelfSubjectAccessReview; OpenShift uses Projects access control.
-        Backend-policy uses eligible viewer/editor assignments or operator
-        administrative discovery, without permission reviews. Both paths filter
-        by allowedNamespaces and protected exclusions, with totals after filtering.
+        Returns managed namespaces labeled `dana.io/capp-ns=true` using eligible
+        viewer/editor assignments or operator administrative discovery, without
+        permission reviews. Results are filtered by allowedNamespaces and protected exclusions, with totals after filtering.
         Operators need no resource grants or ready policy observations. A policy
         ownership, termination or namespace-UID conflict in an included namespace
         returns that item with policyState=invalid and canEdit=false, omitting
@@ -2530,9 +2523,9 @@ paths:
       tags: [ namespaces ]
       summary: Create a namespace in a cluster
       description: |
-        Creates a new Kubernetes namespace (or OpenShift Project) in the specified
+        Creates a new Kubernetes namespace in the specified
         cluster. The namespace is automatically labeled `dana.io/capp-ns=true` so
-        it can be discovered subject to active-mode authorization.
+        it can be discovered subject to application authorization.
         Backend-policy requires a configured operator and an allowed, nonprotected
         body name. Writes namespace, optional quota, then initial policy. Successful
         persistence does not imply observation by every replica or execution RBAC.
@@ -2578,7 +2571,6 @@ paths:
       description: |
         Returns a single namespace with its resource quota, users, and whether
         the authenticated user can edit the namespace (admin-level permission).
-        Kubernetes mode requires namespace-scoped access (ability to create Capps).
         Backend-policy accepts an eligible viewer/editor or configured operator;
         operators need no resource grant or ready policy cache. Malformed owned
         policy is returned to operators with policyState=invalid and its revision,
@@ -2612,7 +2604,6 @@ paths:
       tags: [namespaces]
       summary: Update namespace quota and membership
       description: |
-        Kubernetes mode replaces supplied quota and capp-user RoleBinding users.
         Backend-policy requires a configured operator; users replaces direct editors
         only, bindings replaces all assignments and can repair malformed owned policy.
         Omitted fields remain unchanged. Missing policy can be initialized through PUT.
@@ -2659,10 +2650,6 @@ paths:
       tags: [namespaces]
       summary: Add namespace members
       description: |
-        Kubernetes mode appends users to the existing capp-user RoleBinding;
-        existing users are deduplicated. Any user who can create Capps in the
-        namespace can call it in Kubernetes mode.
-
         Backend-policy requires a configured operator, not a viewer/editor grant.
         Adds users as direct editors OR explicit bindings to an existing valid policy;
         existing tuples are no-ops, but duplicate input tuples are invalid. Omitted
@@ -3270,8 +3257,7 @@ paths:
         newest pod first, at most 20 pods. A pod whose log cannot be
         read at that moment is listed with no lines. Fission takes an idle pod away from
         the function and the log goes with the pod, so this shows recent runs
-        only. The log is read with the caller's own cluster credential. Denied
-        in backend-policy authorization mode.
+        only. This operation is denied under the sole backend-policy authorization mode.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -4328,66 +4314,35 @@ paths:
       tags: [capps]
       summary: List the metrics available for a Capp
       description: |
-        Backend-policy mode denies this operation with 403 POLICY_DENIED,
-        without resource or Prometheus calls. The behavior below applies to Kubernetes mode.
-
-        Returns the metrics configured under `resources.observability.metrics`.
-        The caller must be able to read the Capp. Returns 501 when
-        observability is disabled.
+        This operation is unavailable under the sole backend-policy authorization
+        mode. Authenticated requests are denied with 403 POLICY_DENIED before
+        resource or Prometheus calls, including for editors and operators.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
       responses:
-        "200":
-          description: Configured metrics.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MetricListResponse'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          description: Capp not found.
+          description: Operation is denied by policy (details.reason POLICY_DENIED), including for editors and operators.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        "501":
-          description: Observability is not enabled.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+        "500":
+          $ref: '#/components/responses/InternalError'
         "503":
-          description: Cluster is currently unhealthy.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/IdentityVerificationUnavailable'
 
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/metrics/{metric}:
     get:
       tags: [capps]
       summary: Query one metric for a Capp
       description: |
-        Backend-policy mode denies this operation with 403 POLICY_DENIED,
-        without resource or Prometheus calls. The behavior below applies to Kubernetes mode.
-
-        Runs the configured PromQL for `metric`, scoped to this Capp's
-        namespace and name (and cluster, when the metric has a cluster label).
-        Callers never send PromQL.
-
-        A metric may group several lines (for example p50 and p95); each is
-        a separate query, run in parallel, returned in `series` in the order of
-        `legends`. If any line fails, the request fails with 502.
-
-        Without `start`, `end` and `step` this is an instant query at the
-        current time, the same instant for every line, and `resultType` is
-        usually `vector`. With all three it is a range query and `resultType`
-        is `matrix`. A range may hold at most 11000 points per series.
+        This operation is unavailable under the sole backend-policy authorization
+        mode. Authenticated requests are denied with 403 POLICY_DENIED before
+        resource or Prometheus calls, including for editors and operators.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -4417,48 +4372,18 @@ paths:
             type: string
           example: "1m"
       responses:
-        "200":
-          description: Query result.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MetricQueryResponse'
-        "400":
-          description: Invalid or incomplete range parameters.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          description: Capp or metric not found.
+          description: Operation is denied by policy (details.reason POLICY_DENIED), including for editors and operators.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         "500":
           $ref: '#/components/responses/InternalError'
-        "501":
-          description: Observability is not enabled.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        "502":
-          description: The Prometheus query failed (code `PROMETHEUS_QUERY_FAILED`).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         "503":
-          description: Cluster is currently unhealthy.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/IdentityVerificationUnavailable'
 
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/migrate:
     post:
@@ -4518,13 +4443,13 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
-          description: Endpoint allowlist/policy denial, Kubernetes-mode caller RBAC denial, or execution/webhook refusal. Backend-policy returns the same details.reason POLICY_DENIED for unknown destinations, rejected destination tokens, unavailable destination reviewers, insufficient roles, excluded namespaces, missing or unsynchronized destination observations, and pending destination UID association.
+          description: Endpoint allowlist/policy denial or execution/webhook refusal. Backend-policy returns the same details.reason POLICY_DENIED for unknown destinations, rejected destination tokens, unavailable destination reviewers, insufficient roles, excluded namespaces, missing or unsynchronized destination observations, and pending destination UID association.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         "404":
-          description: Source Capp not found. Kubernetes-mode destination validation also returns this for an unknown target cluster or missing target namespace; backend-policy destination authorization conceals these conditions with 403 POLICY_DENIED.
+          description: Source Capp not found. Destination authorization conceals unknown target clusters or missing target namespaces with 403 POLICY_DENIED.
           content:
             application/json:
               schema:
@@ -4563,9 +4488,8 @@ paths:
       tags: []
       summary: Readiness probe
       description: |
-        Kubernetes mode requires at least one healthy cluster. Backend-policy also
-        requires that cluster's namespace and policy observations to have initially
-        synchronized. Empty policies and individual pending UID associations do not
+        Requires at least one healthy cluster whose namespace and policy observations
+        have initially synchronized. Empty policies and individual pending UID associations do not
         prevent readiness. Later watch degradation retains readiness and cached state;
         this does not guarantee reviewer trust/permissions, execution permissions,
         all-target readiness or completed adoption.
@@ -4577,7 +4501,7 @@ paths:
             application/json:
               example: {"status": "ready"}
         "503":
-          description: No healthy target (with initial observation synchronization in backend-policy mode) is available.
+          description: No healthy target with initial namespace and policy observation synchronization is available.
           content:
             application/json:
               example: {"status": "not ready", "reason": "no healthy clusters available"}

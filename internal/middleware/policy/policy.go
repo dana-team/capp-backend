@@ -79,7 +79,6 @@ func New(authMgr auth.AuthManager, authMode string, clusterMgr cluster.ClusterMa
 	return func(c *gin.Context) {
 		c.Set(string(backendPolicyKey), true)
 		delete(c.Keys, string(middleware.K8sClientKey))
-		delete(c.Keys, string(middleware.AdminK8sClientKey))
 		delete(c.Keys, string(policyDecisionKey))
 		delete(c.Keys, string(policyDeniedKey))
 		delete(c.Keys, string(middleware.CredentialKey))
@@ -370,13 +369,10 @@ func (a *requestAuthentication) discover(mgr cluster.ClusterManager, target Targ
 }
 
 // RequireExecution validates the request-local namespace decision before a
-// resource handler consumes its execution client. Kubernetes-mode requests pass through.
+// resource handler consumes its execution client. Missing policy context denies execution.
 func RequireExecution(c *gin.Context) bool {
-	if !c.GetBool(string(backendPolicyKey)) {
-		return true
-	}
 	decision, ok := requestPolicyDecision(c)
-	if !ok || decision.category != Namespace || decision.route == namespacePath {
+	if !Enabled(c) || !ok || decision.category != Namespace || decision.route == namespacePath {
 		respondPolicyError(c, authorization.ErrDenied)
 		return false
 	}

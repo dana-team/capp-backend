@@ -6,22 +6,17 @@
 //
 // Auth modes at a glance:
 //
-//	passthrough — the client's Kubernetes bearer token is extracted from the
-//	              Authorization header and forwarded verbatim to the cluster.
-//	              No server-side state is created. Token validation is lazy:
-//	              the first K8s API call rejects an invalid token with 401.
+//	passthrough — verifies the client's Kubernetes bearer token with the
+//	              requested target's TokenReview API and returns its identity.
+//	              No identity is cached across requests.
 //
-//	openshift   — authenticates users via the OpenShift OAuth server of the
-//	              home cluster (browser Authorization Code flow or direct
-//	              bearer token). Tokens are managed by OpenShift, not the
-//	              backend (fully stateless). On each request the token is
-//	              validated via TokenReview and the user's identity is used
-//	              for Kubernetes impersonation on all managed clusters.
+//	openshift   — authenticates users via the home cluster's OAuth server
+//	              (browser Authorization Code flow or direct bearer token).
+//	              TokenReview verifies identity using a short-lived cache.
 //
 //	ldap        — authenticates passwords through LDAP search-and-bind and
-//	              issues backend access tokens. Tokens are verified locally,
-//	              and their identities are used for Kubernetes impersonation
-//	              or backend-policy authorization, according to authorization.mode.
+//	              issues backend access tokens. Tokens are verified locally
+//	              and their identities are returned for authorization.
 package auth
 
 import (
@@ -66,29 +61,17 @@ var (
 
 // ── Core types ────────────────────────────────────────────────────────────────
 
-// ClusterCredential holds the caller credential or verified identity used by
-// the configured authorization mode.
-//
-// In passthrough mode BearerToken is taken directly from the Authorization
-// header.
-//
-// In openshift and ldap modes BearerToken is empty and the ImpersonateUser/Groups
-// fields are set. Kubernetes authorization uses these fields for impersonation
-// with the cluster's service-account token. Backend-policy authorization checks
-// the identity locally and uses the backend credential without impersonation.
+// ClusterCredential holds the verified caller identity returned by every provider.
 type ClusterCredential struct {
-	BearerToken string
-
-	// ImpersonateUser is the verified username in openshift and ldap auth modes.
-	// Kubernetes mode sends it as Impersonate-User; backend-policy matches it locally.
+	// ImpersonateUser is the verified username from the authentication provider.
+	// Policy authorization matches this identity locally.
 	ImpersonateUser string
 
-	// ImpersonateGroups are the verified groups in openshift and ldap auth modes.
-	// Kubernetes mode sends Impersonate-Group headers; backend-policy matches locally.
+	// ImpersonateGroups are the verified groups from the authentication provider.
+	// Policy authorization matches these groups locally.
 	ImpersonateGroups []string
 
-	// AuthProvider identifies the provider that verified this identity. It is
-	// unset for an unverified passthrough credential.
+	// AuthProvider identifies the provider that verified this identity.
 	AuthProvider string
 
 	// IdentityAuthority identifies the trusted reviewer endpoint or LDAP issuer,
@@ -115,13 +98,12 @@ type TokenPair struct {
 // capp-backend. A single implementation is selected at startup based on the
 // auth.mode config value. All methods must be safe for concurrent use.
 type AuthManager interface {
-	// Authenticate validates the incoming request and returns the
-	// ClusterCredential used for Kubernetes client construction or backend-policy
-	// authorization, according to the configured authorization mode.
+	// Authenticate validates the incoming request and returns its verified
+	// identity for authorization.
 	//
 	// Returns ErrUnauthenticated if the request carries no valid credential.
 	// In ldap mode, returns ErrTokenExpired for an expired access token.
-	// Backend-policy review failures return ErrIdentityUnavailable without
+	// Review failures return ErrIdentityUnavailable without
 	// exposing upstream diagnostics; rejected identities return ErrUnauthenticated.
 	Authenticate(ctx context.Context, clusterName string, r *http.Request) (ClusterCredential, error)
 
@@ -183,10 +165,7 @@ type Dependencies struct {
 func New(cfg *config.Config, dependencies Dependencies) (AuthManager, error) {
 	switch cfg.Auth.Mode {
 	case config.AuthModePassthrough:
-		if cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy {
-			return newVerifiedPassthroughManager(cfg.Clusters, dependencies.TargetReviewers)
-		}
-		return newPassthroughManager(), nil
+		return newPassthroughManager(cfg.Clusters, dependencies.TargetReviewers)
 
 	case config.AuthModeOpenShift:
 		if dependencies.HomeConfig != nil {

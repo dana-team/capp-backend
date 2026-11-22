@@ -32,7 +32,6 @@ import (
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -107,8 +106,8 @@ func TestBackendPolicyDeniedAPIs(t *testing.T) {
 	}}
 	r := policyRouter(t, policyIdentity("editor"), mgr, requestpolicy.Target{ExecutionClient: &clientThatMustNotRun{t: t}}, zap.NewNop())
 	group := r.Group("/api/v1/clusters/:cluster")
-	nshandler.New(zap.NewNop()).RegisterRoutes(group)
-	newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{
+	nshandler.NewWithAdministration(zap.NewNop(), nil).RegisterRoutes(group)
+	newCappsHandler(t, false, nil, config.ObservabilityConfig{
 		Enabled:  true,
 		QueryURL: prometheus.URL,
 		Metrics:  []config.MetricsQuery{{Name: "cpu", Type: "gauge", Query: "up{$selector}", NamespaceLabel: "namespace", ObjectLabel: "capp"}},
@@ -156,7 +155,7 @@ func TestBackendPolicyTargetChanged(t *testing.T) {
 
 func TestBackendPolicyExecutionForbidden(t *testing.T) {
 	store, _, _ := policyStore(t, nil)
-	execution := clientfake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(policyExecutionMapper()).WithInterceptorFuncs(interceptor.Funcs{
+	execution := clientfake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(testutil.ResourceMapper()).WithInterceptorFuncs(interceptor.Funcs{
 		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
 			return k8serrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "", errors.New("execution credential denied"))
 		},
@@ -225,10 +224,6 @@ func policyManager(t *testing.T, cc *cluster.ClusterClient) *testutil.MockCluste
 			}
 			return cc, nil
 		},
-		ClientForFn: func(*cluster.ClusterClient, auth.ClusterCredential) (client.Client, error) {
-			t.Error("Kubernetes-mode client construction reached")
-			return nil, errors.New("Kubernetes-mode client")
-		},
 		IsNamespaceAllowedFn: boundary.IsNamespaceAllowed,
 	}
 }
@@ -271,18 +266,6 @@ func (c *clientThatMustNotRun) Get(context.Context, client.ObjectKey, client.Obj
 func (c *clientThatMustNotRun) List(context.Context, client.ObjectList, ...client.ListOption) error {
 	c.t.Error("denied resource list")
 	return errors.New("denied list")
-}
-
-// Fake clients need explicit REST mappings for the namespace wrapper's scope checks.
-func policyExecutionMapper() meta.RESTMapper {
-	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{corev1.SchemeGroupVersion, cappv1alpha1.GroupVersion})
-	for _, kind := range []string{"Secret", "SecretList", "ConfigMapList"} {
-		mapper.Add(corev1.SchemeGroupVersion.WithKind(kind), meta.RESTScopeNamespace)
-	}
-	for _, kind := range []string{"Capp", "CappList", "CappRevision", "CappRevisionList"} {
-		mapper.Add(cappv1alpha1.GroupVersion.WithKind(kind), meta.RESTScopeNamespace)
-	}
-	return mapper
 }
 
 // policyProvider uses real authentication transports while allowing each test
@@ -503,7 +486,7 @@ func TestBackendPolicyProviderRoutes(t *testing.T) {
 					router := p.router(t, map[string]requestpolicy.Target{"c1": {Store: store, OperatorGroups: []string{"operators"}}})
 					group := router.Group("/api/v1/clusters/:cluster")
 					configmaps.New().RegisterRoutes(group)
-					newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
+					newCappsHandler(t, false, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
 					admin, err := nshandler.NewAdministration(p.clients["c1"].Resources, "capp-system", nil, nil)
 					if err != nil {
 						t.Fatal(err)

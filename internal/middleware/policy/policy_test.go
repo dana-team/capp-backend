@@ -20,6 +20,7 @@ func TestRequireExecution(t *testing.T) {
 		allowed bool
 	}{
 		{"same request operation and target", func(*gin.Context, *policyDecision) {}, true},
+		{"missing policy context", func(c *gin.Context, _ *policyDecision) { delete(c.Keys, string(backendPolicyKey)) }, false},
 		{"missing decision", func(c *gin.Context, _ *policyDecision) { delete(c.Keys, string(policyDecisionKey)) }, false},
 		{"wrong context type", func(c *gin.Context, _ *policyDecision) { c.Set(string(policyDecisionKey), "allowed") }, false},
 		{"other request", func(c *gin.Context, d *policyDecision) { d.request = c.Request.Clone(c.Request.Context()) }, false},
@@ -29,10 +30,10 @@ func TestRequireExecution(t *testing.T) {
 		{"changed namespace", func(_ *gin.Context, d *policyDecision) { d.namespace = "other" }, false},
 		{"administration decision cannot authorize resource execution", func(_ *gin.Context, d *policyDecision) { d.category = Administration; d.operator = true }, false},
 		{"aggregate cannot use ordinary execution", func(_ *gin.Context, d *policyDecision) { d.category = Aggregate }, false},
-		{"Kubernetes-mode request", func(c *gin.Context, _ *policyDecision) {
+		{"missing policy context and decision", func(c *gin.Context, _ *policyDecision) {
 			delete(c.Keys, string(backendPolicyKey))
 			delete(c.Keys, string(policyDecisionKey))
-		}, true},
+		}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := gin.New()

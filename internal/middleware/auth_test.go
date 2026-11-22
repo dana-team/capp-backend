@@ -38,7 +38,7 @@ func decodeError(t *testing.T, w *httptest.ResponseRecorder) apierrors.APIError 
 }
 
 func TestAuth(t *testing.T) {
-	wantCred := auth.ClusterCredential{BearerToken: "tok-123"}
+	wantCred := auth.ClusterCredential{ImpersonateUser: "alice"}
 	ldapCred := auth.ClusterCredential{
 		ImpersonateUser: "Alice", ImpersonateGroups: []string{"Developers"},
 		AuthProvider: "ldap", IdentityAuthority: "capp",
@@ -139,7 +139,11 @@ func TestAuth(t *testing.T) {
 			_, engine := gin.CreateTestContext(w)
 			core, logs := observer.New(zap.DebugLevel)
 			engine.Use(middleware.Logging(zap.New(core)))
-			engine.Use(middleware.Auth(tt.mgr))
+			engine.Use(func(c *gin.Context) {
+				if _, ok := middleware.Authenticate(c, tt.mgr); ok {
+					c.Next()
+				}
+			})
 			engine.GET("/clusters/:cluster/test", func(c *gin.Context) {
 				handlerCalled = true
 				val, exists := c.Get(string(middleware.CredentialKey))
@@ -236,7 +240,11 @@ func TestAuthenticate(t *testing.T) {
 	require.NoError(t, err)
 	core, logs := observer.New(zap.DebugLevel)
 	engine := gin.New()
-	engine.Use(middleware.Logging(zap.New(core)), middleware.Auth(mgr))
+	engine.Use(middleware.Logging(zap.New(core)), func(c *gin.Context) {
+		if _, ok := middleware.Authenticate(c, mgr); ok {
+			c.Next()
+		}
+	})
 	engine.GET("/clusters/:cluster", func(c *gin.Context) { c.Status(http.StatusOK) })
 	req := httptest.NewRequest(http.MethodGet, "/clusters/target", nil)
 	req.Header.Set("Authorization", "Bearer private-token")

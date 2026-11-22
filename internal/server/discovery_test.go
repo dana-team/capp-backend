@@ -124,24 +124,15 @@ func TestGetCluster(t *testing.T) {
 	}
 }
 
-func TestListClustersKubernetes(t *testing.T) {
-	items := []cluster.ClusterMeta{{Name: "zeta", Healthy: false}, {Name: "alpha", Healthy: true}}
-	mgr := &testutil.MockClusterManager{ListFn: func() []cluster.ClusterMeta { return items }}
+func TestListClustersWithoutPolicy(t *testing.T) {
+	mgr := &testutil.MockClusterManager{ListFn: func() []cluster.ClusterMeta { return []cluster.ClusterMeta{{Name: "c1"}} }}
 	router := gin.New()
 	router.GET("/api/v1/clusters", listClusters(mgr))
 	router.GET("/api/v1/clusters/:cluster", getCluster(mgr))
-	w := policyRequest(router, http.MethodGet, "/api/v1/clusters", "")
-	require.Equal(t, http.StatusOK, w.Code)
-	var result struct {
-		Items []cluster.ClusterMeta `json:"items"`
+	for _, path := range []string{"/api/v1/clusters", "/api/v1/clusters/c1"} {
+		w := policyRequest(router, http.MethodGet, path, "")
+		requirePolicyError(t, w, apierrors.CodeForbidden, apierrors.ReasonPolicyDenied)
 	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
-	require.Equal(t, items, result.Items)
-	w = policyRequest(router, http.MethodGet, "/api/v1/clusters/zeta", "")
-	require.Equal(t, http.StatusOK, w.Code)
-	var detail cluster.ClusterMeta
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &detail))
-	require.Equal(t, items[0], detail)
 }
 
 func discoveryRouter(t *testing.T, credential auth.ClusterCredential, targets map[string]requestpolicy.Target, allowed []string) *gin.Engine {

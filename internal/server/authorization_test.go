@@ -42,7 +42,6 @@ import (
 	"k8s.io/client-go/transport"
 	"k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/keyutil"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 )
 
@@ -258,10 +257,6 @@ func authorizationConfig(t *testing.T, host string) (*config.Config, *testutil.M
 			return cc, nil
 		},
 		ListFn: func() []cluster.ClusterMeta { return []cluster.ClusterMeta{{Name: "one", Healthy: true}} },
-		ClientForFn: func(*cluster.ClusterClient, auth.ClusterCredential) (client.Client, error) {
-			t.Fatal("Kubernetes-mode client factory invoked")
-			return nil, nil
-		},
 	}
 	return cfg, mgr
 }

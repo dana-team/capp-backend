@@ -6,15 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/middleware"
+	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -64,16 +62,16 @@ func makeSizes() config.CappSizes {
 // mustHandler calls New and fails the test immediately if it errors, so
 // call sites that always pass a valid configuration don't need to repeat
 // that check.
-func mustHandler(t *testing.T, gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes) *Handler {
+func mustHandler(t *testing.T, gitopsEnabled bool, gitops GitOpsSyncer, sizes config.CappSizes) *Handler {
 	o := config.ObservabilityConfig{}
 	t.Helper()
-	h, err := New(gitopsEnabled, gitops, clusterMgr, sizes, o)
+	h, err := New(gitopsEnabled, gitops, sizes, o)
 	require.NoError(t, err)
 	return h
 }
 
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), mustHandler(t, false, nil, nil, makeSizes()))
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), mustHandler(t, false, nil, makeSizes()), "ns1", "ns2")
 }
 
 // syncEngine creates an engine with gitops enabled, ClusterMeta in context,
@@ -86,8 +84,8 @@ func syncEngine(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, 
 
 func syncEngineWithClient(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, sizes config.CappSizes, k8sClient client.Client) *testutil.EngineHelper {
 	t.Helper()
-	handler := mustHandler(t, true, mock, nil, sizes)
-	return testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
+	handler := mustHandler(t, true, mock, sizes)
+	return testutil.NewEngineHelperWithMetadata(t, k8sClient, meta, handler)
 }
 
 type mockGitOpsSyncer struct {
@@ -121,7 +119,7 @@ func failWrites(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
 	writeErr := errors.New("write failed")
 	return fake.NewClientBuilder().
-		WithScheme(testutil.TestScheme(t)).
+		WithScheme(testutil.TestScheme(t)).WithRESTMapper(testutil.ResourceMapper()).
 		WithObjects(objects...).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
@@ -248,7 +246,7 @@ func TestUpdate_PreservesMetadata(t *testing.T) {
 	capp.Finalizers = []string{"dana.io/capp-cleanup"}
 
 	k8sClient := testutil.FakeClient(t, capp)
-	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, makeSizes()))
 
 	w := e.PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
 	require.Equal(t, http.StatusOK, w.Code)
@@ -266,7 +264,7 @@ func TestUpdate_OmittedStrategyIsPreserved(t *testing.T) {
 		Stages: []cappv1alpha1.RolloutStage{{Percent: 50}},
 	}
 	k8sClient := testutil.FakeClient(t, capp)
-	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, makeSizes()))
 
 	w := e.PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
 	require.Equal(t, http.StatusOK, w.Code)
@@ -460,7 +458,7 @@ func TestRespondList_CorrectTotalAndMapping(t *testing.T) {
 // -- Sync tests --
 
 func TestSync_GitOpsDisabled(t *testing.T) {
-	h := mustHandler(t, false, nil, nil, makeSizes())
+	h := mustHandler(t, false, nil, makeSizes())
 	e := testutil.NewEngineHelper(t, testutil.FakeClient(t, makeCapp("app1", "ns1")), h)
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
@@ -626,8 +624,8 @@ func TestSync_SuccessVerifyLabel(t *testing.T) {
 	mock := &mockGitOpsSyncer{}
 
 	k8sClient := testutil.FakeClient(t, capp)
-	handler := mustHandler(t, true, mock, nil, makeSizes())
-	e := testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
+	handler := mustHandler(t, true, mock, makeSizes())
+	e := testutil.NewEngineHelperWithMetadata(t, k8sClient, meta, handler)
 
 	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
 	require.Equal(t, http.StatusOK, w.Code)
@@ -714,43 +712,38 @@ func TestSync_UsesClusterNameNotGitOpsPath(t *testing.T) {
 
 // -- Migrate tests --
 
-// migrateEngine creates an engine for migrate tests. It injects the source K8s
-// client, credential, and cluster metadata into the Gin context.
-func migrateEngine(t *testing.T, sourceClient client.Client, clusterMgr *testutil.MockClusterManager) *testutil.EngineHelper {
+// migrateEngine authorizes both endpoints before exercising migration effects.
+func migrateEngine(t *testing.T, sourceClient client.Client, targetClient client.Client) *testutil.EngineHelper {
 	t.Helper()
-	meta := cluster.ClusterMeta{Name: "source-cluster"}
-	handler := mustHandler(t, false, nil, clusterMgr, makeSizes())
-
-	_, engine := gin.CreateTestContext(httptest.NewRecorder())
-	engine.Use(func(c *gin.Context) {
-		c.Set(string(middleware.K8sClientKey), sourceClient)
-		c.Set(string(middleware.AdminK8sClientKey), sourceClient)
-		c.Set(string(middleware.ClusterMetaKey), meta)
-		c.Set(string(middleware.CredentialKey), auth.ClusterCredential{BearerToken: "test-token"})
-		c.Next()
-	})
-	handler.RegisterRoutes(engine.Group(""))
+	handler := mustHandler(t, false, nil, makeSizes())
+	source := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "test"}}
+	source.SetHealthy(true)
+	target := &cluster.ClusterClient{Meta: cluster.ClusterMeta{Name: "target-cluster"}}
+	target.SetHealthy(true)
+	mgr := &testutil.MockClusterManager{GetFn: func(name string) (*cluster.ClusterClient, error) {
+		if name == "test" {
+			return source, nil
+		}
+		return target, nil
+	}}
+	targets := map[string]policy.Target{
+		"test":           {Store: testutil.PolicyStore(t, "ns1"), ExecutionClient: sourceClient},
+		"target-cluster": {Store: testutil.PolicyStore(t, "target-ns"), ExecutionClient: targetClient},
+	}
+	engine := gin.New()
+	engine.Use(testutil.PolicyMiddleware(t, mgr, targets))
+	handler.RegisterRoutes(engine.Group("/api/v1/clusters/:cluster"))
 	return testutil.NewEngineHelperFrom(t, engine)
 }
 
 func TestMigrate(t *testing.T) {
-	targetCC := &cluster.ClusterClient{}
-	targetCC.SetHealthy(true)
-
 	t.Run("success without delete", func(t *testing.T) {
 		sourceCapp := makeCapp("my-app", "ns1")
 		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -759,7 +752,7 @@ func TestMigrate(t *testing.T) {
 		var resp MigrateResponse
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		assert.Equal(t, "my-app", resp.Name)
-		assert.Equal(t, "source-cluster", resp.SourceCluster)
+		assert.Equal(t, "test", resp.SourceCluster)
 		assert.Equal(t, "ns1", resp.SourceNamespace)
 		assert.Equal(t, "target-cluster", resp.TargetCluster)
 		assert.Equal(t, "target-ns", resp.TargetNamespace)
@@ -776,14 +769,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns", DeleteSource: true,
 		})
@@ -808,14 +794,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp, secret, cm)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -827,89 +806,12 @@ func TestMigrate(t *testing.T) {
 		assert.Equal(t, []string{"cm1"}, resp.CopiedConfigMaps)
 	})
 
-	t.Run("target cluster not found", func(t *testing.T) {
-		sourceCapp := makeCapp("my-app", "ns1")
-		sourceClient := testutil.FakeClient(t, sourceCapp)
-
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) {
-				return nil, cluster.ErrClusterNotFound
-			},
-		}
-		e := migrateEngine(t, sourceClient, mgr)
-		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
-			TargetCluster: "missing", TargetNamespace: "ns",
-		})
-
-		assert.Equal(t, http.StatusNotFound, w.Code)
-	})
-
-	t.Run("target cluster unhealthy", func(t *testing.T) {
-		sourceCapp := makeCapp("my-app", "ns1")
-		sourceClient := testutil.FakeClient(t, sourceCapp)
-		unhealthyCC := &cluster.ClusterClient{}
-		unhealthyCC.SetHealthy(false)
-
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return unhealthyCC, nil },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
-		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
-			TargetCluster: "sick", TargetNamespace: "ns",
-		})
-
-		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	})
-
-	t.Run("target namespace denied", func(t *testing.T) {
-		sourceCapp := makeCapp("my-app", "ns1")
-		sourceClient := testutil.FakeClient(t, sourceCapp)
-
-		mgr := &testutil.MockClusterManager{
-			GetFn:                func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return false },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
-		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
-			TargetCluster: "target-cluster", TargetNamespace: "forbidden-ns",
-		})
-
-		assert.Equal(t, http.StatusForbidden, w.Code)
-	})
-
-	t.Run("target namespace missing", func(t *testing.T) {
-		sourceCapp := makeCapp("my-app", "ns1")
-		sourceClient := testutil.FakeClient(t, sourceCapp)
-		targetClient := testutil.FakeClient(t) // no namespace
-
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
-		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
-			TargetCluster: "target-cluster", TargetNamespace: "nonexistent",
-		})
-
-		assert.Equal(t, http.StatusNotFound, w.Code)
-	})
-
 	t.Run("source capp not found", func(t *testing.T) {
 		sourceClient := testutil.FakeClient(t) // no capp
 		targetNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target-ns"}}
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/missing/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -924,14 +826,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS, existingTarget)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -950,14 +845,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp, sourceSecret)
 		targetClient := testutil.FakeClient(t, targetNS, targetSecret)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -967,8 +855,8 @@ func TestMigrate(t *testing.T) {
 
 	t.Run("bad request body", func(t *testing.T) {
 		sourceClient := testutil.FakeClient(t)
-		mgr := &testutil.MockClusterManager{}
-		e := migrateEngine(t, sourceClient, mgr)
+
+		e := migrateEngine(t, sourceClient, testutil.FakeClient(t))
 		w := e.Post("/namespaces/ns1/capps/my-app/migrate", bytes.NewBufferString(`{}`))
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -976,10 +864,10 @@ func TestMigrate(t *testing.T) {
 
 	t.Run("same cluster and namespace", func(t *testing.T) {
 		sourceClient := testutil.FakeClient(t)
-		mgr := &testutil.MockClusterManager{}
-		e := migrateEngine(t, sourceClient, mgr)
+
+		e := migrateEngine(t, sourceClient, testutil.FakeClient(t))
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
-			TargetCluster: "source-cluster", TargetNamespace: "ns1",
+			TargetCluster: "test", TargetNamespace: "ns1",
 		})
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -994,14 +882,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 			TargetHostname: "new.example.com",
@@ -1020,14 +901,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -1047,14 +921,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns", DeleteSource: true,
 		})
@@ -1075,14 +942,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -1115,14 +975,7 @@ func TestMigrate(t *testing.T) {
 			},
 		}, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -1147,14 +1000,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp, sourceCM)
 		targetClient := testutil.FakeClient(t, targetNS, targetCM)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -1165,7 +1011,7 @@ func TestMigrate(t *testing.T) {
 	failDeleteClient := func(t *testing.T, objs ...client.Object) client.Client {
 		t.Helper()
 		return fake.NewClientBuilder().
-			WithScheme(testutil.TestScheme(t)).
+			WithScheme(testutil.TestScheme(t)).WithRESTMapper(testutil.ResourceMapper()).
 			WithObjects(objs...).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
@@ -1180,14 +1026,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := failDeleteClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns", DeleteSource: true,
 		})
@@ -1210,14 +1049,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := failDeleteClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns", DeleteSource: true,
 		})
@@ -1241,14 +1073,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 		})
@@ -1265,14 +1090,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 			TargetHostname: "app.example.com",
@@ -1287,14 +1105,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 			TargetHostname: "new.example.com",
@@ -1312,14 +1123,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 			DeleteSource: true, TargetHostname: "new.example.com",
@@ -1341,14 +1145,7 @@ func TestMigrate(t *testing.T) {
 		sourceClient := testutil.FakeClient(t, sourceCapp)
 		targetClient := testutil.FakeClient(t, targetNS)
 
-		mgr := &testutil.MockClusterManager{
-			GetFn: func(name string) (*cluster.ClusterClient, error) { return targetCC, nil },
-			ClientForFn: func(_ *cluster.ClusterClient, _ auth.ClusterCredential) (client.Client, error) {
-				return targetClient, nil
-			},
-			IsNamespaceAllowedFn: func(_ *cluster.ClusterClient, _ string) bool { return true },
-		}
-		e := migrateEngine(t, sourceClient, mgr)
+		e := migrateEngine(t, sourceClient, targetClient)
 		w := e.PostJSON("/namespaces/ns1/capps/my-app/migrate", MigrateRequest{
 			TargetCluster: "target-cluster", TargetNamespace: "target-ns",
 			DeleteSource: true, TargetHostname: "app.example.com",

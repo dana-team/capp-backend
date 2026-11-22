@@ -19,16 +19,13 @@ import (
 	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/testutil"
-	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -166,7 +163,7 @@ func TestNew(t *testing.T) {
 			called := false
 			handler := func(c *gin.Context) {
 				called = true
-				_, admin := c.Get(string(middleware.AdminK8sClientKey))
+				_, admin := c.Get("adminK8sClient")
 				require.False(t, admin)
 				require.True(t, requestpolicy.RequireExecution(c))
 				c.Status(http.StatusOK)
@@ -280,7 +277,7 @@ func TestNewOperators(t *testing.T) {
 				require.True(t, allowed)
 				require.True(t, operator)
 				_, execution := c.Get(string(middleware.K8sClientKey))
-				_, admin := c.Get(string(middleware.AdminK8sClientKey))
+				_, admin := c.Get("adminK8sClient")
 				require.False(t, execution)
 				require.False(t, admin)
 				c.Status(http.StatusOK)
@@ -424,7 +421,7 @@ func TestNewObservation(t *testing.T) {
 
 func TestNewExecutionNamespace(t *testing.T) {
 	store, _ := policyStore(t, nil)
-	execution := clientfake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(policyExecutionMapper()).WithObjects(
+	execution := clientfake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(testutil.ResourceMapper()).WithObjects(
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "team-a"}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "team-b"}},
 	).Build()
@@ -499,10 +496,6 @@ func policyManager(t *testing.T, cc *cluster.ClusterClient) *testutil.MockCluste
 			}
 			return cc, nil
 		},
-		ClientForFn: func(*cluster.ClusterClient, auth.ClusterCredential) (client.Client, error) {
-			t.Error("Kubernetes-mode client construction reached")
-			return nil, errors.New("Kubernetes-mode client")
-		},
 		IsNamespaceAllowedFn: boundary.IsNamespaceAllowed,
 	}
 }
@@ -529,16 +522,4 @@ func requirePolicyError(t *testing.T, w *httptest.ResponseRecorder, code, reason
 	if reason != "" {
 		require.Equal(t, reason, response.Error.Details["reason"])
 	}
-}
-
-// Fake clients need explicit REST mappings for the namespace wrapper's scope checks.
-func policyExecutionMapper() meta.RESTMapper {
-	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{corev1.SchemeGroupVersion, cappv1alpha1.GroupVersion})
-	for _, kind := range []string{"Secret", "SecretList", "ConfigMapList"} {
-		mapper.Add(corev1.SchemeGroupVersion.WithKind(kind), meta.RESTScopeNamespace)
-	}
-	for _, kind := range []string{"Capp", "CappList", "CappRevision", "CappRevisionList"} {
-		mapper.Add(cappv1alpha1.GroupVersion.WithKind(kind), meta.RESTScopeNamespace)
-	}
-	return mapper
 }

@@ -6,12 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -52,18 +50,6 @@ func inlineClusterConfigWithToken(name, apiServer, token string) config.ClusterC
 		Credential: config.CredentialConfig{
 			Inline: &config.InlineCredential{APIServer: apiServer, Token: token, Insecure: true},
 		},
-	}
-}
-
-// testClusterClient creates a ClusterClient backed by the given test server.
-func testClusterClient(t *testing.T, srv *httptest.Server, token string) *ClusterClient {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	return &ClusterClient{
-		Meta:       ClusterMeta{Name: "test"},
-		RestConfig: mustBuildRestConfig(t, inlineClusterConfigWithToken("test", srv.URL, token)),
-		Scheme:     scheme,
 	}
 }
 
@@ -168,18 +154,6 @@ func TestClusterManager_List(t *testing.T) {
 	assert.Len(t, list, 2)
 }
 
-func TestClusterManager_IsAnyHealthy(t *testing.T) {
-	ccA := &ClusterClient{Meta: ClusterMeta{}}
-	ccA.healthy.Store(false)
-	ccB := &ClusterClient{Meta: ClusterMeta{}}
-	ccB.healthy.Store(true)
-	mgr := testManager(map[string]*ClusterClient{"a": ccA, "b": ccB})
-	assert.True(t, mgr.IsAnyHealthy())
-
-	mgr.clusters["b"].healthy.Store(false)
-	assert.False(t, mgr.IsAnyHealthy())
-}
-
 func TestClusterManager_New_UnreachableClusterNotFatal(t *testing.T) {
 	cfgs := []config.ClusterConfig{
 		inlineClusterConfig("unreachable", "https://192.0.2.1:6443"),
@@ -189,61 +163,6 @@ func TestClusterManager_New_UnreachableClusterNotFatal(t *testing.T) {
 	cc, err := mgr.Get("unreachable")
 	require.NoError(t, err)
 	assert.False(t, cc.IsHealthy())
-}
-
-func TestClientFor_OverridesBearerToken(t *testing.T) {
-	srv := alwaysOKServer(t)
-	defer srv.Close()
-
-	cc := testClusterClient(t, srv, "base-token")
-	mgr := testManager(map[string]*ClusterClient{"test": cc})
-
-	k8sClient, err := mgr.ClientFor(cc, auth.ClusterCredential{BearerToken: "request-specific-token"})
-	require.NoError(t, err)
-	assert.NotNil(t, k8sClient)
-	assert.Equal(t, "base-token", cc.RestConfig.BearerToken)
-}
-
-func TestClientFor_EmptyCredentialUsesBaseToken(t *testing.T) {
-	srv := alwaysOKServer(t)
-	defer srv.Close()
-
-	cc := testClusterClient(t, srv, "service-account-token")
-	mgr := testManager(map[string]*ClusterClient{"test": cc})
-
-	_, err := mgr.ClientFor(cc, auth.ClusterCredential{})
-	require.NoError(t, err)
-	assert.Equal(t, "service-account-token", cc.RestConfig.BearerToken)
-}
-
-func TestClientFor_Impersonation(t *testing.T) {
-	srv := alwaysOKServer(t)
-	defer srv.Close()
-
-	cc := testClusterClient(t, srv, "sa-token")
-	mgr := testManager(map[string]*ClusterClient{"test": cc})
-	cred := auth.ClusterCredential{
-		ImpersonateUser:   "jane",
-		ImpersonateGroups: []string{"developers", "system:authenticated"},
-	}
-
-	k8sClient, err := mgr.ClientFor(cc, cred)
-	require.NoError(t, err)
-	assert.NotNil(t, k8sClient)
-	assert.Equal(t, "sa-token", cc.RestConfig.BearerToken)
-	assert.Empty(t, cc.RestConfig.Impersonate.UserName)
-}
-
-func TestClientFor_NoImpersonation_BackwardCompat(t *testing.T) {
-	srv := alwaysOKServer(t)
-	defer srv.Close()
-
-	cc := testClusterClient(t, srv, "sa-token")
-	mgr := testManager(map[string]*ClusterClient{"test": cc})
-
-	_, err := mgr.ClientFor(cc, auth.ClusterCredential{BearerToken: "user-token"})
-	require.NoError(t, err)
-	assert.Empty(t, cc.RestConfig.Impersonate.UserName)
 }
 
 func TestHealthCheck(t *testing.T) {
@@ -268,7 +187,7 @@ func TestHealthCheck_Unhealthy(t *testing.T) {
 	assert.Error(t, checkHealth(hc, restCfg.Host))
 }
 
-func TestClusterManager_StartHealthChecks(t *testing.T) {
+func TestStartHealthChecks(t *testing.T) {
 	srv := alwaysOKServer(t)
 	defer srv.Close()
 
@@ -282,7 +201,9 @@ func TestClusterManager_StartHealthChecks(t *testing.T) {
 	cancel()
 	mgr.StartHealthChecks(ctx, 1)
 
-	assert.True(t, mgr.IsAnyHealthy())
+	cc, err := mgr.Get("healthy")
+	require.NoError(t, err)
+	assert.True(t, cc.IsHealthy())
 }
 
 // ── BuildClusterClient GitOpsPath tests ───────────────────────────────────────

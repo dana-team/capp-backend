@@ -278,7 +278,7 @@ func aggregateRouter(t *testing.T, target requestpolicy.Target, caller string, a
 	identity := newPolicyProvider(t, config.AuthModePassthrough, map[string]authv1.UserInfo{"c1": {Username: caller}}, nil)
 	r := policyRouter(t, identity.auth, policyManager(t, cc), target, logger)
 	group := r.Group("/api/v1/clusters/:cluster")
-	newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
+	newCappsHandler(t, false, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
 	configmaps.New().RegisterRoutes(group)
 	secrets.New().RegisterRoutes(group)
 	return r
@@ -352,5 +352,5 @@ func aggregatePolicyJSON(t *testing.T, namespace string, bindings []authorizatio
 
 func aggregateClient(t *testing.T, funcs interceptor.Funcs, objects ...client.Object) client.Client {
 	t.Helper()
-	return clientfake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(policyExecutionMapper()).WithObjects(objects...).WithInterceptorFuncs(funcs).Build()
+	return clientfake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(testutil.ResourceMapper()).WithObjects(objects...).WithInterceptorFuncs(funcs).Build()
 }

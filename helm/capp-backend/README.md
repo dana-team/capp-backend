@@ -1,14 +1,17 @@
 # Backend authorization configuration
 
-See [values.yaml](values.yaml) for available settings. `kubernetes` is the default
-authorization mode. `backend-policy` requires a policy namespace and one inline
+See [values.yaml](values.yaml) for available settings.
+`config.authorization.mode: backend-policy` must be set explicitly; omitted,
+null, empty, `kubernetes` and unknown values fail rendering. The server likewise
+requires explicit `authorization.mode: backend-policy`. This sole mode requires
+a policy namespace and one inline
 backend credential for each target cluster. The chart provisions permissions for
 LDAP, OpenShift and passthrough. Server configuration validation permits all three
 providers with backend-policy when their required settings are supplied. When
 overriding the server image version, ensure it supports the selected combination.
 
-The Capp selects `serviceAccount.name` for backend-policy and for OpenShift/LDAP
-Kubernetes authorization. Set `serviceAccount.create: false` to use an existing
+The Capp selects `serviceAccount.name` for every authentication provider.
+Set `serviceAccount.create: false` to use an existing
 account; the workload and bindings still reference that name. Only OpenShift
 accounts created by the chart receive OAuth redirect annotations. For a pre-existing
 OpenShift account, configure those annotations separately.
@@ -24,7 +27,7 @@ in the same order as `config.clusters`. Observation, administration and authoriz
 resource operations share this credential. Deployment owns token issuance and
 rotation; update the Secret and restart every replica before the old token expires.
 
-In backend-policy mode the chart renders one `<fullname>-role` ClusterRole with
+The chart renders one `<fullname>-role` ClusterRole with
 the required resource, namespace, quota and policy permissions. If any target uses
 `https://kubernetes.default.svc`, it also renders one ClusterRoleBinding to
 `serviceAccount.name` in `namespace`; that target's token must identify this account.
@@ -35,7 +38,7 @@ and provide its endpoint, CA and service-account token. Follow the
 The binding grants infrastructure access cluster-wide, including protected storage.
 User access remains controlled by application policies, operator checks, protected
 namespaces and `allowedNamespaces`. Operator lists do not change the role's grants.
-Kubernetes-mode RBAC is unchanged. Keep backend identities and credentials outside
+Keep backend identities and credentials outside
 user-manageable namespaces and prevent workloads from using them.
 
 ## Identity review permissions
@@ -63,3 +66,18 @@ the existing backend token; there is no separate reviewer credential.
 Backend-policy roles grant neither impersonation nor user-RBAC management.
 Rendered grants do not certify live permissions; verify each identity's permissions
 on its intended cluster before deployment.
+
+## Upgrade and recovery
+
+The chart no longer provisions impersonator roles/bindings or the `capp-user`
+role, and `rbac.openShiftProjects` is removed. Replace any TokenReview grant
+supplied by the old impersonator role before upgrading. Preserve consolidated
+backend grants and provider-specific reviewer grants, including existing service
+accounts, local aliases and remote targets. Chart-owned removals do not revoke
+independent credentials or clean up independently installed grants.
+
+Follow the [upgrade, cleanup and recovery procedure](../../docs/backend-policy.md#manual-cutover-and-rollback).
+Every affected population needs qualification; a proposed rollback candidate is
+unqualified until tested evidence is recorded. Recovery requires an earlier
+compatible image/chart/configuration and reconciliation of intervening revocations,
+not a mode switch in this release.

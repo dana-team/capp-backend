@@ -558,7 +558,7 @@ func TestHandlerAuditNamespaceOperation(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodPatch, "/", nil)
 			c.Params = gin.Params{{Key: "cluster", Value: "c2"}}
-			c.Set(string(middleware.CredentialKey), auth.ClusterCredential{ImpersonateUser: "operator", AuthProvider: tc.provider, IdentityAuthority: "https://authority.example", BearerToken: "secret-token"})
+			c.Set(string(middleware.CredentialKey), auth.ClusterCredential{ImpersonateUser: "operator", AuthProvider: tc.provider, IdentityAuthority: "https://authority.example"})
 			op := &namespaceOperation{namespace: "team-a", policy: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{UID: "policy-uid", ResourceVersion: "42"}}, succeeded: tc.outcome == "succeeded"}
 			if tc.outcome == "partial" {
 				op.completed = []string{"namespace"}

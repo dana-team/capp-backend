@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,8 +19,6 @@ import (
 	"time"
 
 	"github.com/dana-team/capp-backend/internal/config"
-	authv1 "k8s.io/api/authentication/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -38,8 +35,7 @@ import (
 //
 // On every authenticated request the bearer token is validated via TokenReview
 // against the home cluster (kubernetes.default.svc). The extracted user identity
-// (username + groups) is returned in ClusterCredential so that the cluster
-// middleware can apply K8s impersonation headers on all managed clusters.
+// (username + groups) is returned in ClusterCredential for authorization.
 //
 // The backend is fully stateless: tokens are managed by OpenShift, not by the
 // backend. A short-lived in-memory cache avoids a TokenReview on every request.
@@ -52,7 +48,6 @@ type openShiftManager struct {
 	k8sClient kubernetes.Interface
 
 	identityAuthority string
-	backendPolicy     bool
 
 	// oauthMeta holds the discovered OAuth server endpoints.
 	oauthMeta *oauthServerMeta
@@ -147,7 +142,6 @@ func newOpenShiftManagerForConfig(cfg *config.Config, inClusterCfg *rest.Config)
 		httpClient:        httpClient,
 		k8sClient:         k8sClient,
 		identityAuthority: sanitizeAuthority(inClusterCfg.Host),
-		backendPolicy:     cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy,
 		oauthMeta:         oauthMeta,
 		cacheTTL:          cacheTTL,
 		hmacKey:           key,
@@ -197,7 +191,7 @@ func discoverOAuthMeta(client *http.Client, apiServer string) (*oauthServerMeta,
 // ── AuthManager implementation ──────────────────────────────────────────────
 
 // Authenticate validates the bearer token via TokenReview (with cache) and
-// returns a ClusterCredential with impersonation fields set.
+// returns a ClusterCredential containing the verified identity.
 func (m *openShiftManager) Authenticate(ctx context.Context, _ string, r *http.Request) (ClusterCredential, error) {
 	raw := r.Header.Get("Authorization")
 	if raw == "" {
@@ -209,7 +203,7 @@ func (m *openShiftManager) Authenticate(ctx context.Context, _ string, r *http.R
 		return ClusterCredential{}, ErrUnauthenticated
 	}
 	token := strings.TrimPrefix(raw, prefix)
-	if m.backendPolicy && (token == "" || strings.ContainsAny(token, " \t\r\n")) {
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
 		return ClusterCredential{}, ErrUnauthenticated
 	}
 
@@ -236,30 +230,12 @@ func (m *openShiftManager) Authenticate(ctx context.Context, _ string, r *http.R
 	}
 
 	// Submit TokenReview against the home cluster.
-	var result *authv1.TokenReview
-	var err error
-	if m.backendPolicy {
-		result, err = reviewToken(ctx, m.k8sClient.AuthenticationV1().RESTClient(), token)
-	} else {
-		ctx, cancel := context.WithTimeout(ctx, tokenReviewTimeout)
-		defer cancel()
-		result, err = m.k8sClient.AuthenticationV1().TokenReviews().Create(ctx, &authv1.TokenReview{
-			Spec: authv1.TokenReviewSpec{Token: token},
-		}, metav1.CreateOptions{})
-	}
+	result, err := reviewToken(ctx, m.k8sClient.AuthenticationV1().RESTClient(), token)
 	if err != nil {
-		if m.backendPolicy {
-			return ClusterCredential{}, err
-		}
-		// Keep the Kubernetes-mode internal-error response without upstream text.
-		return ClusterCredential{}, newTokenReviewError(err, errors.New("openshift: token review failed"))
+		return ClusterCredential{}, err
 	}
-	if m.backendPolicy {
-		if err := validateTokenReview(result); err != nil {
-			return ClusterCredential{}, err
-		}
-	} else if !result.Status.Authenticated {
-		return ClusterCredential{}, ErrUnauthenticated
+	if err := validateTokenReview(result); err != nil {
+		return ClusterCredential{}, err
 	}
 
 	username := result.Status.User.Username

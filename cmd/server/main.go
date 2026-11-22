@@ -120,7 +120,7 @@ func main() {
 			zap.Strings("metrics", unscoped),
 		)
 	}
-	cappHandler, err := capphandler.New(cfg.GitOps.Enabled, gitopsClient, clusterMgr, cfg.Sizes, cfg.Resources.Observability)
+	cappHandler, err := capphandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes, cfg.Resources.Observability)
 	if err != nil {
 		logger.Fatal("failed to initialise capps handler", zap.Error(err))
 	}

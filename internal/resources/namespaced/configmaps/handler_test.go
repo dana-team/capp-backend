@@ -39,7 +39,7 @@ func unmanagedCM(name string) *corev1.ConfigMap {
 }
 
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New())
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(), "ns1", "ns2")
 }
 
 // -- ListAll tests --
@@ -52,6 +52,23 @@ func TestListAll_Success(t *testing.T) {
 	var resp ConfigMapListResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, 1, resp.Total)
+}
+
+func TestListAllBackendFailure(t *testing.T) {
+	calls := 0
+	execution := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			calls++
+			if calls == 1 {
+				return errors.New("injected backend failure")
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	w := testutil.NewEngineHelper(t, execution, New(), "ns1").Get("/configmaps")
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, 1, calls, "aggregate listing must not read resources during authorization setup")
 }
 
 // -- List by namespace tests --

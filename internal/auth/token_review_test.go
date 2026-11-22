@@ -109,41 +109,6 @@ func TestOpenShiftManagerAuthenticate(t *testing.T) {
 	})
 
 	t.Run("cache isolates groups and retains expiry during outages", testOpenShiftCache)
-
-	t.Run("Kubernetes mode retains review result behavior", func(t *testing.T) {
-		for _, tc := range []struct {
-			name   string
-			status int
-			body   string
-			want   string
-		}{
-			{name: "legacy identity checks", body: `{"status":{"authenticated":true,"error":"private-review-diagnostic","user":{"username":"system:anonymous"}}}`},
-			{name: "explicit rejection", body: `{"status":{"authenticated":false}}`, want: ErrUnauthenticated.Error()},
-			{name: "review failure remains internal", status: http.StatusForbidden, want: "openshift: token review failed"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				m := newReviewManager(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					if tc.status != 0 {
-						w.WriteHeader(tc.status)
-					}
-					fmt.Fprint(w, tc.body) //nolint:errcheck
-				}))
-				m.backendPolicy = false
-				_, err := m.Authenticate(t.Context(), "target", reviewRequest())
-				if tc.status == http.StatusForbidden && TokenReviewDiagnostic(err) != "token review failed: status=403 timeout=false" {
-					t.Fatalf("unexpected review diagnostic: %q", TokenReviewDiagnostic(err))
-				}
-				if tc.want == "" {
-					if err != nil {
-						t.Fatalf("legacy Authenticate() error = %v", err)
-					}
-				} else if err == nil || err.Error() != tc.want || errors.Is(err, ErrIdentityUnavailable) {
-					t.Errorf("legacy Authenticate() error = %v, want %q", err, tc.want)
-				}
-			})
-		}
-	})
 }
 
 func TestNewOpenShiftManagerForConfig(t *testing.T) {
@@ -332,6 +297,17 @@ func testOpenShiftCache(t *testing.T) {
 	if _, ok := m.tokenCache.Load(key); ok {
 		t.Error("failed verification retained an expired identity")
 	}
+	unavailable.Store(false)
+	got, err := m.Authenticate(t.Context(), "first-target", reviewRequest())
+	if err != nil {
+		t.Fatalf("Authenticate() after reviewer recovery: %v", err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("reverified identity (-want +got):\n%s", diff)
+	}
+	if calls.Load() != 4 {
+		t.Errorf("review calls after recovery = %d, want 4", calls.Load())
+	}
 }
 
 func newReviewManager(t *testing.T, handler http.Handler, configure ...func(*rest.Config)) *openShiftManager {
@@ -356,13 +332,12 @@ func newReviewManager(t *testing.T, handler http.Handler, configure ...func(*res
 	cfg.Auth.Mode = config.AuthModeOpenShift
 	cfg.Auth.OpenShift.APIServer = oauth.URL
 	cfg.Auth.OpenShift.TokenCacheTTLSeconds = 37
-	cfg.Authorization.Mode = config.AuthorizationModeBackendPolicy
 	m, err := newOpenShiftManagerForConfig(cfg, reviewer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.identityAuthority != home.URL || m.cacheTTL != 37*time.Second || !m.backendPolicy {
-		t.Fatal("OpenShift construction did not retain home authority, cache TTL or authorization mode")
+	if m.identityAuthority != home.URL || m.cacheTTL != 37*time.Second {
+		t.Fatal("OpenShift construction did not retain home authority or cache TTL")
 	}
 	return m
 }
