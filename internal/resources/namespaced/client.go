@@ -8,49 +8,19 @@ import (
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/utils"
 	"github.com/gin-gonic/gin"
-	"golang.org/x/sync/errgroup"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ListAll lists resources using the active authorization mode. Backend policy
-// collects only permitted namespaces; Kubernetes-mode mode retains the caller's client.
+// ListAll lists resources only in namespaces permitted by policy.
 // It writes an error response and returns false if the collection fails.
 func ListAll(c *gin.Context, list client.ObjectList, options ...client.ListOption) bool {
-	if policy.Enabled(c) {
-		return policy.ListAggregate(c, list, options...)
-	}
-	k8sClient := ExtractClient(c)
-	if k8sClient == nil {
-		return false
-	}
-	if err := k8sClient.List(c.Request.Context(), list, options...); err != nil {
-		apierrors.Respond(c, err)
-		return false
-	}
-	return true
+	return policy.ListAggregate(c, list, options...)
 }
 
-// ListAllTogether fills several lists at the same time, using the active
-// authorization mode like ListAll. A handler that needs more than one kind
-// would otherwise pay one pass over every namespace for each. It writes one
-// error response and returns false if any list fails.
+// ListAllTogether fills several lists in namespaces permitted by policy.
+// It writes an error response and returns false if any list fails.
 func ListAllTogether(c *gin.Context, lists ...client.ObjectList) bool {
-	if policy.Enabled(c) {
-		return policy.ListAggregates(c, lists...)
-	}
-	k8sClient := ExtractClient(c)
-	if k8sClient == nil {
-		return false
-	}
-	group, ctx := errgroup.WithContext(c.Request.Context())
-	for _, list := range lists {
-		group.Go(func() error { return k8sClient.List(ctx, list) })
-	}
-	if err := group.Wait(); err != nil {
-		apierrors.Respond(c, err)
-		return false
-	}
-	return true
+	return policy.ListAggregates(c, lists...)
 }
 
 // ExtractClient retrieves the scoped K8s client from the Gin context.

@@ -20,7 +20,7 @@ data:
         - "https://console.example.com"
 
     authorization:
-      mode: kubernetes # backend-policy supports ldap, openshift and passthrough
+      mode: backend-policy # Required for ldap, openshift and passthrough
       restrictedBindingNamePrefixes: ["system:"]
 
     auth:

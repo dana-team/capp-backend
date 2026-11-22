@@ -11,31 +11,28 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// listClusters returns visible cluster metadata in the active authorization mode.
+// listClusters returns cluster metadata visible through policy assignments.
 func listClusters(mgr cluster.ClusterManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		items := mgr.List()
-		if policy.Enabled(c) {
-			if _, _, ok := policy.RequireDiscovery(c, ""); !ok {
-				return
-			}
-			visible := make([]cluster.ClusterMeta, 0, len(items))
-			for _, item := range items {
-				states, operator, ok := policy.RequireDiscovery(c, item.Name)
-				if !ok {
-					return
-				}
-				if operator || len(states) != 0 {
-					visible = append(visible, item)
-				}
-			}
-			slices.SortFunc(visible, func(a, b cluster.ClusterMeta) int { return strings.Compare(a.Name, b.Name) })
-			if _, _, ok := policy.RequireDiscovery(c, ""); !ok {
-				return
-			}
-			items = visible
+		if _, _, ok := policy.RequireDiscovery(c, ""); !ok {
+			return
 		}
-		c.JSON(http.StatusOK, gin.H{"items": items})
+		items := mgr.List()
+		visible := make([]cluster.ClusterMeta, 0, len(items))
+		for _, item := range items {
+			states, operator, ok := policy.RequireDiscovery(c, item.Name)
+			if !ok {
+				return
+			}
+			if operator || len(states) != 0 {
+				visible = append(visible, item)
+			}
+		}
+		slices.SortFunc(visible, func(a, b cluster.ClusterMeta) int { return strings.Compare(a.Name, b.Name) })
+		if _, _, ok := policy.RequireDiscovery(c, ""); !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": visible})
 	}
 }
 
@@ -47,15 +44,15 @@ func getCluster(mgr cluster.ClusterManager) gin.HandlerFunc {
 			if m.Name != name {
 				continue
 			}
-			if policy.Enabled(c) {
-				states, operator, ok := policy.RequireDiscovery(c, name)
-				if !ok {
-					return
-				}
-				if !operator && len(states) == 0 {
-					break
-				}
+
+			states, operator, ok := policy.RequireDiscovery(c, name)
+			if !ok {
+				return
 			}
+			if !operator && len(states) == 0 {
+				break
+			}
+
 			c.JSON(http.StatusOK, m)
 			return
 		}

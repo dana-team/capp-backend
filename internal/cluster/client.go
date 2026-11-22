@@ -3,13 +3,11 @@
 //
 // At startup, New reads the clusters config, builds a ClusterClient for each
 // entry, and stores them in an in-memory registry. Handlers and middleware
-// retrieve per-request scoped clients via ClusterManager.ClientFor, which
-// copies the base rest.Config and injects the caller's bearer token so that
-// Kubernetes RBAC is enforced at the individual user level in passthrough mode.
+// use SystemClients for backend-authenticated execution and observation.
 //
 // A background goroutine (StartHealthChecks) polls each cluster's /version
 // endpoint on a configurable interval and marks clusters healthy or unhealthy.
-// The /readyz probe returns 503 until at least one cluster is healthy.
+// Readiness also requires synchronized policy observations for a healthy cluster.
 package cluster
 
 import (
@@ -23,21 +21,8 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// ── Sentinel errors ───────────────────────────────────────────────────────────
-
-var (
-	// ErrClusterNotFound is returned by Get when the named cluster is not in
-	// the registry.
-	ErrClusterNotFound = errors.New("cluster not found")
-
-	// ErrClusterUnhealthy is returned when a cluster exists in the registry
-	// but failed its most recent health check.
-	ErrClusterUnhealthy = errors.New("cluster is not healthy")
-
-	// ErrNamespaceForbidden is returned by the cluster middleware when the
-	// requested namespace is not in the cluster's AllowedNamespaces list.
-	ErrNamespaceForbidden = errors.New("namespace is not allowed for this cluster")
-)
+// ErrClusterNotFound is returned by Get when the named cluster is not configured.
+var ErrClusterNotFound = errors.New("cluster not found")
 
 // ClusterMeta holds identifying and health metadata for one managed cluster.
 // It lives in pkg/api/clusters so clients can use it without this package.
@@ -45,10 +30,6 @@ type ClusterMeta = clusters.ClusterMeta
 
 // ClusterClient wraps the base Kubernetes rest.Config and scheme for a single
 // cluster. It is built once at startup and stored in the ClusterManager.
-//
-// It does NOT hold a ready-to-use client.Client because the client must carry
-// the per-request bearer token (in passthrough mode). Use ClusterManager.ClientFor
-// to obtain a scoped client for a specific request.
 type ClusterClient struct {
 	// Meta holds display and health metadata. The Healthy field in Meta is
 	// only accurate in snapshots returned by List(). For live health status,
@@ -63,12 +44,8 @@ type ClusterClient struct {
 	// Created once at startup from RestConfig to avoid leaking transports.
 	healthClient *http.Client
 
-	// RestConfig is the base configuration for this cluster. It contains the
-	// API server URL, CA certificate, and (for service-account / inline mode)
-	// the backend's own bearer token. In passthrough mode the token is
-	// overridden per-request by ClientFor.
-	//
-	// This field must not be mutated after initialisation — ClientFor copies it.
+	// RestConfig contains the backend credentials and API server trust settings.
+	// It must not be mutated after initialization.
 	RestConfig *rest.Config
 
 	// Scheme has all API types registered that capp-backend works with.

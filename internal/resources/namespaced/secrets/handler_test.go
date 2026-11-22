@@ -41,7 +41,7 @@ func unmanagedSecret(name string) *corev1.Secret {
 }
 
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New())
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(), "ns1", "ns2")
 }
 
 // -- ListAll tests --

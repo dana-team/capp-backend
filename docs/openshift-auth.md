@@ -14,7 +14,7 @@ In `openshift` mode the backend delegates all authentication to the OpenShift OA
 4. The frontend exchanges the code via `POST /api/v1/auth/openshift/callback`. The backend calls OpenShift's token endpoint and returns an access token + refresh token to the browser.
 
 **Per-request authorization:**
-On every API call the backend validates the bearer token via the Kubernetes TokenReview API, extracts the user's identity (username + groups), and **impersonates** that user when forwarding requests to each managed cluster. Each managed cluster must have a pre-configured service account token with impersonation permissions — the user's own OpenShift identity is never forwarded directly to remote clusters.
+The backend verifies bearer tokens through the in-cluster home TokenReview API, caching successful identities for `tokenCacheTTLSeconds`. It checks application assignments using the verified username/groups and executes authorized operations with each target's backend credential, without impersonation. The home workload account needs TokenReview permission; remote execution accounts do not. Confirm the OAuth server and home reviewer represent the same intended authority.
 
 ---
 
@@ -26,7 +26,8 @@ Before installing the Helm chart you need:
 2. An `OAuthClient` resource registered in that cluster (see below).
 3. The external URL of the OpenShift API server (`oc whoami --show-server`).
 4. The frontend deployed and its callback URL known (e.g. `https://console.example.com/auth/callback`).
-5. For each **managed cluster** (clusters the backend will forward Capp requests to): a service account with impersonation permissions and a long-lived token for it.
+5. For each **managed cluster** (clusters the backend will forward Capp requests to): a backend service account with consolidated resource/policy permissions, protected policy storage and a target-issued token.
+6. Explicit `config.authorization.mode: backend-policy`, reviewed assignments and configured namespace operators. Follow the [upgrade prerequisites](backend-policy.md#manual-cutover-and-rollback) for an existing installation.
 
 ### Register an OAuthClient
 
@@ -49,50 +50,11 @@ oc apply -f oauthclient.yaml
 
 > The `redirectURIs` list must **exactly** match the `redirectUri` you configure in the Helm chart. A mismatch will cause the OAuth exchange to fail.
 
-### Prepare impersonation credentials for each managed cluster
+### Prepare backend credentials for each managed cluster
 
-For each cluster that the backend will manage, create a service account and grant it impersonation permissions:
+Follow [infrastructure onboarding](backend-policy.md#infrastructure-onboarding-and-rotation) to create a service account in protected storage and install the consolidated backend role/binding on each target. The chart binds the local target only when its endpoint is `https://kubernetes.default.svc`; other targets require separately installed grants. The home workload account always needs `create` on `authentication.k8s.io/tokenreviews`, including when every execution target is remote.
 
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: capp-backend
-  namespace: capp-platform-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: capp-backend-impersonator
-rules:
-  - apiGroups: [""]
-    resources: ["users", "groups"]
-    verbs: ["impersonate"]
-  - apiGroups: ["authentication.k8s.io"]
-    resources: ["tokenreviews"]
-    verbs: ["create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: capp-backend-impersonator
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: capp-backend-impersonator
-subjects:
-  - kind: ServiceAccount
-    name: capp-backend
-    namespace: capp-platform-system
-```
-
-Then generate a long-lived token:
-
-```bash
-kubectl create token capp-backend -n capp-platform-system --duration=8760h
-```
-
-> The Helm chart creates this service account and RBAC automatically on the **cluster where the backend is deployed**. For any **additional managed clusters** you must create them manually as shown above.
+Issue a target token according to your deployment's expiry and rotation policy, supply it through `secret.clusterTokens`, and restart every replica after rotation. The backend does not renew tokens. Do not provision impersonation grants. Replace any home TokenReview grant inherited from an old impersonator role before removing that role; see [cleanup](backend-policy.md#obsolete-grant-cleanup).
 
 ---
 
@@ -100,10 +62,13 @@ kubectl create token capp-backend -n capp-platform-system --duration=8760h
 
 ### Minimal values file
 
-Create a `values-openshift.yaml` with the required fields:
+Create a `values-openshift.yaml` with the required fields. This example uses the local target so the chart binds its backend role. Replace the CA placeholder and operator identity with reviewed values. The container-app-operator and protected policy namespace must exist; create initial assignments as described in the [policy guide](backend-policy.md#policies-and-namespace-identity).
 
 ```yaml
 config:
+  authorization:
+    mode: backend-policy
+    restrictedBindingNamePrefixes: ["system:"]
   auth:
     mode: "openshift"
     openshift:
@@ -119,9 +84,16 @@ config:
       displayName: "Production Cluster"
       credential:
         inline:
-          apiServer: "https://api.my-cluster.example.com:6443"
+          apiServer: "https://kubernetes.default.svc"
+          caCert: "<base64-encoded PEM CA bundle>"
+          insecure: false
           token: ""   # overridden by secret.clusterTokens[0]
       allowedNamespaces: []
+      authorization:
+        policyNamespace: capp-platform-system
+        protectedNamespaces: [kube-system, kube-public, kube-node-lease]
+        operatorUsers: [alice]
+        operatorGroups: []
 
 secret:
   openshiftClientSecret: "<client-secret>"
@@ -153,15 +125,16 @@ helm install capp-backend oci://ghcr.io/dana-team/helm-charts/capp-backend \
 
 | Resource | Name | Purpose |
 |---|---|---|
-| `Deployment` | `capp-backend` | Backend pods |
-| `Service` | `capp-backend` | ClusterIP service on port 8080 |
+| `Capp` | `capp-backend` | Backend workload managed by container-app-operator |
 | `ConfigMap` | `capp-backend` | Non-sensitive configuration |
 | `Secret` | `capp-backend` | `openshiftClientSecret`, cluster tokens |
-| `ServiceAccount` | `capp-backend` | Identity used for impersonation |
-| `ClusterRole` | `capp-backend-impersonator` | Grants impersonate + tokenreviews permissions |
-| `ClusterRoleBinding` | `capp-backend-impersonator` | Binds the role to the service account |
+| `ServiceAccount` | `capp-backend` | Home reviewer and local backend identity |
+| `ClusterRole` | `capp-backend-role` | Backend execution, observation, administration and local home review |
+| `ClusterRoleBinding` | `capp-backend-role` | Binds local target grants to the configured account |
 
 ---
+
+For remote-only targets the chart creates a separate home `capp-backend-tokenreviewer` role/binding. Remote grants are installed separately. Existing accounts (`serviceAccount.create: false`) still receive workload/binding references; configure their OAuth redirect annotations separately.
 
 ## Add a managed cluster
 
@@ -169,12 +142,12 @@ To add a cluster after initial deployment:
 
 1. Create the service account, ClusterRole, and ClusterRoleBinding on the target cluster (see [Prerequisites](#prerequisites)).
 
-2. Generate a long-lived token:
+2. Issue a target token and arrange rotation before its expiry:
    ```bash
    kubectl create token capp-backend -n capp-platform-system --duration=8760h --context=<target-cluster>
    ```
 
-3. Add the cluster to your values and upgrade:
+3. Add the cluster to your complete values and upgrade. Preserve existing target endpoints, credentials and policy settings; this example keeps production local and adds remote staging:
    ```yaml
    config:
      clusters:
@@ -182,16 +155,30 @@ To add a cluster after initial deployment:
          displayName: "Production Cluster"
          credential:
            inline:
-             apiServer: "https://api.prod.example.com:6443"
+             apiServer: "https://kubernetes.default.svc"
+             caCert: "<base64-encoded PEM CA bundle>"
+             insecure: false
              token: ""
          allowedNamespaces: []
+         authorization:
+           policyNamespace: capp-platform-system
+           protectedNamespaces: [kube-system, kube-public, kube-node-lease]
+           operatorUsers: [alice]
+           operatorGroups: []
        - name: "staging"
          displayName: "Staging Cluster"
          credential:
            inline:
              apiServer: "https://api.staging.example.com:6443"
+             caCert: "<base64-encoded PEM CA bundle>"
+             insecure: false
              token: ""
          allowedNamespaces: []
+         authorization:
+           policyNamespace: capp-platform-system
+           protectedNamespaces: [kube-system, kube-public, kube-node-lease]
+           operatorUsers: [alice]
+           operatorGroups: []
 
    secret:
      clusterTokens:
@@ -219,7 +206,7 @@ To add a cluster after initial deployment:
 | `caCert` | string | No | `""` | Base64-encoded PEM CA bundle for TLS to the OpenShift API server. Leave empty to use the system trust store. |
 | `clientId` | string | Yes | — | Name of the `OAuthClient` resource registered in OpenShift. |
 | `redirectUri` | string | Yes | — | Frontend callback URL. Must exactly match one of the `redirectURIs` in the `OAuthClient`. |
-| `scopes` | []string | No | `["user:info", "user:check-access"]` | OAuth scopes to request. The defaults are sufficient for impersonation. |
+| `scopes` | []string | No | `["user:info", "user:check-access"]` | Scopes requested during OAuth login; application assignments govern resource access. |
 | `tokenCacheTTLSeconds` | int | No | `60` | How long a validated token's identity is cached in-memory per pod before re-validation. |
 
 ### `secret`
@@ -236,16 +223,16 @@ To add a cluster after initial deployment:
 | `name` | string | Yes | Identifier used as the `:cluster` path parameter in API URLs. |
 | `displayName` | string | No | Human-readable label shown in the UI. |
 | `credential.inline.apiServer` | string | Yes | Kubernetes API server URL for this cluster. |
-| `credential.inline.caCert` | string | No | Base64-encoded PEM CA bundle. Omit when using the in-cluster service account. |
+| `credential.inline.caCert` | string | No | Base64-encoded PEM CA bundle. Supply the target CA bundle when not trusted by system roots. |
 | `credential.inline.token` | string | — | Leave empty — overridden by `secret.clusterTokens[N]`. |
-| `allowedNamespaces` | []string | No | Restrict API access to these namespaces. Empty means all namespaces are allowed. |
+| `allowedNamespaces` | []string | No | Restrict API access to these namespaces. Empty adds no name restriction; policy and protected-namespace checks still apply. |
 
 ### `serviceAccount`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `create` | bool | `true` | Whether the chart creates the service account. Set to `false` if you manage it externally. |
-| `name` | string | `"capp-backend"` | Name of the service account used for impersonation. |
+| `name` | string | `"capp-backend"` | Home workload service account and local backend grant subject. |
 
 ---
 
@@ -254,7 +241,7 @@ To add a cluster after initial deployment:
 1. **Check the backend is running:**
    ```bash
    kubectl get pods -n capp-platform-system
-   kubectl logs -n capp-platform-system deploy/capp-backend
+   kubectl logs -n capp-platform-system <backend-pod>
    ```
 
 2. **Query the auth mode endpoint:**
@@ -275,38 +262,15 @@ To add a cluster after initial deployment:
 
 ## Troubleshooting
 
-### `404` on `/api/v1/auth/mode`
-
-The running image predates the `/mode` endpoint (added in v0.0.3). Update the image tag in your values and upgrade:
-
-```bash
-helm upgrade capp-backend ... --set image.tag=v0.0.3
-```
-
 ### OAuth callback fails with `invalid_redirect_uri`
 
 The `redirectUri` in `config.auth.openshift.redirectUri` does not exactly match any entry in the `OAuthClient`'s `redirectURIs` list. Check both values for trailing slashes, http vs https, or port differences.
 
-### `Unauthorized` on API calls after login
+### Authentication or resource calls fail after login
 
-The service account token may have expired or lack impersonation permissions. Verify:
+A `401 UNAUTHORIZED` means caller credentials were rejected. A `503` with `identity verification is unavailable` means the home reviewer is unavailable or its workload credential lacks TokenReview permission. Verify that home account's `create` permission on `tokenreviews.authentication.k8s.io` using administrator credentials; a remote execution token cannot repair home review access.
 
-```bash
-# Check token validity
-kubectl auth can-i impersonate users --as=system:serviceaccount:capp-platform-system:capp-backend
-
-# Re-generate if needed
-kubectl create token capp-backend -n capp-platform-system --duration=8760h
-```
-
-Then update the secret and restart the deployment:
-
-```bash
-kubectl patch secret capp-backend -n capp-platform-system \
-  --type=json \
-  -p='[{"op":"replace","path":"/data/clusterToken-0","value":"'$(echo -n "<new-token>" | base64)'"}]'
-kubectl rollout restart deploy/capp-backend -n capp-platform-system
-```
+A `403 POLICY_DENIED` requires checking assignments, exact identity, namespace boundaries and UID association. If an authorized operation fails at Kubernetes, check the target backend token and consolidated grants. Update the credential Secret and roll out every Capp/Knative replica after rotation. Neither Helm `--wait` nor readiness proves reviewer or execution authority; validate actual calls before restoring traffic.
 
 ### `x509: certificate signed by unknown authority`
 
@@ -323,10 +287,13 @@ Paste the output as the value of `config.auth.openshift.caCert` in your values f
 Check the logs for config validation errors:
 
 ```bash
-kubectl logs -n capp-platform-system deploy/capp-backend
+kubectl logs -n capp-platform-system <backend-pod>
 ```
 
 Common causes:
+- `config.authorization.mode` is not explicitly `backend-policy`, or per-target policy settings are missing.
 - `secret.openshiftClientSecret` is empty — required when `auth.mode` is `openshift`.
 - `config.auth.openshift.apiServer` or `clientId` or `redirectUri` is not set.
 - A cluster token at index `N` is empty while `config.clusters[N]` is defined.
+
+For legacy-release recovery, use the [earlier-release procedure](backend-policy.md#earlier-release-recovery); switching this release to `kubernetes` fails. No rollback candidate is qualified by this guide.

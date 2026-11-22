@@ -240,11 +240,8 @@ type CredentialConfig struct {
 	Inline *InlineCredential `mapstructure:"inline"`
 }
 
-// Authorization modes select backend API policy or Kubernetes permissions.
-const (
-	AuthorizationModeKubernetes    = "kubernetes"
-	AuthorizationModeBackendPolicy = "backend-policy"
-)
+// AuthorizationModeBackendPolicy selects the supported authorization boundary.
+const AuthorizationModeBackendPolicy = "backend-policy"
 
 // AuthorizationConfig selects the process-wide authorization boundary.
 type AuthorizationConfig struct {
@@ -784,8 +781,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.idleTimeoutSeconds", 60)
 	v.SetDefault("server.corsAllowedOrigins", []string{})
 
-	// Authorization
-	v.SetDefault("authorization.mode", AuthorizationModeKubernetes)
+	// Register the key for environment-only selection without choosing a mode.
+	v.SetDefault("authorization.mode", "")
 
 	// Auth
 	v.SetDefault("auth.mode", AuthModePassthrough)

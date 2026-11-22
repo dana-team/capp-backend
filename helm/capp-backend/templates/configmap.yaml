@@ -1,3 +1,6 @@
+{{- if ne ((.Values.config.authorization | default dict).mode | default "") "backend-policy" }}
+{{- fail "config.authorization.mode must be explicitly set to backend-policy" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

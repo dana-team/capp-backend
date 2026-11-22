@@ -42,8 +42,11 @@ func TestLoad_CfuncDefaults(t *testing.T) {
 	assert.Empty(t, cfg.Resources.Cfunc.Sizes)
 }
 
-func TestLoad_CfuncFromFile(t *testing.T) {
+func TestLoadCfuncFromFile(t *testing.T) {
 	cfg := loadTempConfig(t, `
+authorization:
+  mode: backend-policy
+  restrictedBindingNamePrefixes: []
 clusters:
   - name: dev
     credential:
@@ -73,6 +76,8 @@ resources:
         keepArchive: true
 `)
 	env := cfg.Resources.Cfunc
+	valid := passthroughConfig(t)
+	cfg.Clusters = valid.Clusters
 	require.NoError(t, Validate(cfg))
 
 	assert.Equal(t, "regcred", env.ImagePullSecret)
@@ -292,7 +297,7 @@ func TestValidate_Cfunc(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := passthroughConfig()
+			cfg := passthroughConfig(t)
 			cfg.Resources.Cfunc = validCfuncConfig()
 			if tt.mutate != nil {
 				tt.mutate(&cfg.Resources.Cfunc)

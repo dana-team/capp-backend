@@ -34,6 +34,7 @@ func TestNewWarnsOutdatedKnownClients(t *testing.T) {
 	cfg.Metrics.Path = "/metrics"
 	s, err := New(cfg, "v0.6.2", &testutil.MockAuthManager{}, &testutil.MockClusterManager{}, &resources.Registry{}, zap.NewNop())
 	require.NoError(t, err)
+	t.Cleanup(func() { stopPolicyServer(t, s) })
 
 	serve := func(ip, userAgent, path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -85,7 +86,7 @@ func TestNewLogsOutdatedClientUser(t *testing.T) {
 			cred:     auth.ClusterCredential{ImpersonateUser: "Alice", ImpersonateGroups: []string{"Developers"}},
 			wantUser: "Alice",
 		},
-		{mode: config.AuthModePassthrough, cred: auth.ClusterCredential{BearerToken: token}},
+		{mode: config.AuthModePassthrough, cred: auth.ClusterCredential{ImpersonateUser: "alice"}, wantUser: "alice"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			core, logs := observer.New(zap.WarnLevel)
@@ -97,14 +98,15 @@ func TestNewLogsOutdatedClientUser(t *testing.T) {
 			cfg := &config.Config{Auth: config.AuthConfig{Mode: tc.mode}}
 			s, err := New(cfg, "v0.6.2", authMgr, &testutil.MockClusterManager{}, &resources.Registry{}, zap.New(core))
 			require.NoError(t, err)
+			t.Cleanup(func() { stopPolicyServer(t, s) })
 
 			for _, client := range clientversion.Known {
-				req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/test", nil)
 				req.Header.Set("User-Agent", client.UserAgent("v0.5.2"))
 				req.Header.Set("Authorization", "Bearer "+token)
 				w := httptest.NewRecorder()
 				s.httpServer.Handler.ServeHTTP(w, req)
-				require.Equal(t, http.StatusOK, w.Code, client.Name)
+				require.Equal(t, http.StatusNotFound, w.Code, client.Name)
 
 				var warnings []map[string]any
 				for _, entry := range logs.TakeAll() {

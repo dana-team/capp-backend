@@ -1,5 +1,7 @@
 # Used by CI to render the chart with cfunc enabled.
 config:
+  authorization:
+    mode: backend-policy
   clusters:
     - name: test
       cfuncRouterURL: https://fn.example.internal

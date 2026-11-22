@@ -33,23 +33,21 @@ type GitOpsSyncer interface {
 type Handler struct {
 	gitopsEnabled bool
 	gitops        GitOpsSyncer
-	clusterMgr    cluster.ClusterManager
 	sizes         config.CappSizes
 	observability config.ObservabilityConfig
 	prometheus    promv1.API
 }
 
 // New returns a ready-to-use Capp Handler. When gitops is disabled, pass nil
-// for the syncer — the sync endpoint will return 501. Pass nil for clusterMgr
-// when migration is not needed (e.g. in tests that don't exercise migrate).
+// for the syncer — the sync endpoint will return 501.
 // When observability is disabled, the metrics endpoints return 501.
 //
 // It returns an error only when observability is enabled and the Prometheus
 // client cannot be built; config.Validate already parses QueryURL, so this
 // is a startup-time configuration failure, not a condition the metrics
 // endpoints should have to handle at request time.
-func New(gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes, observability config.ObservabilityConfig) (*Handler, error) {
-	h := &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, clusterMgr: clusterMgr, sizes: sizes, observability: observability}
+func New(gitopsEnabled bool, gitops GitOpsSyncer, sizes config.CappSizes, observability config.ObservabilityConfig) (*Handler, error) {
+	h := &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, sizes: sizes, observability: observability}
 	prometheus, err := newPrometheusAPI(observability)
 	if err != nil {
 		return nil, fmt.Errorf("building prometheus client: %w", err)
@@ -382,13 +380,6 @@ func SyncCappValues(ctx context.Context, gitops GitOpsSyncer, meta cluster.Clust
 
 // migrate handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate
 func (h *Handler) migrate(c *gin.Context) {
-	var sourceClient client.Client
-	if !policy.Enabled(c) {
-		sourceClient = namespaced.ExtractClient(c)
-		if sourceClient == nil {
-			return
-		}
-	}
 	namespace := c.Param("namespace")
 	name := c.Param("name")
 
@@ -409,18 +400,9 @@ func (h *Handler) migrate(c *gin.Context) {
 		return
 	}
 
-	var targetClient client.Client
-	if policy.Enabled(c) {
-		var ok bool
-		sourceClient, targetClient, ok = policy.PrepareMigration(c, req.TargetCluster, req.TargetNamespace)
-		if !ok {
-			return
-		}
-	} else {
-		targetClient = h.kubernetesMigrationTarget(c, req)
-		if targetClient == nil {
-			return
-		}
+	sourceClient, targetClient, ok := policy.PrepareMigration(c, req.TargetCluster, req.TargetNamespace)
+	if !ok {
+		return
 	}
 	ctx := c.Request.Context()
 

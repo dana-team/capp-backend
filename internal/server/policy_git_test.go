@@ -65,7 +65,7 @@ func testBackendPolicyGitOperations(t *testing.T, provider string) {
 				if scenario == "kubernetes failure" {
 					writeErr = errors.New("private-kubernetes-failure")
 				}
-				execution := fake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(policyExecutionMapper()).WithObjects(capp, rev).WithInterceptorFuncs(interceptor.Funcs{
+				execution := fake.NewClientBuilder().WithScheme(testutil.TestScheme(t)).WithRESTMapper(testutil.ResourceMapper()).WithObjects(capp, rev).WithInterceptorFuncs(interceptor.Funcs{
 					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 						reads++
 						return c.Get(ctx, key, obj, opts...)
@@ -109,7 +109,7 @@ func testBackendPolicyGitOperations(t *testing.T, provider string) {
 				r := policyRouter(t, identity.auth, mgr, policy.Target{Store: store, ExecutionClient: execution}, zap.NewNop())
 				group := r.Group("/api/v1/clusters/:cluster")
 				enabled := scenario != "git disabled"
-				newCappsHandler(t, enabled, git, mgr, config.ObservabilityConfig{}).RegisterRoutes(group)
+				newCappsHandler(t, enabled, git, config.ObservabilityConfig{}).RegisterRoutes(group)
 				revisions.New(enabled, git, config.CappSizes{}).RegisterRoutes(group)
 				w := policyRequest(r, op.method, "/api/v1/clusters/c1/namespaces/team-a/capps/app"+op.suffix, op.body)
 				status, wantWrites, wantGit := op.status, 1, 1

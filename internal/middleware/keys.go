@@ -8,8 +8,7 @@
 //  4. CORS       — sets Access-Control-* headers; short-circuits OPTIONS requests
 //  5. ClientVersion — warns known clients (cappctl) at least one minor release behind the backend
 //  6. RateLimit  — token-bucket rate limiter per client IP
-//  7. Auth       — validates the Authorization header, attaches ClusterCredential
-//  8. Cluster    — resolves :cluster path param, builds scoped K8s client
+//  7. Policy     — verifies identity and authorizes backend resource execution
 //
 // Context keys are defined in keys.go so every middleware and handler can
 // reference them without importing the specific middleware package.
@@ -20,29 +19,20 @@ type contextKey string
 
 const (
 	// CredentialKey is the gin.Context key for the auth.ClusterCredential
-	// attached by the auth middleware. Handlers must not access credentials
+	// attached during authentication. Handlers must not access credentials
 	// directly — they should use the K8s client placed at K8sClientKey.
 	CredentialKey contextKey = "credential"
 
 	// K8sClientKey is the gin.Context key for the controller-runtime
-	// client.Client attached by the cluster middleware. This is the scoped
+	// client.Client attached by policy middleware. This is the scoped
 	// client that every resource handler uses for cluster API calls.
 	K8sClientKey contextKey = "k8sClient"
 
 	// ClusterMetaKey is the gin.Context key for the cluster.ClusterMeta value
-	// attached by the cluster middleware. Handlers can use it to include the
+	// attached by policy middleware. Handlers can use it to include the
 	// cluster name in responses.
 	ClusterMetaKey contextKey = "clusterMeta"
 
-	// AdminK8sClientKey is the gin.Context key for the admin-scoped controller-runtime
-	// client.Client attached by the cluster middleware. It uses the cluster's own
-	// service account credentials (no user token override), giving it the cluster-level
-	// permissions the backend SA was granted. Use this for administrative listing
-	// operations (e.g. namespace discovery) where user-scoped RBAC is too restrictive.
-	AdminK8sClientKey contextKey = "adminK8sClient"
-
-	// PodLogsKey is the gin.Context key for the cluster.PodLogs function that
-	// reads pod logs with the caller's credential. It is set in Kubernetes
-	// authorization mode only.
+	// PodLogsKey is the gin.Context key for a cluster.PodLogs reader.
 	PodLogsKey contextKey = "podLogs"
 )

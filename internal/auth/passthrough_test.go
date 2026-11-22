@@ -24,63 +24,49 @@ import (
 
 // ── Passthrough tests ─────────────────────────────────────────────────────────
 
-func TestPassthrough_Authenticate_MissingHeader(t *testing.T) {
-	m := newPassthroughManager()
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	_, err := m.Authenticate(context.Background(), "prod", r)
-	assert.ErrorIs(t, err, ErrUnauthenticated)
+func TestPassthroughManagerAuthenticateMissingReviewer(t *testing.T) {
+	for _, reviewers := range []map[string]TokenReviewer{nil, {}, {"target": {}}} {
+		m := &passthroughManager{reviewers: reviewers}
+		credential, err := m.Authenticate(t.Context(), "target", reviewRequest())
+		if !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("Authenticate() error = %v, want ErrUnauthenticated", err)
+		}
+		if diff := cmp.Diff(ClusterCredential{}, credential); diff != "" {
+			t.Errorf("failed authentication returned credentials (-want +got):\n%s", diff)
+		}
+	}
 }
 
-func TestPassthrough_Authenticate_MalformedHeader(t *testing.T) {
-	m := newPassthroughManager()
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
-	_, err := m.Authenticate(context.Background(), "prod", r)
-	assert.ErrorIs(t, err, ErrUnauthenticated)
-}
-
-func TestPassthrough_Authenticate_EmptyToken(t *testing.T) {
-	m := newPassthroughManager()
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "Bearer ")
-	_, err := m.Authenticate(context.Background(), "prod", r)
-	assert.ErrorIs(t, err, ErrUnauthenticated)
-}
-
-func TestPassthrough_Authenticate_Valid(t *testing.T) {
-	m := newPassthroughManager()
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "Bearer my-k8s-token")
-	cred, err := m.Authenticate(context.Background(), "prod", r)
-	require.NoError(t, err)
-	assert.Equal(t, "my-k8s-token", cred.BearerToken)
-}
-
-func TestPassthrough_Login_NotSupported(t *testing.T) {
-	m := newPassthroughManager()
+func TestPassthroughManagerLogin(t *testing.T) {
+	m := &passthroughManager{}
 	_, err := m.Login(context.Background(), "prod", "tok")
 	assert.ErrorIs(t, err, ErrNotSupported)
 }
 
-func TestPassthrough_Refresh_NotSupported(t *testing.T) {
-	m := newPassthroughManager()
+func TestPassthroughManagerRefresh(t *testing.T) {
+	m := &passthroughManager{}
 	_, err := m.Refresh(context.Background(), "tok")
 	assert.ErrorIs(t, err, ErrNotSupported)
 }
 
 // ── Factory tests ─────────────────────────────────────────────────────────────
 
-func TestNew_Passthrough(t *testing.T) {
-	cfg := &config.Config{Auth: config.AuthConfig{Mode: "passthrough"}}
-	m, err := New(cfg, Dependencies{})
-	require.NoError(t, err)
-	assert.IsType(t, &passthroughManager{}, m)
-}
-
-func TestNew_UnknownMode(t *testing.T) {
-	cfg := &config.Config{Auth: config.AuthConfig{Mode: "magic"}}
-	_, err := New(cfg, Dependencies{})
-	require.Error(t, err)
+func TestNew(t *testing.T) {
+	t.Run("passthrough requires reviewers regardless of authorization selection", func(t *testing.T) {
+		for _, mode := range []string{"", "kubernetes", config.AuthorizationModeBackendPolicy} {
+			cfg := &config.Config{
+				Auth:          config.AuthConfig{Mode: config.AuthModePassthrough},
+				Authorization: config.AuthorizationConfig{Mode: mode},
+				Clusters:      []config.ClusterConfig{{Name: "target"}},
+			}
+			_, err := New(cfg, Dependencies{})
+			require.ErrorContains(t, err, `missing reviewer for cluster "target"`)
+		}
+	})
+	t.Run("unknown provider", func(t *testing.T) {
+		_, err := New(&config.Config{Auth: config.AuthConfig{Mode: "magic"}}, Dependencies{})
+		require.Error(t, err)
+	})
 }
 
 func TestPassthroughManagerAuthenticate(t *testing.T) {
@@ -184,9 +170,8 @@ func passthroughReviewer(t *testing.T, server *httptest.Server, trust bool) Auth
 		t.Fatal(err)
 	}
 	m, err := New(&config.Config{
-		Auth:          config.AuthConfig{Mode: config.AuthModePassthrough},
-		Authorization: config.AuthorizationConfig{Mode: config.AuthorizationModeBackendPolicy},
-		Clusters:      []config.ClusterConfig{{Name: "target"}},
+		Auth:     config.AuthConfig{Mode: config.AuthModePassthrough},
+		Clusters: []config.ClusterConfig{{Name: "target"}},
 	}, Dependencies{TargetReviewers: map[string]TokenReviewer{"target": {Client: client, Authority: server.URL + "?secret=hidden#hidden"}}})
 	if err != nil {
 		t.Fatal(err)

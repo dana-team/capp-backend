@@ -24,8 +24,7 @@ const userAgent = "capp-backend/1.0"
 //   - If CACert is empty, TLS server verification is disabled
 //     (TLSClientConfig.Insecure = true). This is acceptable for local dev
 //     clusters but should NOT be used in production.
-//   - Token is placed in the BearerToken field. In passthrough mode this
-//     value is overridden per-request by ClusterManager.ClientFor.
+//   - Token is the backend credential used for execution and observation.
 func BuildRestConfig(cfg config.ClusterConfig) (*rest.Config, error) {
 	var restCfg *rest.Config
 

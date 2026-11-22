@@ -79,7 +79,7 @@ func (m *mockGitOpsSyncer) BuildRelPath(gitOpsPath, namespace, cappName string) 
 func syncEngine(t *testing.T, mock *mockGitOpsSyncer, objects ...client.Object) *testutil.EngineHelper {
 	t.Helper()
 	k8sClient := testutil.FakeClient(t, objects...)
-	return testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, cluster.ClusterMeta{Name: "test"}, New(true, mock, config.CappSizes{}))
+	return testutil.NewEngineHelperWithMetadata(t, k8sClient, cluster.ClusterMeta{Name: "test"}, New(true, mock, config.CappSizes{}))
 }
 
 func TestList_SortedNewestFirstAndFilteredByCapp(t *testing.T) {

@@ -13,18 +13,12 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/cfuncsource"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	fissionv1 "github.com/fission/fission/pkg/apis/core/v1"
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -99,6 +93,7 @@ func newFixture(t *testing.T, funcs interceptor.Funcs, objects ...client.Object)
 	t.Helper()
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(testutil.TestScheme(t)).
+		WithRESTMapper(testutil.ResourceMapper()).
 		WithObjects(objects...).
 		WithStatusSubresource(&fissionv1.Package{}).
 		WithInterceptorFuncs(funcs).
@@ -111,7 +106,7 @@ func newFixture(t *testing.T, funcs interceptor.Funcs, objects ...client.Object)
 		testClient: newTestClient(),
 	}
 	return &fixture{
-		EngineHelper: testutil.NewEngineHelper(t, k8sClient, handler),
+		EngineHelper: testutil.NewEngineHelper(t, k8sClient, handler, "ns1", "ns2"),
 		client:       k8sClient,
 		fetcher:      fetcher,
 		handler:      handler,
@@ -1087,7 +1082,7 @@ func TestGet_TriggerNamesAreUnique(t *testing.T) {
 		Spec:       fissionv1.TimeTriggerSpec{Cron: "@daily", FunctionReference: ref},
 	}
 	f := newFixture(t, interceptor.Funcs{}, builderPool())
-	f.handler.routerURLs[""] = "https://fn.example"
+	f.handler.routerURLs["test"] = "https://fn.example"
 	req := basicRequest()
 	req.Triggers = req.Triggers[:1]
 	require.Equal(t, http.StatusCreated, f.PostJSON(nsPath, req).Code)
@@ -1148,7 +1143,7 @@ func TestCreate_AnswersAfterTheServerWriteTimeout(t *testing.T) {
 	server.Start()
 	t.Cleanup(server.Close)
 
-	resp, err := http.Post(server.URL+nsPath, "application/json", testutil.JSONBody(t, basicRequest()))
+	resp, err := http.Post(server.URL+"/api/v1/clusters/test"+nsPath, "application/json", testutil.JSONBody(t, basicRequest()))
 
 	require.NoError(t, err, "the response must arrive after the write timeout")
 	defer func() { _ = resp.Body.Close() }()
@@ -1157,7 +1152,7 @@ func TestCreate_AnswersAfterTheServerWriteTimeout(t *testing.T) {
 
 func TestGetAndList(t *testing.T) {
 	f := newFixture(t, interceptor.Funcs{}, builderPool())
-	f.handler.routerURLs[""] = "https://fn.example/"
+	f.handler.routerURLs["test"] = "https://fn.example/"
 	require.Equal(t, http.StatusCreated, f.PostJSON(nsPath, basicRequest()).Code)
 	pkg := get(t, f.client, "shop", &fissionv1.Package{})
 	pkg.Status.BuildStatus = fissionv1.BuildStatusFailed
@@ -1255,7 +1250,7 @@ func TestTestRoute(t *testing.T) {
 
 	setup := func(t *testing.T, triggers ...FunctionTrigger) *fixture {
 		f := newFixture(t, interceptor.Funcs{}, builderPool())
-		f.handler.routerURLs[""] = router.URL
+		f.handler.routerURLs["test"] = router.URL
 		req := basicRequest()
 		req.Triggers = triggers
 		require.Equal(t, http.StatusCreated, f.PostJSON(nsPath, req).Code)
@@ -1323,113 +1318,22 @@ func TestTestRoute(t *testing.T) {
 
 	t.Run("no router URL is 501", func(t *testing.T) {
 		f := setup(t, api)
-		delete(f.handler.routerURLs, "")
+		delete(f.handler.routerURLs, "test")
 
 		assert.Equal(t, http.StatusNotImplemented, f.Post(nsPath+"/shop/test", nil).Code)
 	})
 
 	t.Run("a router that does not answer is 502", func(t *testing.T) {
 		f := setup(t, api)
-		f.handler.routerURLs[""] = "http://127.0.0.1:1"
+		f.handler.routerURLs["test"] = "http://127.0.0.1:1"
 
 		assert.Equal(t, http.StatusBadGateway, f.Post(nsPath+"/shop/test", nil).Code)
 	})
 }
 
-func TestLogsRoute(t *testing.T) {
-	pod := func(name, function string) *corev1.Pod {
-		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: "ns1",
-			Labels: map[string]string{fissionv1.FUNCTION_NAME: function, fissionv1.FUNCTION_NAMESPACE: "ns1"},
-		}}
-	}
-	type call struct {
-		pod, container string
-		lines          int64
-	}
-	setup := func(t *testing.T, withReader bool) (*testutil.EngineHelper, *[]call) {
-		f := newFixture(t, interceptor.Funcs{}, builderPool(), pod("pod-a", "shop"), pod("pod-gone", "shop"), pod("pod-x", "other"))
-		require.Equal(t, http.StatusCreated, f.PostJSON(nsPath, basicRequest()).Code)
-
-		calls := &[]call{}
-		var reader cluster.PodLogs = func(_ context.Context, _, pod, container string, tailLines, _ int64) (string, error) {
-			*calls = append(*calls, call{pod: pod, container: container, lines: tailLines})
-			if pod == "pod-gone" {
-				return "", k8serrors.NewNotFound(schema.GroupResource{Resource: "pods"}, pod)
-			}
-			return "line one\nline two\n", nil
-		}
-		_, engine := gin.CreateTestContext(httptest.NewRecorder())
-		engine.Use(func(c *gin.Context) {
-			c.Set(string(middleware.K8sClientKey), f.client)
-			if withReader {
-				c.Set(string(middleware.PodLogsKey), reader)
-			}
-			c.Next()
-		})
-		f.handler.RegisterRoutes(engine.Group(""))
-		return testutil.NewEngineHelperFrom(t, engine), calls
-	}
-
-	t.Run("returns the log of the function's pods only, and no lines for a pod that is gone", func(t *testing.T) {
-		engine, calls := setup(t, true)
-
-		w := engine.Get(nsPath + "/shop/logs?lines=50")
-
-		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-		resp := decode[FunctionLogsResponse](t, w)
-		assert.ElementsMatch(t, []FunctionPodLog{
-			{Pod: "pod-a", Lines: []string{"line one", "line two"}},
-			{Pod: "pod-gone", Lines: []string{}},
-		}, resp.Pods, "a pod whose log cannot be read stays in the answer with no lines")
-		assert.ElementsMatch(t, []call{{pod: "pod-a", container: "py", lines: 50}, {pod: "pod-gone", container: "py", lines: 50}}, *calls)
-	})
-
-	t.Run("reads only the Function, not its package and triggers", func(t *testing.T) {
-		f := newFixture(t, interceptor.Funcs{
-			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-				if _, isPods := list.(*corev1.PodList); !isPods {
-					return fmt.Errorf("the logs route must not list %T", list)
-				}
-				return c.List(ctx, list, opts...)
-			},
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if _, isPackage := obj.(*fissionv1.Package); isPackage {
-					return errors.New("the logs route must not read the package")
-				}
-				return c.Get(ctx, key, obj, opts...)
-			},
-		}, builderPool(), &fissionv1.Function{ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "ns1"}})
-		var reader cluster.PodLogs = func(context.Context, string, string, string, int64, int64) (string, error) { return "", nil }
-		_, engine := gin.CreateTestContext(httptest.NewRecorder())
-		engine.Use(func(c *gin.Context) {
-			c.Set(string(middleware.K8sClientKey), f.client)
-			c.Set(string(middleware.PodLogsKey), reader)
-			c.Next()
-		})
-		f.handler.RegisterRoutes(engine.Group(""))
-
-		w := testutil.NewEngineHelperFrom(t, engine).Get(nsPath + "/shop/logs")
-
-		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	})
-
-	t.Run("lines out of range", func(t *testing.T) {
-		engine, _ := setup(t, true)
-
-		assert.Equal(t, http.StatusBadRequest, engine.Get(nsPath+"/shop/logs?lines=0").Code)
-		assert.Equal(t, http.StatusBadRequest, engine.Get(nsPath+"/shop/logs?lines=5000").Code)
-	})
-
-	t.Run("a missing function", func(t *testing.T) {
-		engine, _ := setup(t, true)
-
-		assert.Equal(t, http.StatusNotFound, engine.Get(nsPath+"/absent/logs").Code)
-	})
-
-	t.Run("no log reader is 501", func(t *testing.T) {
-		engine, _ := setup(t, false)
-
-		assert.Equal(t, http.StatusNotImplemented, engine.Get(nsPath+"/shop/logs").Code)
-	})
+func TestHandlerLogs(t *testing.T) {
+	f := newFixture(t, interceptor.Funcs{})
+	w := f.Get(nsPath + "/shop/logs")
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), string(apierrors.ReasonPolicyDenied))
 }
