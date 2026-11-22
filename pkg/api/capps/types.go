@@ -134,6 +134,11 @@ type CappRequest struct {
 	// ContainerName is the optional container name.
 	ContainerName string `json:"containerName,omitempty"`
 
+	// ContainerPort is the port the container listens on; Knative routes
+	// traffic to it and sets the PORT env var. Optional, defaults to 8080.
+	// Omitting it on update keeps the current port.
+	ContainerPort *int32 `json:"containerPort,omitempty"`
+
 	// CappSize is a high-level sizing abstraction that maps to specific resource requests/limits.
 	// Mutually exclusive with CustomResources.
 	Size CappSize `json:"size,omitempty"`
@@ -289,6 +294,7 @@ type BareCappResponse struct {
 	State         string        `json:"state,omitempty"`
 	Image         string        `json:"image,omitempty"`
 	ContainerName string        `json:"containerName,omitempty"`
+	ContainerPort *int32        `json:"containerPort,omitempty"`
 	Size          CappSize      `json:"size,omitempty"`
 	Resources     *ResourceSpec `json:"resources,omitempty"`
 	Env           []EnvVar      `json:"env,omitempty"`

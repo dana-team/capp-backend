@@ -1499,6 +1499,18 @@ components:
         containerName:
           type: string
           example: my-app
+        containerPort:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 65535
+          description: |
+            Port the container listens on. Knative routes traffic to it and sets
+            the PORT environment variable. Defaults to 8080 when never set.
+            Omitting it on update keeps the current port; changing it keeps the
+            port's name (e.g. h2c). Ports Knative reserves (8008, 8012, 8013,
+            8022, 9090, 9091) return 400.
+          example: 3000
         size:
           allOf:
             - $ref: '#/components/schemas/CappSize'
@@ -1747,6 +1759,11 @@ components:
         containerName:
           type: string
           example: my-app
+        containerPort:
+          type: integer
+          format: int32
+          description: Port the container listens on. Omitted when unset (Knative default 8080).
+          example: 3000
         size:
           $ref: '#/components/schemas/CappSize'
         resources:
