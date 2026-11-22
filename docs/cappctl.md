@@ -448,6 +448,7 @@ cappctl create capps [flags]
 | `--min-replicas`        | Minimum replica count                                   |
 | `--scale-delay-seconds` | Delay before scaling down to zero                       |
 | `--container-name`      | Container name                                          |
+| `--container-port`      | Port the container listens on (Knative default `8080` if never set). Omitting it on update keeps the current port |
 | `--env`                 | Environment variable `KEY=VALUE` (repeatable)           |
 | `--reload-on-bound-change` | Restart the Capp when a Secret or ConfigMap it uses (env, envFrom, volumes, imagePullSecrets) is updated through capp-backend. On update, `--reload-on-bound-change=false` turns it off; omitting the flag keeps the current setting |
 

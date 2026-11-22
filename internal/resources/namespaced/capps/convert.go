@@ -15,9 +15,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	kapis "knative.dev/pkg/apis"
+	"knative.dev/pkg/observability/runtime"
 	knativev1 "knative.dev/serving/pkg/apis/serving/v1"
+	"knative.dev/serving/pkg/networking"
 )
 
 // ToK8s converts a CappRequest into a rcs.dana.io/v1alpha1 Capp resource
@@ -79,6 +82,21 @@ func ToK8s(req CappRequest, existing *cappv1alpha1.Capp, namespace string, sizes
 	}
 	container.Name = req.ContainerName
 	container.Image = req.Image
+
+	// An omitted port is kept: clients that predate the field would otherwise
+	// reset it to Knative's default 8080 on every update. Changing the number
+	// keeps the port's name (e.g. h2c) and protocol.
+	if req.ContainerPort != nil {
+		if err := validateContainerPort(*req.ContainerPort); err != nil {
+			return nil, err
+		}
+		port := corev1.ContainerPort{}
+		if len(container.Ports) > 0 {
+			port = container.Ports[0]
+		}
+		port.ContainerPort = *req.ContainerPort
+		container.Ports = []corev1.ContainerPort{port}
+	}
 
 	env, err := containerspec.EnvVarsToK8s(req.Env)
 	if err != nil {
@@ -446,6 +464,10 @@ func BareFromK8s(meta metav1.ObjectMeta, spec cappv1alpha1.CappSpec, sizes confi
 		c := containers[0]
 		resp.Image = c.Image
 		resp.ContainerName = c.Name
+		if len(c.Ports) > 0 {
+			port := c.Ports[0].ContainerPort
+			resp.ContainerPort = &port
+		}
 		if s := sizeFromResources(c.Resources, sizes); s != "" {
 			resp.Size = CappSize(s)
 		}
@@ -641,4 +663,28 @@ func imagePullSecretsToK8s(names []string) ([]corev1.LocalObjectReference, error
 		refs = append(refs, corev1.LocalObjectReference{Name: name})
 	}
 	return refs, nil
+}
+
+// reservedContainerPorts are the queue-proxy and profiling ports Knative
+// rejects on the user container.
+var reservedContainerPorts = sets.New[int32](
+	networking.BackendHTTPPort,
+	networking.BackendHTTP2Port,
+	networking.QueueAdminPort,
+	networking.AutoscalingQueueMetricsPort,
+	networking.UserQueueMetricsPort,
+	runtime.ProfilingDefaultPort,
+)
+
+// validateContainerPort applies Knative's port rules here, because the
+// operator webhook does not check them and a port Knative rejects would
+// otherwise surface only later, in the Capp status.
+func validateContainerPort(port int32) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("containerPort: %d is out of range, must be between 1 and 65535", port)
+	}
+	if reservedContainerPorts.Has(port) {
+		return fmt.Errorf("containerPort: %d is reserved by Knative", port)
+	}
+	return nil
 }

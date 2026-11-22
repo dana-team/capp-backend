@@ -18,12 +18,14 @@ func fullCappRequest() CappRequest {
 	timeout := int64(30)
 	min, max, delay := int32(1), int32(5), int32(60)
 	consumers := int32(2)
+	port := int32(3000)
 	canary, full := int64(10), int64(100)
 	return CappRequest{
 		Name:          "roundtrip-app",
 		State:         "enabled",
 		Image:         "nginx:1.25",
 		ContainerName: "web",
+		ContainerPort: &port,
 		CustomResources: &ResourceSpec{
 			Requests: &ResourceQuantities{CPU: "100m", Memory: "128Mi"},
 			Limits:   &ResourceQuantities{CPU: "200m", Memory: "256Mi"},
@@ -101,6 +103,8 @@ func TestConvertCoverage(t *testing.T) {
 		c := capp.Spec.ConfigurationSpec.Template.Spec.Containers[0]
 		assert.Equal(t, req.Image, c.Image, "Image not written by ToK8s")
 		assert.Equal(t, req.ContainerName, c.Name, "ContainerName not written by ToK8s")
+		require.Len(t, c.Ports, 1, "ContainerPort not written by ToK8s")
+		assert.Equal(t, *req.ContainerPort, c.Ports[0].ContainerPort, "ContainerPort not written by ToK8s")
 		assert.Equal(t, req.ScaleSpec.Metric, capp.Spec.ScaleSpec.Metric, "ScaleSpec.Metric not written by ToK8s")
 		assert.Equal(t, req.ScaleSpec.MinReplicas, capp.Spec.ScaleSpec.MinReplicas, "ScaleSpec.MinReplicas not written by ToK8s")
 		assert.Equal(t, req.ScaleSpec.MaxReplicas, capp.Spec.ScaleSpec.MaxReplicas, "ScaleSpec.MaxReplicas not written by ToK8s")
@@ -136,6 +140,7 @@ func TestConvertCoverage(t *testing.T) {
 		assert.Equal(t, req.State, resp.State, "State not read by FromK8s")
 		assert.Equal(t, req.Image, resp.Image, "Image not read by FromK8s")
 		assert.Equal(t, req.ContainerName, resp.ContainerName, "ContainerName not read by FromK8s")
+		assert.Equal(t, req.ContainerPort, resp.ContainerPort, "ContainerPort not read by FromK8s")
 		assert.Equal(t, req.ScaleSpec, resp.ScaleSpec, "ScaleSpec not read by FromK8s")
 		assert.Equal(t, req.RouteSpec.Hostname, resp.RouteSpec.Hostname, "RouteSpec.Hostname not read by FromK8s")
 		assert.Equal(t, req.RouteSpec.TLSEnabled, resp.RouteSpec.TLSEnabled, "RouteSpec.TLSEnabled not read by FromK8s")

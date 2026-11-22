@@ -139,6 +139,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 		maxReplicas       int
 		scaleDelaySeconds int
 		containerName     string
+		containerPort     int32
 		envPairs          []string
 		cpuRequest        string
 		cpuLimit          string
@@ -215,6 +216,9 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 
 				ReloadOnBoundResourceChange: reloadOnChange,
 			}
+			if cmd.Flags().Changed(containerPortFlag) {
+				req.ContainerPort = &containerPort
+			}
 			if hasCustom {
 				req.CustomResources = buildCustomResources(cpuRequest, cpuLimit, memoryRequest, memoryLimit)
 			}
@@ -248,6 +252,7 @@ func (h *handler) RegisterCreateCommand(parent *cobra.Command) {
 	cmd.Flags().IntVar(&maxReplicas, "max-replicas", 0, "maximum replica count (unset if not passed)")
 	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero (unset if not passed)")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
+	addContainerPortFlag(cmd, &containerPort)
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (repeatable)")
 	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size available values: %s, %s, %s (mutually exclusive with custom resource flags)", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge))
 	cmd.Flags().StringVar(&cpuRequest, "cpu-request", "", "custom CPU request (e.g. 250m)")
@@ -272,6 +277,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		maxReplicas       int
 		scaleDelaySeconds int
 		containerName     string
+		containerPort     int32
 		envPairs          []string
 		cpuRequest        string
 		cpuLimit          string
@@ -321,6 +327,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				ScaleSpec:        current.ScaleSpec,
 				State:            current.State,
 				ContainerName:    current.ContainerName,
+				ContainerPort:    current.ContainerPort,
 				Size:             current.Size,
 				Env:              current.Env,
 				VolumeMounts:     current.VolumeMounts,
@@ -355,6 +362,9 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 			}
 			if cmd.Flags().Changed("container-name") {
 				req.ContainerName = containerName
+			}
+			if cmd.Flags().Changed(containerPortFlag) {
+				req.ContainerPort = &containerPort
 			}
 			if cmd.Flags().Changed(reloadOnChangeFlag) {
 				req.ReloadOnBoundResourceChange = reloadOnChange
@@ -400,6 +410,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().IntVar(&maxReplicas, "max-replicas", 0, "maximum replica count")
 	cmd.Flags().IntVar(&scaleDelaySeconds, "scale-delay-seconds", 0, "delay before scaling down to zero")
 	cmd.Flags().StringVar(&containerName, "container-name", "", "container name")
+	addContainerPortFlag(cmd, &containerPort)
 	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "environment variable KEY=VALUE (replaces all env vars)")
 	cmd.Flags().StringVar(&size, "size", "", fmt.Sprintf("Capp size, available values: %s, %s, %s (mutually exclusive with custom resource flags)", apitypes.CappSizeSmall, apitypes.CappSizeMedium, apitypes.CappSizeLarge))
 	cmd.Flags().StringVar(&cpuRequest, "cpu-request", "", "custom CPU request (e.g. 250m)")
@@ -667,6 +678,14 @@ func (h *handler) render(w io.Writer, items []apitypes.CappResponse, raw any) er
 		output.PrintTable(w, tableCols, items, false)
 	}
 	return nil
+}
+
+// containerPortFlag is the create/update flag for containerPort.
+const containerPortFlag = "container-port"
+
+func addContainerPortFlag(cmd *cobra.Command, v *int32) {
+	cmd.Flags().Int32Var(v, containerPortFlag, 0,
+		"port the container listens on (Knative default 8080 if never set)")
 }
 
 // reloadOnChangeFlag is the create/update flag for reloadOnBoundResourceChange.

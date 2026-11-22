@@ -271,6 +271,51 @@ func TestCreate_RouteSpec_AllFields(t *testing.T) {
 	assert.Equal(t, int64(30), *received.RouteSpec.RouteTimeoutSeconds)
 }
 
+func TestCreate_ContainerPort(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want *int32
+	}{
+		{"set", []string{"--container-port", "3000"}, int32Ptr(3000)},
+		{"omitted", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var received apitypes.CappRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(apitypes.CappResponse{Name: received.Name}) //nolint:errcheck
+			}))
+			defer srv.Close()
+
+			cmd, _ := newCreateCmd(t, srv.URL, "c1", "ns1")
+			cmd.SetArgs(append([]string{"capps", "--name", "my-app", "--image", "img:latest"}, tc.args...))
+			require.NoError(t, cmd.Execute())
+			assert.Equal(t, tc.want, received.ContainerPort)
+		})
+	}
+}
+
+func TestUpdate_ContainerPort(t *testing.T) {
+	var received apitypes.CappRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(apitypes.CappResponse{Name: "my-app", Image: "img:v1", ContainerPort: int32Ptr(3000)}) //nolint:errcheck
+			return
+		}
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		json.NewEncoder(w).Encode(apitypes.CappResponse{Name: "my-app"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	cmd, _ := newUpdateCmd(t, srv.URL, "c1", "ns1")
+	cmd.SetArgs([]string{"capps", "my-app", "--container-port", "9000"})
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, int32Ptr(9000), received.ContainerPort)
+}
+
 // newMigrateCmd builds a minimal migrate cobra tree wired to a test HTTP server.
 func newMigrateCmd(t *testing.T, serverURL, cluster, namespace, outputFmt string) (*cobra.Command, *bytes.Buffer) {
 	t.Helper()
@@ -480,9 +525,10 @@ func TestMigrateDeleteSourceConfirmAbort(t *testing.T) {
 
 func TestUpdate_PreservesAllFields(t *testing.T) {
 	existing := apitypes.CappResponse{
-		Name:      "my-app",
-		Namespace: "ns1",
-		Image:     "old:v1",
+		Name:          "my-app",
+		Namespace:     "ns1",
+		Image:         "old:v1",
+		ContainerPort: int32Ptr(3000),
 		SecretVolumes: []apitypes.SecretVolume{
 			{Name: "db-creds", SecretName: "db-secret", MountPath: "/etc/db"},
 		},
@@ -522,6 +568,7 @@ func TestUpdate_PreservesAllFields(t *testing.T) {
 	assert.Equal(t, existing.SecretVolumes, received.SecretVolumes)
 	assert.Equal(t, existing.ConfigMapVolumes, received.ConfigMapVolumes)
 	assert.Equal(t, existing.ImagePullSecrets, received.ImagePullSecrets)
+	assert.Equal(t, existing.ContainerPort, received.ContainerPort)
 	assert.Equal(t, existing.EventSourcesSpec, received.EventSourcesSpec)
 }
 

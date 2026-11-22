@@ -1,6 +1,7 @@
 package capps
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	kapis "knative.dev/pkg/apis"
 	duckv1 "knative.dev/pkg/apis/duck/v1"
 	knativev1 "knative.dev/serving/pkg/apis/serving/v1"
@@ -923,6 +925,63 @@ func TestFromK8s_ImagePullSecrets(t *testing.T) {
 	capp.Spec.ConfigurationSpec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "ghcr-pull-secret"}}
 	resp := FromK8s(capp, config.CappSizes{})
 	assert.Equal(t, []string{"ghcr-pull-secret"}, resp.ImagePullSecrets)
+}
+
+func TestToK8s_ContainerPort(t *testing.T) {
+	req := minimalRequest()
+	req.ContainerPort = ptr.To[int32](3000)
+	capp, err := ToK8s(req, nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Equal(t, []corev1.ContainerPort{{ContainerPort: 3000}},
+		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Ports)
+}
+
+func TestToK8s_ContainerPort_OmittedOnCreateLeavesKnativeDefault(t *testing.T) {
+	capp, err := ToK8s(minimalRequest(), nil, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Empty(t, capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Ports)
+}
+
+func TestToK8s_ContainerPort_UpdateKeepsPortWhenNotProvided(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: 3000}}
+	capp, err := ToK8s(minimalRequest(), existing, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Equal(t, []corev1.ContainerPort{{ContainerPort: 3000}},
+		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Ports)
+}
+
+func TestToK8s_ContainerPort_UpdateKeepsPortName(t *testing.T) {
+	existing := minimalCapp()
+	existing.Spec.ConfigurationSpec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{
+		{Name: "h2c", ContainerPort: 9000, Protocol: corev1.ProtocolTCP},
+	}
+	req := minimalRequest()
+	req.ContainerPort = ptr.To[int32](50051)
+	capp, err := ToK8s(req, existing, "ns1", minimalSizes())
+	require.NoError(t, err)
+	assert.Equal(t, []corev1.ContainerPort{{Name: "h2c", ContainerPort: 50051, Protocol: corev1.ProtocolTCP}},
+		capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Ports)
+}
+
+func TestToK8s_ContainerPort_Invalid(t *testing.T) {
+	for _, port := range []int32{0, -1, 65536, 8012, 9090} {
+		t.Run(fmt.Sprint(port), func(t *testing.T) {
+			req := minimalRequest()
+			req.ContainerPort = ptr.To(port)
+			_, err := ToK8s(req, nil, "ns1", minimalSizes())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "containerPort")
+		})
+	}
+}
+
+func TestFromK8s_ContainerPort(t *testing.T) {
+	capp := minimalCapp()
+	assert.Nil(t, FromK8s(capp, config.CappSizes{}).ContainerPort, "no port means Knative's default")
+
+	capp.Spec.ConfigurationSpec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: 3000}}
+	assert.Equal(t, ptr.To[int32](3000), FromK8s(capp, config.CappSizes{}).ContainerPort)
 }
 
 func TestFromK8s_StatusOnlyCappConditions(t *testing.T) {

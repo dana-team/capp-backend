@@ -141,6 +141,8 @@ List fields are full-replace on update (`PUT`): `env`, `volumeMounts`, `secretVo
 
 `routeSpec.rolloutStrategy` is the exception to full replace: omitting it on `PUT` keeps the current strategy, because removing one mid-rollout makes the operator promote the candidate or pin traffic. Only `DELETE .../rollout/strategy` removes it. Stage ordering rules belong to the operator webhook and are not duplicated here.
 
+`containerPort` (`*int32`) is likewise kept when omitted on `PUT`, so clients that predate the field don't reset an app to Knative's default 8080. It maps to the first container's single `ports` entry; changing the number keeps that entry's name (e.g. `h2c`) and protocol. `ToK8s` rejects ports outside 1–65535 and Knative's reserved queue-proxy/profiling ports, because the operator webhook does not check them.
+
 ### Configuration
 
 Loaded from YAML file (`--config` flag) + environment variable overrides with `CAPP_` prefix and `_` separators (e.g., `CAPP_AUTH_MODE=openshift`). Priority: env vars > YAML > code defaults.
