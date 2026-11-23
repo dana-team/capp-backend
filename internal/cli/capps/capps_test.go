@@ -536,11 +536,6 @@ func TestUpdate_PreservesAllFields(t *testing.T) {
 			{Name: "app-cfg", ConfigMapName: "app-config", MountPath: "/etc/cfg"},
 		},
 		ImagePullSecrets: []string{"registry-creds"},
-		EventSourcesSpec: &apitypes.EventSourcesSpec{
-			Sources: []apitypes.SourceConfig{
-				{Name: "ping", PingSourceConfig: &apitypes.PingSourceConfig{Schedule: "*/5 * * * *"}},
-			},
-		},
 	}
 
 	var received apitypes.CappRequest
@@ -569,7 +564,6 @@ func TestUpdate_PreservesAllFields(t *testing.T) {
 	assert.Equal(t, existing.ConfigMapVolumes, received.ConfigMapVolumes)
 	assert.Equal(t, existing.ImagePullSecrets, received.ImagePullSecrets)
 	assert.Equal(t, existing.ContainerPort, received.ContainerPort)
-	assert.Equal(t, existing.EventSourcesSpec, received.EventSourcesSpec)
 }
 
 func TestUpdate_RouteSpec_TLSWithoutHostname(t *testing.T) {

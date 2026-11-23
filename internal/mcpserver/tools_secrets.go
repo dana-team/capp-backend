@@ -109,7 +109,7 @@ func (SecretToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "secret_bound",
-		Description: "List the Capps that reference a capp-managed Secret (env, envFrom, volumes, imagePullSecrets, log shipping password, Kafka source credentials). boundCapps blocks deleting it; toReload is the subset restarted when its data changes (Capps with reloadOnBoundResourceChange enabled that use it in their pods).",
+		Description: "List the Capps that reference a capp-managed Secret (env, envFrom, volumes, imagePullSecrets, log shipping password). boundCapps blocks deleting it; toReload is the subset restarted when its data changes (Capps with reloadOnBoundResourceChange enabled that use it in their pods).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in secretGetInput) (*mcp.CallToolResult, boundcapps.Response, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
