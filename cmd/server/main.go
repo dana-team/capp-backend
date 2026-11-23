@@ -143,7 +143,7 @@ func main() {
 	if err != nil {
 		logger.Fatal("failed to initialise capps handler", zap.Error(err))
 	}
-	registry.Register(cappHandler)
+	registry.Register(cappHandler.WithMaxLogStreams(cfg.Resources.Capps.MaxLogStreams))
 	registry.Register(revhandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
 	registry.Register(cmhandler.New().WithFunctionGuard(functionsEnabled))
 	registry.Register(secrethandler.New().WithFunctionGuard(functionsEnabled))

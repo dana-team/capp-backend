@@ -1987,6 +1987,39 @@ components:
             Must not be set when the source has no hostname.
           example: new-app.example.com
 
+    CappLogLine:
+      type: object
+      description: One line of a container's log (data of a `log` event).
+      required: [pod, container, line]
+      properties:
+        pod:
+          type: string
+        container:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+          description: When the kubelet recorded the line; absent when the line came without one.
+        line:
+          type: string
+          description: The line without its line ending, cut at 64 KiB.
+    CappLogPodEvent:
+      type: object
+      description: Data of a `pod-started` or `pod-ended` event.
+      required: [pod]
+      properties:
+        pod:
+          type: string
+        reason:
+          type: string
+          description: Why the pod is no longer followed (`pod-ended` only), e.g. `container stopped`, `pod deleted`.
+    CappLogNotice:
+      type: object
+      description: Data of a `notice`, `error` or `end` event.
+      required: [message]
+      properties:
+        message:
+          type: string
     MigrateResponse:
       type: object
       properties:
@@ -4275,6 +4308,134 @@ paths:
           $ref: '#/components/responses/InternalError'
         "503":
           description: Cluster is currently unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/logs:
+    get:
+      tags: [capps]
+      summary: Stream the logs of a Capp's pods
+      description: |
+        Backend-policy mode denies this operation with 403 POLICY_DENIED,
+        because pods and logs are read with the caller's own cluster
+        credential. The behavior below applies to Kubernetes mode.
+
+        Answers a Server-Sent Events stream (`text/event-stream`) that
+        follows the log of every pod of the Capp (label
+        `rcs.dana.io/parent-capp`). Pods that start while the stream is
+        open join it; a restarted container is followed again. At most 20
+        pods are followed at once; a pod over that cap is announced with a
+        `notice` event and joins when another one ends.
+
+        A pod log that fails to open or breaks off is tried again after 1,
+        2, 4, 8 and 16 seconds (a `notice` names the cause each time; a log
+        that broke off also gets a `pod-ended` with reason `log stream
+        failed`). It goes on after the last line sent, so no line comes
+        twice. After five failures in a row a `notice` says the stream gives
+        up on that container until it restarts.
+
+        To resume after a reconnect without repeating or missing lines,
+        pass, for each pod, the `timestamp` of the last `log` event received
+        from it as `podSinceTime=<pod>=<timestamp>`, and the oldest of those
+        as `sinceTime` for pods that started during the gap. One time for
+        all pods is not enough: the lines of different pods do not arrive
+        in time order. A restarted container is read from its start.
+
+        Each event's `data` is one JSON object, named by the event:
+
+        - `log`: a `CappLogLine`.
+        - `pod-started` / `pod-ended`: a `CappLogPodEvent`.
+        - `notice`: a `CappLogNotice`; the stream goes on.
+        - `error`: a `CappLogNotice`; the stream ends after it.
+        - `end`: a `CappLogNotice`, sent after 30 minutes; the stream ends
+          and the client connects again to go on.
+
+        A `: keepalive` comment is sent every 15 seconds. Browsers'
+        `EventSource` cannot send an `Authorization` header, so read the
+        stream with `fetch` and `response.body.getReader()`, and stop it by
+        aborting the request. Errors found before the stream starts (bad
+        query, missing Capp, a caller who may not watch pods) are ordinary
+        JSON error responses.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+        - name: pod
+          in: query
+          description: Follow this pod only.
+          schema:
+            type: string
+        - name: container
+          in: query
+          description: Container to follow. Default the Capp's container (`user-container` when the Capp leaves it unnamed); the default never picks `queue-proxy`, but `?container=queue-proxy` is accepted.
+          schema:
+            type: string
+        - name: tailLines
+          in: query
+          description: Lines of history sent per pod before following.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000
+            default: 100
+        - name: sinceTime
+          in: query
+          description: |
+            Send only the lines after this RFC 3339 time, from every pod not
+            named in `podSinceTime`, instead of `tailLines` of history (set
+            one, not both).
+          schema:
+            type: string
+            format: date-time
+        - name: podSinceTime
+          in: query
+          description: |
+            `<pod>=<RFC 3339 time>`, repeated once per pod (at most 100):
+            send only that pod's lines after the time. Pass the `timestamp`
+            of the last `log` event received from each pod to resume a
+            stream. Cannot be combined with `tailLines`.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 100
+            items:
+              type: string
+              example: web-00001-deployment-7d9f-abcde=2026-11-18T10:00:00.123456789Z
+      responses:
+        "200":
+          description: The log stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: pod-started
+                data: {"pod":"web-00001-deployment-7d9f-abcde"}
+
+                event: log
+                data: {"pod":"web-00001-deployment-7d9f-abcde","container":"web","timestamp":"2026-11-18T10:00:00.123456789Z","line":"listening on :8080"}
+
+        "400":
+          description: Invalid pod, container, tailLines, sinceTime or podSinceTime, a pod named twice in podSinceTime, or tailLines together with sinceTime or podSinceTime.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Capp not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "503":
+          description: The cluster is currently unhealthy, or the backend serves as many log streams as `resources.capps.maxLogStreams` allows (LOG_STREAMS_BUSY); retry later.
           content:
             application/json:
               schema:

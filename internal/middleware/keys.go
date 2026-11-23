@@ -45,4 +45,9 @@ const (
 	// reads pod logs with the caller's credential. It is set in Kubernetes
 	// authorization mode only.
 	PodLogsKey contextKey = "podLogs"
+
+	// PodStreamKey is the gin.Context key for the cluster.PodStream that
+	// watches pods and follows their logs with the caller's credential. It is
+	// set in Kubernetes authorization mode only.
+	PodStreamKey contextKey = "podStream"
 )

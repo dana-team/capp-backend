@@ -61,6 +61,9 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateGitOps(&cfg.GitOps)...)
 	errs = append(errs, validateObservability(&cfg.Resources.Observability, len(cfg.Clusters))...)
 	errs = append(errs, validateCfunc(&cfg.Resources.Cfunc)...)
+	if cfg.Resources.Capps.Enabled && cfg.Resources.Capps.MaxLogStreams < 1 {
+		errs = append(errs, fmt.Errorf("resources.capps.maxLogStreams must be 1 or greater, got %d", cfg.Resources.Capps.MaxLogStreams))
+	}
 	errs = append(errs, validateCfuncRouterURLs(cfg.Clusters)...)
 
 	if cfg.Metrics.Enabled {

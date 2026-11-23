@@ -111,6 +111,9 @@ config:
       enabled: true
     capps:
       enabled: true
+      # Capp log streams one replica serves at a time (each follows up to
+      # 20 pods); a stream over the cap gets 503.
+      maxLogStreams: 100
     capprevisions:
       enabled: true
     # Per-Capp metrics charts. The query URL comes from

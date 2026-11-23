@@ -115,6 +115,7 @@ data:
         enabled: {{ .Values.config.resources.namespaces.enabled }}
       capps:
         enabled: {{ .Values.config.resources.capps.enabled }}
+        maxLogStreams: {{ .Values.config.resources.capps.maxLogStreams | default 100 }}
       capprevisions:
         enabled: {{ .Values.config.resources.capprevisions.enabled }}
       {{- $obs := dig "resources" "observability" dict .Values.config }}

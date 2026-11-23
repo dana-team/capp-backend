@@ -200,6 +200,29 @@ func TestValidate_Happy(t *testing.T) {
 	assert.NoError(t, Validate(passthroughConfig()))
 }
 
+func TestLoad_MaxLogStreams(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 100, cfg.Resources.Capps.MaxLogStreams)
+
+	t.Setenv("CAPP_RESOURCES_CAPPS_MAXLOGSTREAMS", "7")
+	cfg, err = Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.Resources.Capps.MaxLogStreams)
+	assert.True(t, cfg.Resources.Capps.Enabled, "the toggle still loads next to it")
+}
+
+func TestValidate_MaxLogStreams(t *testing.T) {
+	cfg := passthroughConfig()
+	cfg.Resources.Capps = CappsConfig{ResourceToggle: ResourceToggle{Enabled: true}, MaxLogStreams: 0}
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resources.capps.maxLogStreams must be 1 or greater, got 0")
+
+	cfg.Resources.Capps.Enabled = false
+	assert.NoError(t, Validate(cfg), "unused when capps is off")
+}
+
 func TestValidate_NoClusters(t *testing.T) {
 	cfg := &Config{Auth: AuthConfig{Mode: "passthrough"}}
 	err := Validate(cfg)
