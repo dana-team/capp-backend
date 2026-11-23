@@ -2,6 +2,7 @@ package pools
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,6 +36,9 @@ const (
 	// build images do not have; their script is "build" on the PATH. The
 	// Fission CLI writes the same default.
 	defaultBuildCommand = "build"
+
+	// fetcherContainerName is Fission's util.FetcherContainerName.
+	fetcherContainerName = "fetcher"
 )
 
 // ToK8s converts a PoolRequest into a fission.io/v1 Environment
@@ -115,8 +119,85 @@ func ToK8s(req PoolRequest, existing *fissionv1.Environment, namespace string, c
 	env.Spec.ImagePullSecret = catalog.cfg.ImagePullSecret
 	env.Spec.Poolsize = poolSize
 	env.Spec.Resources = resources
+	setRuntimePodSpec(env, catalog.fetcherResources)
+	setBuilderResources(env, catalog)
 
 	return env, nil
+}
+
+// setRuntimePodSpec sets the fetcher's resources in the runtime pod spec, the
+// only field Fission merges over the fetcher. It also names the runtime
+// container, which Fission requires once a pod spec exists.
+func setRuntimePodSpec(env *fissionv1.Environment, fetcher corev1.ResourceRequirements) {
+	setContainerResources(&env.Spec.Runtime.PodSpec, fetcherContainerName, fetcher)
+	if env.Spec.Runtime.PodSpec == nil {
+		return
+	}
+	runtimeName := env.Name
+	if container := env.Spec.Runtime.Container; container != nil && container.Name != "" {
+		runtimeName = container.Name
+	}
+	for _, container := range env.Spec.Runtime.PodSpec.Containers {
+		if container.Name == runtimeName {
+			return
+		}
+	}
+	env.Spec.Runtime.PodSpec.Containers = append(env.Spec.Runtime.PodSpec.Containers, corev1.Container{Name: runtimeName})
+}
+
+// setBuilderResources sets the builder and builder-fetcher resources, or
+// removes them when the pool has no build image.
+func setBuilderResources(env *fissionv1.Environment, catalog *Catalog) {
+	builder, fetcher := catalog.builderResources, catalog.fetcherResources
+	if env.Spec.Builder.Image == "" {
+		builder, fetcher = corev1.ResourceRequirements{}, corev1.ResourceRequirements{}
+	}
+	setContainerResources(&env.Spec.Builder.PodSpec, fetcherContainerName, fetcher)
+
+	if env.Spec.Builder.Container == nil {
+		if isEmptyResources(builder) {
+			return
+		}
+		env.Spec.Builder.Container = &corev1.Container{Name: fissionv1.BuilderContainerName}
+	}
+	env.Spec.Builder.Container.Resources = *builder.DeepCopy()
+}
+
+// setContainerResources sets the resources of the named container, adding it
+// and the pod spec when missing. Empty resources remove the entry, and the
+// pod spec when nothing else is left.
+func setContainerResources(podSpec **corev1.PodSpec, name string, resources corev1.ResourceRequirements) {
+	empty := isEmptyResources(resources)
+	spec := *podSpec
+	if spec == nil {
+		if empty {
+			return
+		}
+		spec = &corev1.PodSpec{}
+		*podSpec = spec
+	}
+	for i := range spec.Containers {
+		if spec.Containers[i].Name != name {
+			continue
+		}
+		spec.Containers[i].Resources = *resources.DeepCopy()
+		if !empty || !apiequality.Semantic.DeepEqual(spec.Containers[i], corev1.Container{Name: name}) {
+			return
+		}
+		// Keep a non-nil list: the CRD requires containers.
+		spec.Containers = slices.Delete(spec.Containers, i, i+1)
+		if apiequality.Semantic.DeepEqual(*spec, corev1.PodSpec{}) {
+			*podSpec = nil
+		}
+		return
+	}
+	if !empty {
+		spec.Containers = append(spec.Containers, corev1.Container{Name: name, Resources: *resources.DeepCopy()})
+	}
+}
+
+func isEmptyResources(resources corev1.ResourceRequirements) bool {
+	return len(resources.Requests) == 0 && len(resources.Limits) == 0
 }
 
 // buildSettingsToK8s returns the build image and command of the flavor, or

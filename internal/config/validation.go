@@ -699,6 +699,14 @@ func validateCfunc(e *CfuncConfig) []error {
 		}
 		sizeByValues[values] = name
 	}
+	for _, block := range []struct {
+		key  string
+		size ResourceSize
+	}{{"fetcherResources", e.FetcherResources}, {"builderResources", e.BuilderResources}} {
+		if _, err := sizeValues(block.size); err != nil {
+			errs = append(errs, fmt.Errorf("%s.%s: %w", prefix, block.key, err))
+		}
+	}
 
 	if len(e.Flavors) == 0 {
 		errs = append(errs, fmt.Errorf("%s.flavors must name at least one flavor when cfunc is enabled", prefix))

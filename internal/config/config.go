@@ -361,6 +361,13 @@ type CfuncConfig struct {
 	// and a name must not contain a dot.
 	Flavors map[string]CfuncFlavor `mapstructure:"flavors"`
 
+	// FetcherResources are set on Fission's fetcher container in pool and
+	// builder pods; Fission's chart gives it no limits.
+	FetcherResources ResourceSize `mapstructure:"fetcherResources"`
+
+	// BuilderResources are set on the builder container; Fission sets none.
+	BuilderResources ResourceSize `mapstructure:"builderResources"`
+
 	// OnboardNamespaces makes the first pool of a namespace set the
 	// fission.io/enabled=true label on that namespace. It has an effect only
 	// when Fission runs with tenancy.mode=dynamic. Default: false.
@@ -855,6 +862,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("resources.cfunc.registryPrefix", "ghcr.io/fission")
 	v.SetDefault("resources.cfunc.allowCustomBuild", false)
 	v.SetDefault("resources.cfunc.maxPoolSize", 10)
+	v.SetDefault("resources.cfunc.fetcherResources.requests.cpu", "10m")
+	v.SetDefault("resources.cfunc.fetcherResources.requests.memory", "16Mi")
+	v.SetDefault("resources.cfunc.fetcherResources.limits.cpu", "200m")
+	v.SetDefault("resources.cfunc.fetcherResources.limits.memory", "128Mi")
+	v.SetDefault("resources.cfunc.builderResources.requests.cpu", "100m")
+	v.SetDefault("resources.cfunc.builderResources.requests.memory", "256Mi")
+	v.SetDefault("resources.cfunc.builderResources.limits.cpu", "1")
+	v.SetDefault("resources.cfunc.builderResources.limits.memory", "1Gi")
 	v.SetDefault("resources.cfunc.onboardNamespaces", false)
 	v.SetDefault("resources.cfunc.functions.enabled", false)
 	v.SetDefault("resources.cfunc.functions.git.baseURL", "")

@@ -60,6 +60,14 @@ func testConfig() config.CfuncConfig {
 			"java": {Image: "jvm-env:1.32.0", BuildImage: "jvm-builder:1.32.0", BuildCommand: "build", KeepArchive: true},
 			"perl": {Image: "perl-env:1.32.0"},
 		},
+		FetcherResources: config.ResourceSize{
+			Requests: config.ResourceQuantities{CPU: "10m", Memory: "16Mi"},
+			Limits:   config.ResourceQuantities{CPU: "200m", Memory: "128Mi"},
+		},
+		BuilderResources: config.ResourceSize{
+			Requests: config.ResourceQuantities{CPU: "100m", Memory: "256Mi"},
+			Limits:   config.ResourceQuantities{CPU: "1", Memory: "1Gi"},
+		},
 	}
 }
 
@@ -114,6 +122,14 @@ func resourcesOf(reqCPU, reqMem, limCPU, limMem string) corev1.ResourceRequireme
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(reqCPU), corev1.ResourceMemory: resource.MustParse(reqMem)},
 		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(limCPU), corev1.ResourceMemory: resource.MustParse(limMem)},
 	}
+}
+
+func fetcherResources() corev1.ResourceRequirements {
+	return resourcesOf("10m", "16Mi", "200m", "128Mi")
+}
+
+func builderResources() corev1.ResourceRequirements {
+	return resourcesOf("100m", "256Mi", "1", "1Gi")
 }
 
 func assertResources(t *testing.T, want, got corev1.ResourceRequirements) {
@@ -200,7 +216,8 @@ func TestCreate_NamedSizeAndFlavorSettings(t *testing.T) {
 	env := stored(t, k8sClient, "jvm")
 	assert.True(t, env.Spec.KeepArchive)
 	assert.Equal(t, "build", env.Spec.Builder.Command)
-	assert.Nil(t, env.Spec.Builder.Container, "a flavor with no builder variables must not create a builder container")
+	require.NotNil(t, env.Spec.Builder.Container, "a pool with a build image needs a builder container for its resources")
+	assert.Empty(t, env.Spec.Builder.Container.Env, "the java flavor has no builder variables")
 	assert.Equal(t, 1, env.Spec.Poolsize)
 	assertResources(t, resourcesOf("500m", "512Mi", "1", "1Gi"), env.Spec.Resources)
 	assert.Equal(t, "large", decode[PoolResponse](t, w).Size)
@@ -553,7 +570,7 @@ func TestUpdate_KeepsWhatTheAPIDoesNotExpose(t *testing.T) {
 	assert.Equal(t, map[string]string{"pool": "faas"}, env.Spec.Runtime.PodSpec.NodeSelector)
 	require.NotNil(t, env.Spec.Builder.Container)
 	assert.Empty(t, env.Spec.Builder.Container.Env, "the java flavor has no builder variables, so python's must go")
-	assertResources(t, resourcesOf("1", "1Gi", "1", "1Gi"), env.Spec.Builder.Container.Resources)
+	assertResources(t, builderResources(), env.Spec.Builder.Container.Resources)
 
 	resp := decode[PoolResponse](t, w)
 	assert.Equal(t, "java", resp.Flavor)
