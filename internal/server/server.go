@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"k8s.io/client-go/rest"
 )
 
 // Server wraps the http.Server and exposes a clean Start/Stop API.
@@ -44,6 +45,18 @@ func New(
 	registry *resources.Registry,
 	logger *zap.Logger,
 ) (*Server, error) {
+	return newServer(cfg, version, authMgr, clusterMgr, registry, logger, rest.InClusterConfig)
+}
+
+func newServer(
+	cfg *config.Config,
+	version string,
+	authMgr auth.AuthManager,
+	clusterMgr cluster.ClusterManager,
+	registry *resources.Registry,
+	logger *zap.Logger,
+	originConfig func() (*rest.Config, error),
+) (*Server, error) {
 	var authorization *authorizationRuntime
 	var rules *policy.Routes
 	if cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy {
@@ -56,7 +69,11 @@ func New(
 		if err != nil {
 			return nil, err
 		}
-		authorization, err = newAuthorization(cfg, clusterMgr)
+		origin, err := originConfig()
+		if err != nil {
+			return nil, fmt.Errorf("origin policy configuration: %w", err)
+		}
+		authorization, err = newAuthorization(cfg, clusterMgr, origin)
 		if err != nil {
 			return nil, err
 		}

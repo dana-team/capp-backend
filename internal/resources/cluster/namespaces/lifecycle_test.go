@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
@@ -39,7 +40,7 @@ func TestHandlerCreateManagedNamespace(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var writes []string
-			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			storage := lifecycleClient(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				switch obj.(type) {
 				case *corev1.Namespace:
 					obj.SetUID("created-uid")
@@ -64,7 +65,7 @@ func TestHandlerCreateManagedNamespace(t *testing.T) {
 			require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(ns), ns))
 			require.Equal(t, consts.ManagedLabelValue, ns.Labels[consts.ManagedNameSpaceLabelKey])
 			require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(cm), cm))
-			assignment, err := authorization.ParseAssignment(cm, "capp-system", nil, nil)
+			assignment, err := authorization.ParseAssignment(cm, "c1", "capp-system", nil, nil)
 			require.NoError(t, err)
 			require.Equal(t, tc.bindings, assignment.Bindings())
 			require.Equal(t, string(ns.UID), cm.Annotations[authorization.NamespaceUIDAnnotation])
@@ -90,7 +91,7 @@ func TestHandlerCreateManagedNamespaceValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			storage := lifecycleClient(t, interceptor.Funcs{
 				Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 					calls++
 					return errors.New("unexpected read")
@@ -116,7 +117,7 @@ func TestHandlerCreateManagedNamespaceConflicts(t *testing.T) {
 				existing = cm
 			}
 			writes := 0
-			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+			storage := lifecycleClient(t, interceptor.Funcs{Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
 				writes++
 				return nil
 			}}, existing)
@@ -131,7 +132,7 @@ func TestHandlerCreateManagedNamespaceRecovery(t *testing.T) {
 	for _, failedStep := range []string{"quota", "policy"} {
 		t.Run(failedStep, func(t *testing.T) {
 			fail := true
-			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			storage := lifecycleClient(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				// Fake storage does not allocate namespace UIDs.
 				if ns, ok := obj.(*corev1.Namespace); ok {
 					ns.UID = "created-uid"
@@ -174,7 +175,7 @@ func TestHandlerCreateManagedNamespaceRecovery(t *testing.T) {
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			_, policy := membershipObjects(t, []authorization.Binding{})
 			require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(policy), policy))
-			assignment, err := authorization.ParseAssignment(policy, "capp-system", nil, nil)
+			assignment, err := authorization.ParseAssignment(policy, "c1", "capp-system", nil, nil)
 			require.NoError(t, err)
 			require.True(t, assignment.Allows("alice", nil, []string{authorization.RoleEditor}))
 		})
@@ -188,7 +189,7 @@ func TestHandlerUpdateManagedNamespaceQuota(t *testing.T) {
 	quota.Annotations = map[string]string{"keep": "value"}
 	quota.Status.Used = corev1.ResourceList{corev1.ResourceLimitsCPU: resource.MustParse("3")}
 	var writes []string
-	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+	storage := lifecycleClient(t, interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 		switch obj.(type) {
 		case *corev1.ResourceQuota:
 			writes = append(writes, "quota")
@@ -220,7 +221,7 @@ func TestHandlerUpdateManagedNamespaceQuota(t *testing.T) {
 func TestHandlerUpdateManagedNamespaceQuotaPartialFailure(t *testing.T) {
 	ns, cm := membershipObjects(t, []authorization.Binding{})
 	writes := 0
-	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+	storage := lifecycleClient(t, interceptor.Funcs{Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
 		writes++
 		return k8serrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, cm.Name, errors.New("private conflict"))
 	}}, ns, cm)
@@ -240,9 +241,66 @@ func TestHandlerUpdateManagedNamespaceQuotaPartialFailure(t *testing.T) {
 	quota := &corev1.ResourceQuota{}
 	require.NoError(t, storage.Get(t.Context(), client.ObjectKey{Name: ns.Name + "-quota", Namespace: ns.Name}, quota))
 	require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(cm), cm))
-	assignment, err := authorization.ParseAssignment(cm, "capp-system", nil, nil)
+	assignment, err := authorization.ParseAssignment(cm, "c1", "capp-system", nil, nil)
 	require.NoError(t, err)
 	require.Empty(t, assignment.Bindings())
+}
+
+func TestHandlerUpdateManagedNamespacePolicyStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		provisioned bool
+		terminating bool
+		readError   error
+	}{
+		{name: "missing origin namespace"},
+		{name: "terminating origin namespace", provisioned: true, terminating: true},
+		{name: "unavailable origin", readError: errors.New("origin unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, _ := membershipObjects(t, []authorization.Binding{})
+			targetWrites, policyWrites := 0, 0
+			target := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					targetWrites++
+					return c.Create(ctx, obj, opts...)
+				},
+				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					targetWrites++
+					return c.Update(ctx, obj, opts...)
+				},
+			}, ns)
+			var objects []client.Object
+			if tc.provisioned {
+				policyNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capp-system"}}
+				if tc.terminating {
+					now := metav1.Now()
+					policyNamespace.DeletionTimestamp = &now
+					policyNamespace.Finalizers = []string{"keep"}
+				}
+				objects = append(objects, policyNamespace)
+			}
+			origin := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*corev1.Namespace); ok && tc.readError != nil {
+						return tc.readError
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					policyWrites++
+					return c.Create(ctx, obj, opts...)
+				},
+			}, objects...)
+			store, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
+			require.NoError(t, err)
+			router := membershipRouterWithStore(t, target, origin, "operator", zap.NewNop(), nil, store)
+			w := membershipRequest(router, http.MethodPut, ns.Name, `{"users":["alice"],"quota":{"cpu":"2"}}`)
+			require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+			require.Zero(t, targetWrites)
+			require.Zero(t, policyWrites)
+		})
+	}
 }
 
 func TestHandlerDeleteManagedNamespace(t *testing.T) {
@@ -453,7 +511,7 @@ func TestHandlerUpdateManagedNamespaceQuotaFailure(t *testing.T) {
 				require.IsType(t, &corev1.ResourceQuota{}, obj, "policy must not be written after a quota failure")
 				return k8serrors.NewForbidden(schema.GroupResource{Resource: "resourcequotas"}, obj.GetName(), errors.New("private infrastructure denial"))
 			}
-			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			storage := lifecycleClient(t, interceptor.Funcs{
 				Create: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.CreateOption) error {
 					return reject(obj)
 				},
@@ -472,7 +530,7 @@ func TestHandlerUpdateManagedNamespaceQuotaFailure(t *testing.T) {
 
 func TestHandlerUpdateManagedNamespaceQuotaOnly(t *testing.T) {
 	ns, _ := membershipObjects(t, []authorization.Binding{})
-	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+	storage := lifecycleClient(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 		require.IsType(t, &corev1.ResourceQuota{}, obj, "omitted membership must not initialize policy")
 		return c.Create(ctx, obj, opts...)
 	}}, ns)
@@ -497,7 +555,7 @@ func TestHandlerUpdateManagedNamespaceImmutablePolicyQuota(t *testing.T) {
 			immutable := true
 			cm.Immutable = &immutable
 			writes := 0
-			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+			storage := lifecycleClient(t, interceptor.Funcs{
 				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 					require.IsType(t, &corev1.ResourceQuota{}, obj)
 					writes++
@@ -516,7 +574,7 @@ func TestHandlerUpdateManagedNamespaceImmutablePolicyQuota(t *testing.T) {
 }
 
 func TestHandlerCreateManagedNamespaceRecreated(t *testing.T) {
-	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+	storage := lifecycleClient(t, interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 		if ns, ok := obj.(*corev1.Namespace); ok {
 			ns.UID = "created-uid"
 			if err := c.Create(ctx, ns, opts...); err != nil {
@@ -536,4 +594,107 @@ func TestHandlerCreateManagedNamespaceRecreated(t *testing.T) {
 	_, cm := membershipObjects(t, []authorization.Binding{})
 	require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(cm), cm))
 	require.Equal(t, "created-uid", cm.Annotations[authorization.NamespaceUIDAnnotation])
+}
+
+// lifecycleClient provides provisioned policy storage for lifecycle operations.
+func lifecycleClient(t *testing.T, funcs interceptor.Funcs, objects ...client.Object) client.Client {
+	t.Helper()
+	objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capp-system"}})
+	return testutil.FakeClientWithInterceptors(t, funcs, objects...)
+}
+
+func TestHandlerCreateManagedNamespacePolicyStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		provisioned bool
+		terminating bool
+		readError   error
+		status      int
+	}{
+		{name: "missing origin namespace", status: http.StatusServiceUnavailable},
+		{name: "terminating origin namespace", provisioned: true, terminating: true, status: http.StatusServiceUnavailable},
+		{name: "unavailable origin", readError: errors.New("origin unavailable"), status: http.StatusServiceUnavailable},
+		{name: "origin storage only", provisioned: true, status: http.StatusCreated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			targetWrites, policyWrites := 0, 0
+			target := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*corev1.ConfigMap); ok {
+						t.Error("policy read reached target cluster")
+						return errors.New("unexpected policy read")
+					}
+					if key.Name == "capp-system" {
+						t.Error("policy namespace checked on target cluster")
+						return errors.New("unexpected policy namespace check")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if _, ok := obj.(*corev1.ConfigMap); ok {
+						t.Fatal("policy write reached target cluster")
+					}
+					targetWrites++
+					if ns, ok := obj.(*corev1.Namespace); ok {
+						ns.UID = "target-uid"
+					}
+					return c.Create(ctx, obj, opts...)
+				},
+			})
+			var objects []client.Object
+			if tc.provisioned {
+				ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capp-system"}}
+				if tc.terminating {
+					now := metav1.Now()
+					ns.DeletionTimestamp = &now
+					ns.Finalizers = []string{"keep"}
+				}
+				objects = append(objects, ns)
+			}
+			origin := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if tc.readError != nil {
+						return tc.readError
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if _, ok := obj.(*corev1.ConfigMap); !ok {
+						t.Fatalf("target resource %T reached origin", obj)
+					}
+					policyWrites++
+					return c.Create(ctx, obj, opts...)
+				},
+			}, objects...)
+			store, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
+			require.NoError(t, err)
+			router := membershipRouterWithStore(t, target, origin, "operator", zap.NewNop(), nil, store)
+			w := membershipRequest(router, http.MethodPost, "", `{"name":"team-a","users":["alice"],"quota":{"cpu":"2"}}`)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			if tc.status != http.StatusCreated {
+				require.Zero(t, targetWrites)
+				require.Zero(t, policyWrites)
+				return
+			}
+			require.Equal(t, 2, targetWrites)
+			require.Equal(t, 1, policyWrites)
+			policy := &corev1.ConfigMap{}
+			key := client.ObjectKey{Namespace: "capp-system", Name: authorization.PolicyName("c1", "team-a")}
+			require.NoError(t, origin.Get(t.Context(), key, policy))
+			require.Equal(t, "target-uid", policy.Annotations[authorization.NamespaceUIDAnnotation])
+			w = membershipRequest(router, http.MethodGet, "team-a", "")
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			require.Contains(t, w.Body.String(), "alice")
+			w = membershipRequest(router, http.MethodPut, "team-a", `{"users":["bob"]}`)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			require.NoError(t, origin.Get(t.Context(), key, policy))
+			assignment, err := authorization.ParseAssignment(policy, "c1", "capp-system", nil, nil)
+			require.NoError(t, err)
+			require.True(t, assignment.Allows("bob", nil, []string{authorization.RoleEditor}))
+			require.False(t, assignment.Allows("alice", nil, []string{authorization.RoleEditor}))
+			w = membershipRequest(router, http.MethodDelete, "team-a", "")
+			require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+			require.True(t, k8serrors.IsNotFound(origin.Get(t.Context(), key, policy)))
+		})
+	}
 }

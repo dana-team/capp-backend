@@ -1,0 +1,68 @@
+{{- if eq .Values.config.authorization.mode "backend-policy" }}
+{{- $namespaces := dict }}
+{{- range .Values.config.clusters }}
+{{- $_ := set $namespaces (required "authorization.policyNamespace is required for every target" (dig "authorization" "policyNamespace" "" .)) true }}
+{{- end }}
+{{- if $namespaces }}
+# Origin access is independent of whether the origin is also an execution target.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "capp-backend.fullname" . }}-policy-namespaces
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames:
+      {{- range keys $namespaces | sortAlpha }}
+      - {{ . | quote }}
+      {{- end }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "capp-backend.fullname" . }}-policy-namespaces
+  labels:
+    {{- include "capp-backend.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "capp-backend.fullname" . }}-policy-namespaces
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.namespace }}
+{{- range keys $namespaces | sortAlpha }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "capp-backend.fullname" $ }}-policies
+  namespace: {{ . | quote }}
+  labels:
+    {{- include "capp-backend.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "capp-backend.fullname" $ }}-policies
+  namespace: {{ . | quote }}
+  labels:
+    {{- include "capp-backend.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "capp-backend.fullname" $ }}-policies
+subjects:
+  - kind: ServiceAccount
+    name: {{ $.Values.serviceAccount.name }}
+    namespace: {{ $.Values.namespace }}
+{{- end }}
+{{- end }}
+{{- end }}

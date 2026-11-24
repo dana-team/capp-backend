@@ -36,7 +36,7 @@ import (
 func TestPrepareMigration(t *testing.T) {
 	sourceStore, _, _ := policyStore(t, nil)
 	destinationStore, observations, cm := policyStore(t, nil)
-	unsyncedStore, err := authorization.NewStore(observations, authorization.StoreOptions{PolicyNamespace: cm.Namespace})
+	unsyncedStore, err := authorization.NewStore(observations, observations, authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 	require.NoError(t, err)
 	viewerStore, _, _ := policyStore(t, func(cm *corev1.ConfigMap, _ *corev1.Namespace) {
 		cm.Data["policy.json"] = aggregatePolicyJSON(t, "team-a", []authorization.Binding{
@@ -239,7 +239,7 @@ func TestPrepareMigrationNamespaceIsolation(t *testing.T) {
 	_, err := observations.CoreV1().Namespaces().Create(t.Context(), ns, metav1.CreateOptions{})
 	require.NoError(t, err)
 	cm := policy.DeepCopy()
-	cm.Name = "capp-assignment-team-b"
+	cm.Name = authorization.PolicyName("c1", "team-b")
 	cm.Data["policy.json"] = aggregatePolicyJSON(t, "team-b", []authorization.Binding{
 		{Kind: rbacv1.UserKind, Name: "editor", Role: authorization.RoleEditor},
 	})

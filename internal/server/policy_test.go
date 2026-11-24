@@ -171,7 +171,7 @@ func TestBackendPolicyExecutionForbidden(t *testing.T) {
 func policyStore(t *testing.T, change func(*corev1.ConfigMap, *corev1.Namespace)) (*authorization.Store, *fake.Clientset, *corev1.ConfigMap) {
 	t.Helper()
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-		Name: "capp-assignment-team-a", Namespace: "capp-system", UID: "policy-uid", ResourceVersion: "1",
+		Name: authorization.PolicyName("c1", "team-a"), Namespace: "capp-system", UID: "policy-uid", ResourceVersion: "1",
 		Labels:      map[string]string{"rcs.dana.io/authorization": "backend-policy"},
 		Annotations: map[string]string{authorization.NamespaceUIDAnnotation: "namespace-uid"},
 	}, Data: map[string]string{"policy.json": `{"version":1,"namespace":"team-a","bindings":[{"kind":"User","name":"alice","role":"viewer"},{"kind":"User","name":"editor","role":"editor"},{"kind":"Group","name":"developers","role":"editor"}]}`}}
@@ -180,7 +180,7 @@ func policyStore(t *testing.T, change func(*corev1.ConfigMap, *corev1.Namespace)
 		change(cm, ns)
 	}
 	observations := fake.NewClientset(cm, ns)
-	store, err := authorization.NewStore(observations, authorization.StoreOptions{PolicyNamespace: cm.Namespace})
+	store, err := authorization.NewStore(observations, observations, authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)

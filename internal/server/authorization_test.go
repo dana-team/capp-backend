@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -24,6 +26,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
@@ -34,7 +38,7 @@ func TestNewBackendPolicy(t *testing.T) {
 	assignment, err := (authorization.Policy{
 		Version: authorization.PolicySchemaVersion, Namespace: "team-a",
 		Bindings: []authorization.Binding{{Kind: rbacv1.UserKind, Name: "viewer", Role: authorization.RoleViewer}},
-	}).ConfigMap("policies", nil, nil)
+	}).ConfigMap("one", "policies", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,60 +47,35 @@ func TestNewBackendPolicy(t *testing.T) {
 	assignment.Annotations = map[string]string{authorization.NamespaceUIDAnnotation: "uid-a"}
 	var synced, created atomic.Bool
 	var resourceCalls atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer system-token" || r.Header.Get(transport.ImpersonateUserHeader) != "" || r.Header.Get(transport.ImpersonateGroupHeader) != "" {
-			t.Error("all operations must use the backend credential without impersonation")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		ns := corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: "team-a", UID: "uid-a", Labels: map[string]string{consts.ManagedNameSpaceLabelKey: consts.ManagedLabelValue}}}
-		var body any
-		switch {
-		case r.URL.Query().Get("watch") == "true":
-			// A watch outage after LIST must not revoke initial synchronization.
-			w.WriteHeader(http.StatusForbidden)
-			body = metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonForbidden, Code: http.StatusForbidden}
-		case r.URL.Path == "/api":
-			body = metav1.APIVersions{Versions: []string{"v1"}}
-		case r.URL.Path == "/apis":
-			body = metav1.APIGroupList{}
-		case r.URL.Path == "/api/v1":
-			body = metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "namespaces", Kind: "Namespace"}, {Name: "configmaps", Kind: "ConfigMap", Namespaced: true}, {Name: "resourcequotas", Kind: "ResourceQuota", Namespaced: true}}}
-		case r.URL.Path == "/api/v1/namespaces/team-a":
-			body = ns
-		case r.URL.Path == "/api/v1/namespaces" && r.Method == http.MethodPost:
-			ns.Name = "team-b"
-			ns.UID = "created-uid"
-			created.Store(true)
-			w.WriteHeader(http.StatusCreated)
-			body = ns
-		case r.URL.Path == "/api/v1/namespaces":
-			// Keep informer LIST unavailable while operator requests remain usable.
-			if r.URL.Query().Get("labelSelector") == "" && !synced.Load() {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				body = metav1.Status{Status: metav1.StatusFailure, Code: http.StatusServiceUnavailable, Reason: metav1.StatusReasonServiceUnavailable}
-			} else {
-				body = corev1.NamespaceList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "NamespaceList"}, ListMeta: metav1.ListMeta{ResourceVersion: "1"}, Items: []corev1.Namespace{ns}}
+	handler := policyAPIHandler(t, assignment, &synced, &created, &resourceCalls)
+	apiServer := func(token string, policyStorage bool) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get(transport.ImpersonateUserHeader) != "" || r.Header.Get(transport.ImpersonateGroupHeader) != "" {
+				t.Error("operation used the wrong cluster credential or impersonation")
 			}
-		case r.URL.Path == "/api/v1/namespaces/policies/configmaps":
-			body = corev1.ConfigMapList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMapList"}, ListMeta: metav1.ListMeta{ResourceVersion: "1"}, Items: []corev1.ConfigMap{*assignment}}
-		case r.URL.Path == "/api/v1/namespaces/team-a/configmaps":
-			resourceCalls.Add(1)
-			body = corev1.ConfigMapList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMapList"}, Items: []corev1.ConfigMap{}}
-		default:
-			w.WriteHeader(http.StatusNotFound)
-			body = metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonNotFound, Code: http.StatusNotFound}
-		}
-		if err := json.NewEncoder(w).Encode(body); err != nil {
-			t.Error(err)
-		}
-	}))
-	defer upstream.Close()
+			if strings.HasPrefix(r.URL.Path, "/api/v1/namespaces") {
+				isPolicy := r.URL.Path == "/api/v1/namespaces/policies" || strings.HasPrefix(r.URL.Path, "/api/v1/namespaces/policies/")
+				if isPolicy != policyStorage {
+					t.Errorf("request routed to wrong cluster: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+			}
+			handler.ServeHTTP(w, r)
+		}))
+	}
+	upstream := apiServer("system-token", false)
+	t.Cleanup(upstream.Close)
+	origin := apiServer("origin-token", true)
+	t.Cleanup(origin.Close)
 	cfg, mgr := authorizationConfig(t, upstream.URL)
 	caller := "operator"
 	authMgr := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
 		return auth.ClusterCredential{ImpersonateUser: caller}, nil
 	}}
-	srv, err := New(cfg, "dev", authMgr, mgr, policyRegistry(t, true), zap.NewNop())
+	srv, err := newServer(cfg, "dev", authMgr, mgr, policyRegistry(t, true), zap.NewNop(), func() (*rest.Config, error) {
+		return &rest.Config{Host: origin.URL, BearerToken: "origin-token"}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +147,74 @@ func TestNewBackendPolicy(t *testing.T) {
 	}
 }
 
+func policyAPIHandler(t *testing.T, assignment *corev1.ConfigMap, synced, created *atomic.Bool, resourceCalls *atomic.Int64) http.HandlerFunc {
+	t.Helper()
+	decoder := serializer.NewCodecFactory(testutil.TestScheme(t)).UniversalDeserializer()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", runtime.ContentTypeJSON)
+		ns := corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: "team-a", UID: "uid-a", Labels: map[string]string{consts.ManagedNameSpaceLabelKey: consts.ManagedLabelValue}}}
+		var body any
+		switch {
+		case r.URL.Query().Get("watch") == "true":
+			// A watch outage after LIST must not revoke initial synchronization.
+			w.WriteHeader(http.StatusForbidden)
+			body = metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonForbidden, Code: http.StatusForbidden}
+		case r.URL.Path == "/api":
+			body = metav1.APIVersions{Versions: []string{corev1.SchemeGroupVersion.Version}}
+		case r.URL.Path == "/apis":
+			body = metav1.APIGroupList{}
+		case r.URL.Path == "/api/v1":
+			body = metav1.APIResourceList{GroupVersion: corev1.SchemeGroupVersion.String(), APIResources: []metav1.APIResource{{Name: "namespaces", Kind: "Namespace"}, {Name: "configmaps", Kind: "ConfigMap", Namespaced: true}, {Name: "resourcequotas", Kind: "ResourceQuota", Namespaced: true}}}
+		case r.URL.Path == "/api/v1/namespaces/policies":
+			ns.Name = "policies"
+			body = ns
+		case r.URL.Path == "/api/v1/namespaces/team-a":
+			body = ns
+		case r.URL.Path == "/api/v1/namespaces" && r.Method == http.MethodPost:
+			ns.Name = "team-b"
+			ns.UID = "created-uid"
+			created.Store(true)
+			w.WriteHeader(http.StatusCreated)
+			body = ns
+		case r.URL.Path == "/api/v1/namespaces":
+			// Keep informer LIST unavailable while operator requests remain usable.
+			if r.URL.Query().Get("labelSelector") == "" && !synced.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				body = metav1.Status{Status: metav1.StatusFailure, Code: http.StatusServiceUnavailable, Reason: metav1.StatusReasonServiceUnavailable}
+			} else {
+				body = corev1.NamespaceList{TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "NamespaceList"}, ListMeta: metav1.ListMeta{ResourceVersion: "1"}, Items: []corev1.Namespace{ns}}
+			}
+		case r.URL.Path == "/api/v1/namespaces/policies/configmaps" && r.Method == http.MethodPost:
+			var createdPolicy corev1.ConfigMap
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if _, _, err := decoder.Decode(data, nil, &createdPolicy); err != nil {
+				t.Error(err)
+				return
+			}
+			if createdPolicy.Name != authorization.PolicyName("one", "team-b") {
+				t.Errorf("unexpected policy name: %q", createdPolicy.Name)
+			}
+			w.WriteHeader(http.StatusCreated)
+			body = createdPolicy
+		case r.URL.Path == "/api/v1/namespaces/policies/configmaps":
+			body = corev1.ConfigMapList{TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "ConfigMapList"}, ListMeta: metav1.ListMeta{ResourceVersion: "1"}, Items: []corev1.ConfigMap{*assignment}}
+		case r.URL.Path == "/api/v1/namespaces/team-a/configmaps":
+			resourceCalls.Add(1)
+			body = corev1.ConfigMapList{TypeMeta: metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "ConfigMapList"}, Items: []corev1.ConfigMap{}}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			body = metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonNotFound, Code: http.StatusNotFound}
+		}
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 func requireClusterNames(t *testing.T, response *httptest.ResponseRecorder, want []string) {
 	t.Helper()
 	var result struct {
@@ -195,11 +242,11 @@ func TestNewAuthorization(t *testing.T) {
 		second.Name = "two"
 		second.Authorization.PolicyNamespace = ""
 		cfg.Clusters = append(cfg.Clusters, second)
-		if _, err := newAuthorization(cfg, mgr); err == nil {
+		if _, err := newAuthorization(cfg, mgr, &rest.Config{Host: "https://127.0.0.1:1"}); err == nil {
 			t.Fatal("invalid second-target policy namespace must fail startup")
 		}
 		cfg.Clusters[1].Authorization.PolicyNamespace = cfg.Clusters[0].Authorization.PolicyNamespace
-		runtime, err := newAuthorization(cfg, mgr)
+		runtime, err := newAuthorization(cfg, mgr, &rest.Config{Host: "https://127.0.0.1:1"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -291,7 +338,7 @@ func TestServerStop(t *testing.T) {
 
 func TestAuthorizationRuntimeReady(t *testing.T) {
 	synced, _, _ := policyStore(t, nil)
-	unsynced, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "policies"})
+	unsynced, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "policies"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,5 +358,29 @@ func TestAuthorizationRuntimeReady(t *testing.T) {
 				t.Fatalf("ready = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNewAuthorizationProtectsPolicyNamespaces(t *testing.T) {
+	cfg, mgr := authorizationConfig(t, "https://127.0.0.1:1")
+	second := cfg.Clusters[0]
+	second.Name = "two"
+	second.Authorization.PolicyNamespace = "other-policies"
+	cfg.Clusters = append(cfg.Clusters, second)
+	runtime, err := newAuthorization(cfg, mgr, &rest.Config{Host: "https://127.0.0.1:2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, reconciler := range runtime.reconcilers {
+			reconciler.Close()
+		}
+	})
+	for clusterName, target := range runtime.targets {
+		for _, namespace := range []string{"policies", "other-policies"} {
+			if err := target.Store.CheckTarget(namespace); !errors.Is(err, authorization.ErrProtectedNamespace) {
+				t.Errorf("CheckTarget(%q) on %q = %v, want protected namespace", namespace, clusterName, err)
+			}
+		}
 	}
 }

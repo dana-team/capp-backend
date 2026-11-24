@@ -94,7 +94,7 @@ config:
       # authorization applies only in backend-policy mode; ignored in kubernetes mode.
       authorization:
         # policyNamespace is the required policy storage namespace, automatically protected.
-        policyNamespace: capp-platform-system
+        policyNamespace: capp-platform-system # Existing namespace on the cluster running capp-backend.
         # protectedNamespaces excludes additional namespaces from resource access and administration.
         protectedNamespaces: [capp-platform-system]
         # operatorUsers grants namespace administration to exact, case-sensitive usernames.

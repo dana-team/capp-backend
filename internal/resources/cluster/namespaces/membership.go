@@ -42,6 +42,12 @@ func (h *Handler) updateManagedNamespace(c *gin.Context) {
 		progress.respondError(c, err)
 		return
 	}
+	if c.Request.Method == http.MethodPut && (req.Quota != nil || (proposal.create && proposal.write)) {
+		if err := admin.checkPolicyStorage(c.Request.Context()); err != nil {
+			progress.respondError(c, err)
+			return
+		}
+	}
 	var quotaInfo *QuotaInfo
 	if req.Quota == nil {
 		quotaInfo, err = admin.readQuota(c.Request.Context(), proposal.namespace.Name)
@@ -125,7 +131,7 @@ func (a *Administration) prepareMembership(ctx context.Context, namespace string
 	if err != nil {
 		return nil, err
 	}
-	template, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: namespace, Bindings: bindings}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	template, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: namespace, Bindings: bindings}).ConfigMap(a.clusterName, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
 	if err != nil {
 		return nil, apierrors.NewBadRequest("invalid namespace membership")
 	}
@@ -138,7 +144,7 @@ func (a *Administration) prepareMembership(ctx context.Context, namespace string
 	}
 	p := &membershipProposal{namespace: ns, policy: template}
 	current := &corev1.ConfigMap{}
-	err = a.client.Get(ctx, client.ObjectKeyFromObject(template), current)
+	err = a.policyClient.Get(ctx, client.ObjectKeyFromObject(template), current)
 	if err != nil && !k8serrors.IsNotFound(err) {
 		return p, err
 	}
@@ -161,7 +167,7 @@ func (a *Administration) prepareMembership(ctx context.Context, namespace string
 		return p, nil
 	}
 	if !p.create && (additive || req.Users != nil) {
-		existing, err := authorization.ParseAssignment(current, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+		existing, err := authorization.ParseAssignment(current, a.clusterName, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
 		if err != nil {
 			return p, apierrors.NewConflict("invalid policy requires full bindings replacement")
 		}
@@ -170,7 +176,7 @@ func (a *Administration) prepareMembership(ctx context.Context, namespace string
 			return p, nil
 		}
 	}
-	proposed, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: namespace, Bindings: bindings}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	proposed, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: namespace, Bindings: bindings}).ConfigMap(a.clusterName, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
 	if err != nil {
 		return p, apierrors.NewBadRequest("invalid proposed policy or policy exceeds 512 KiB")
 	}
@@ -222,9 +228,9 @@ func (a *Administration) saveMembership(ctx context.Context, p *membershipPropos
 	}
 	if p.create {
 		metav1.SetMetaDataAnnotation(&p.policy.ObjectMeta, authorization.NamespaceUIDAnnotation, string(p.namespace.UID))
-		return a.client.Create(ctx, p.policy)
+		return a.policyClient.Create(ctx, p.policy)
 	}
 	// Update carries both the UID and resourceVersion from the fresh read. No
 	// retry can silently merge a concurrent operator edit or worker association.
-	return a.client.Update(ctx, p.policy)
+	return a.policyClient.Update(ctx, p.policy)
 }

@@ -24,7 +24,7 @@ func TestListClusters(t *testing.T) {
 	otherStore, _, _ := policyStore(t, func(policy *corev1.ConfigMap, _ *corev1.Namespace) {
 		policy.Data["policy.json"] = `{"version":1,"namespace":"team-a","bindings":[{"kind":"User","name":"bob","role":"viewer"}]}`
 	})
-	unsynced, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	unsynced, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
 	for _, tc := range []struct {
 		name, user       string
@@ -78,7 +78,7 @@ func TestListClusters(t *testing.T) {
 
 func TestGetCluster(t *testing.T) {
 	store, _, _ := policyStore(t, nil)
-	unsynced, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	unsynced, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
 	for _, tc := range []struct {
 		name, user, target string

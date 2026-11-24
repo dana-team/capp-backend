@@ -29,7 +29,7 @@ clusters:
       operatorGroups: [platform-operators]
 ```
 
-The mode is process-wide. Each cluster needs its own policy namespace and backend service-account credential. LDAP still requires `credential.inline.token` for every cluster; kubeconfig-only configuration is not accepted. The policy namespace is automatically protected. Add all other credential/signing-key storage namespaces to `protectedNamespaces`; keep them outside user-manageable workloads.
+The mode is process-wide. Each target needs its own execution credential. Policies live in the configured `policyNamespace` on the origin cluster running capp-backend, accessed through the backend pod’s service account. Policy namespaces must already exist; targets may share the same origin policy namespace. Backend-policy startup requires in-cluster credentials. LDAP still requires `credential.inline.token` for every cluster; kubeconfig-only configuration is not accepted. All configured policy namespace names are automatically protected on every target, including when the origin is an execution target. Add all other credential/signing-key storage namespaces to `protectedNamespaces`; keep them outside user-manageable workloads.
 
 `allowedNamespaces` is an outer boundary for both users and operators:
 
@@ -84,7 +84,7 @@ Each target has one canonical policy ConfigMap per workload namespace in protect
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: capp-assignment-team-a
+  name: capp-assignment-team-a-ab8e18ef4ebebedd
   namespace: capp-platform-system
   labels:
     rcs.dana.io/authorization: backend-policy
@@ -104,6 +104,8 @@ Ordinary access also requires `dana.io/capp-ns=true`, a nonterminating, nonprote
 
 Removing/restoring the managed label does not reset the UID. A recreated namespace has a different UID and cannot inherit the old policy after replacement is observed. Recovery requires explicit administrator deletion/recreation of the canonical policy after reviewing the new namespace; clearing bindings or PUT replacement does not reset identity. There is no policy-only DELETE endpoint or automatic orphan cleanup.
 
+Policy ConfigMap names are `capp-assignment-<namespace>-<cluster hash>`, using the first 16 lowercase hexadecimal characters of the configured cluster name's SHA-256 digest. The example above targets `production`. Hashing preserves arbitrary cluster names without ambiguous separators while keeping names compact. Policies for matching namespace names on different targets remain independent. Reads, watches and UID reconciliation use the same cluster-specific identity; the namespace UID always comes from the target cluster.
+
 ## Existing namespace API
 
 Use the existing namespace routes with an operator's LDAP JWT. No policy endpoint is added. Examples below use `C=/api/v1/clusters/production` and `N=$C/namespaces/team-a` as path shorthand; send JSON with `Content-Type: application/json` and `Authorization: Bearer <access-jwt>`.
@@ -113,6 +115,8 @@ Create through `POST C/namespaces`:
 ```json
 {"name":"team-a","quota":{"cpu":"4","memory":"8Gi","pods":50},"users":["alice"]}
 ```
+
+Before creating any resources, POST reads the configured policy namespace on the origin cluster. Missing, terminating, or unreadable policy storage returns 503 without writes. The target does not need that policy namespace. This preflight cannot make later cross-cluster writes atomic.
 
 `users` is shorthand for direct User/editor grants. Omitted membership creates an empty policy; an existing namespace returns 409 and is never adopted by POST.
 
@@ -152,7 +156,7 @@ DELETE refuses a namespace containing Capps. After namespace deletion is accepte
 
 ## Infrastructure onboarding and rotation
 
-Provision one backend service-account identity per target. Observation, administration and authorized resource operations use the existing `credential.inline.token`. Remote credentials must be issued by the target cluster. The [Helm templates](../helm/capp-backend/templates/) render one `<fullname>-role` ClusterRole and, for the `https://kubernetes.default.svc` target, one ClusterRoleBinding to the configured service account.
+Provision one backend service-account identity per target. Target namespace observation, resource administration and authorized workload operations use the existing `credential.inline.token`. Policy reads, writes, watches and UID-association patches use the origin pod’s service account. The chart grants that account access to the configured origin policy namespaces, even when all execution targets are remote. Remote credentials must be issued by the target cluster. The [Helm templates](../helm/capp-backend/templates/) render one `<fullname>-role` ClusterRole and, for the `https://kubernetes.default.svc` target, one ClusterRoleBinding to the configured service account.
 
 On each remote target, install the equivalent [ClusterRole](../helm/capp-backend/templates/clusterrole.yaml), then create its binding:
 
@@ -178,7 +182,9 @@ Replace the context and example names for your target. The role name must match 
 | `fission.io` Packages status (only when `resources.cfunc.functions.enabled`) | patch |
 | Core Namespaces (only when `resources.cfunc.onboardNamespaces`) | patch |
 
-Retain API discovery and `/version` reachability. The ClusterRoleBinding grants these permissions cluster-wide, including protected storage. Application policy checks, namespace restrictions and operator checks control user access; there is no separate Kubernetes permission boundary between resource execution and policy storage. Empty operator lists deny administration in the application without changing infrastructure grants. Namespace creation and policy writes do not create Kubernetes grants.
+Retain API discovery and `/version` reachability. The execution ClusterRoleBinding grants these permissions cluster-wide, including protected storage. Application policy checks, namespace restrictions and operator checks control user access. Empty operator lists deny administration in the application without changing infrastructure grants. Namespace creation and policy writes do not create Kubernetes grants.
+
+Origin policy access uses the pod service account. The additional policy-specific grants limit ConfigMap access to configured policy namespaces and namespace `get` access to those names. When the origin is also configured as an execution target at `https://kubernetes.default.svc`, the chart binds the execution ClusterRole to the same service account, giving it the broader cluster-wide permissions listed above.
 
 This mode needs no user impersonation, RoleBinding management, `bind`, TokenRequest, ServiceAccount/ClusterRole observation, or Pod/Job writes. Helm renders the consolidated role instead of the impersonator and `capp-user` roles in backend-policy mode; Kubernetes-mode roles remain unchanged. Keep backend identities and credentials in protected namespaces and prevent user workloads from selecting or mounting them.
 
@@ -210,7 +216,7 @@ Directory account/group changes affect newly issued JWTs; existing JWT identitie
 
 1. Compare required allows and denies against the API map, especially viewer Secret reads, editor workload creation, compound Git effects, both migration endpoints, operator-only administration and excluded Capp metrics features. Stay on Kubernetes mode if this model cannot preserve the reviewed access boundaries.
 2. Review existing direct user tokens/RoleBindings and workload service accounts/admission restrictions. Remove or restrict unrelated access explicitly where necessary: application policies neither revoke direct Kubernetes access nor remove privileges available to a workload. Keep backend identities and signing keys inaccessible to user workloads.
-3. Provision protected storage, backend credentials and consolidated grants on every target. Label intended namespaces, create policies and configure operator/allowlist/restriction settings consistently.
+3. Provision protected policy storage and its service-account grants on the origin; provision execution credentials and consolidated resource grants on each target. Label intended namespaces, create policies and configure operator/allowlist/restriction settings consistently.
 4. Validate the chosen build in a deployment before routing traffic: test role/target denials despite sufficient execution permissions, operator recovery, token rotation, observation convergence on every replica, and ordinary resource/Git/migration workflows.
 5. Perform an explicit coordinated switch to backend-policy and restart all replicas. Check readiness, then the required per-target operations; do not rely on readiness as a permission test. There is no automatic cutover or fallback.
 6. For rollback, first reconcile Kubernetes-mode grants and credentials against intervening policy edits/revocations. Restore the required impersonation/RBAC infrastructure and compatible client authentication, switch to `authorization.mode: kubernetes`, and restart all replicas before returning traffic. Backend policies do not control Kubernetes-mode access.

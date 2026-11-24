@@ -35,6 +35,7 @@ var collectionNames = [collectionCount]string{"assignments", "namespaces"}
 // server configuration. OnChange is called after publication; it should enqueue
 // work promptly, must not block, and must be safe for concurrent calls.
 type StoreOptions struct {
+	ClusterName                   string
 	PolicyNamespace               string
 	ProtectedNamespaces           []string
 	RestrictedBindingNamePrefixes []string
@@ -48,7 +49,7 @@ type ObservationHealth struct {
 	Degraded []string
 }
 
-// Store observes one cluster and publishes detached, indexed namespace state.
+// Store observes target namespaces and origin policies, publishing detached namespace state.
 // Construct a separate Store per cluster and replica. Run owns all workers.
 type Store struct {
 	mu            sync.RWMutex
@@ -66,8 +67,8 @@ type Store struct {
 type identity struct{ kind, name string }
 
 // NewStore prepares collection informers without making API calls.
-func NewStore(client kubernetes.Interface, options StoreOptions) (*Store, error) {
-	if client == nil || len(validation.ValidateNamespaceName(options.PolicyNamespace, false)) != 0 {
+func NewStore(targetClient, policyClient kubernetes.Interface, options StoreOptions) (*Store, error) {
+	if targetClient == nil || policyClient == nil || options.ClusterName == "" || len(validation.ValidateNamespaceName(options.PolicyNamespace, false)) != 0 {
 		return nil, errors.New("observation requires a client and valid policy namespace")
 	}
 	if err := ValidateBindingNamePrefixes(options.RestrictedBindingNamePrefixes); err != nil {
@@ -76,7 +77,7 @@ func NewStore(client kubernetes.Interface, options StoreOptions) (*Store, error)
 	options.RestrictedBindingNamePrefixes = slices.Clone(options.RestrictedBindingNamePrefixes)
 	options.ProtectedNamespaces = slices.Clone(options.ProtectedNamespaces)
 	s := &Store{options: options, states: make(map[string]NamespaceState), identities: make(map[identity]map[string]struct{})}
-	sources := collectionSources(client, options.PolicyNamespace)
+	sources := collectionSources(targetClient, policyClient, options.PolicyNamespace)
 	for i, source := range sources {
 		lw := &cache.ListWatch{
 			ListWithContextFunc: func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
@@ -90,7 +91,7 @@ func NewStore(client kubernetes.Interface, options StoreOptions) (*Store, error)
 				return result, err
 			},
 		}
-		informer := cache.NewSharedIndexInformer(cache.ToListWatcherWithWatchListSemantics(lw, client), source.object, 0, cache.Indexers{})
+		informer := cache.NewSharedIndexInformer(cache.ToListWatcherWithWatchListSemantics(lw, source.client), source.object, 0, cache.Indexers{})
 		s.informers[i] = informer
 		if err := informer.SetWatchErrorHandlerWithContext(func(ctx context.Context, _ *cache.Reflector, err error) {
 			s.handleWatchError(ctx, i, err)
@@ -253,7 +254,11 @@ func (s *Store) target(collection int, obj any) (string, bool) {
 	}
 	switch collection {
 	case policies:
-		return strings.CutPrefix(m.GetName(), assignmentNamePrefix)
+		name, found := strings.CutPrefix(m.GetName(), assignmentNamePrefix)
+		if !found {
+			return "", false
+		}
+		return strings.CutSuffix(name, policyNameSuffix(s.options.ClusterName))
 	case namespaces:
 		_, found := s.states[m.GetName()]
 		return m.GetName(), found
@@ -295,12 +300,12 @@ func (s *Store) index(namespace string, assignment *Assignment, add bool) {
 
 func (s *Store) observe(namespace string) (NamespaceState, bool) {
 	state := NamespaceState{}
-	cm, _ := s.object(policies, s.options.PolicyNamespace+"/"+assignmentNamePrefix+namespace).(*corev1.ConfigMap)
+	cm, _ := s.object(policies, s.options.PolicyNamespace+"/"+PolicyName(s.options.ClusterName, namespace)).(*corev1.ConfigMap)
 	if cm == nil {
 		return state, false
 	}
 	state.PolicyUID, state.PolicyResourceVersion = cm.UID, cm.ResourceVersion
-	assignment, err := ParseAssignment(cm, s.options.PolicyNamespace, s.options.ProtectedNamespaces, s.options.RestrictedBindingNamePrefixes)
+	assignment, err := ParseAssignment(cm, s.options.ClusterName, s.options.PolicyNamespace, s.options.ProtectedNamespaces, s.options.RestrictedBindingNamePrefixes)
 	if err != nil || cm.DeletionTimestamp != nil {
 		return state.condition(PolicyInvalid), true
 	}
@@ -332,29 +337,30 @@ func (s *Store) object(collection int, key string) any {
 }
 
 type collectionSource struct {
+	client kubernetes.Interface
 	object runtime.Object
 	list   cache.ListWithContextFunc
 	watch  cache.WatchFuncWithContext
 }
 
-func collectionSources(client kubernetes.Interface, namespace string) [collectionCount]collectionSource {
+func collectionSources(targetClient, policyClient kubernetes.Interface, namespace string) [collectionCount]collectionSource {
 	return [collectionCount]collectionSource{
-		{object: &corev1.ConfigMap{},
+		{client: policyClient, object: &corev1.ConfigMap{},
 			list: func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 				opts.LabelSelector = labels.SelectorFromSet(labels.Set{assignmentLabel: backendPolicy}).String()
-				return client.CoreV1().ConfigMaps(namespace).List(ctx, opts)
+				return policyClient.CoreV1().ConfigMaps(namespace).List(ctx, opts)
 			},
 			watch: func(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
 				opts.LabelSelector = labels.SelectorFromSet(labels.Set{assignmentLabel: backendPolicy}).String()
-				return client.CoreV1().ConfigMaps(namespace).Watch(ctx, opts)
+				return policyClient.CoreV1().ConfigMaps(namespace).Watch(ctx, opts)
 			},
 		},
-		{object: &corev1.Namespace{},
+		{client: targetClient, object: &corev1.Namespace{},
 			list: func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
-				return client.CoreV1().Namespaces().List(ctx, opts)
+				return targetClient.CoreV1().Namespaces().List(ctx, opts)
 			},
 			watch: func(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
-				return client.CoreV1().Namespaces().Watch(ctx, opts)
+				return targetClient.CoreV1().Namespaces().Watch(ctx, opts)
 			},
 		},
 	}

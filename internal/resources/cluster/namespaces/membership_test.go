@@ -53,7 +53,7 @@ func TestHandlerUpdateManagedNamespace(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, cm := membershipObjects(t, []authorization.Binding{editor, viewer, group})
-			objects := []client.Object{ns}
+			objects := []client.Object{ns, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capp-system"}}}
 			if !tc.missing {
 				objects = append(objects, cm)
 			}
@@ -75,7 +75,7 @@ func TestHandlerUpdateManagedNamespace(t *testing.T) {
 			require.Equal(t, tc.writes, writes)
 			persisted := &corev1.ConfigMap{}
 			require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(cm), persisted))
-			assignment, err := authorization.ParseAssignment(persisted, "capp-system", nil, nil)
+			assignment, err := authorization.ParseAssignment(persisted, "c1", "capp-system", nil, nil)
 			require.NoError(t, err)
 			require.ElementsMatch(t, tc.want, assignment.Bindings())
 			if !tc.missing {
@@ -172,7 +172,7 @@ func TestAdministrationPrepareMembership(t *testing.T) {
 			if tc.change != nil {
 				tc.change(ns, cm)
 			}
-			objects := []client.Object{ns}
+			objects := []client.Object{ns, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capp-system"}}}
 			if !tc.missing {
 				objects = append(objects, cm)
 			}
@@ -199,7 +199,7 @@ func TestAdministrationPrepareMembership(t *testing.T) {
 			}
 			persisted := &corev1.ConfigMap{}
 			require.NoError(t, storage.Get(t.Context(), client.ObjectKeyFromObject(cm), persisted))
-			_, err := authorization.ParseAssignment(persisted, "capp-system", nil, nil)
+			_, err := authorization.ParseAssignment(persisted, "c1", "capp-system", nil, nil)
 			require.NoError(t, err)
 			require.Equal(t, cm.Annotations, persisted.Annotations)
 		})
@@ -287,7 +287,7 @@ func TestHandlerUpdateManagedNamespaceConflict(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, cm := membershipObjects(t, []authorization.Binding{})
-			objects := []client.Object{ns}
+			objects := []client.Object{ns, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capp-system"}}}
 			if !tc.missing {
 				objects = append(objects, cm)
 			}
@@ -321,7 +321,7 @@ func TestHandlerUpdateManagedNamespaceConflict(t *testing.T) {
 func membershipObjects(t *testing.T, bindings []authorization.Binding) (*corev1.Namespace, *corev1.ConfigMap) {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", UID: "namespace-uid", Labels: map[string]string{consts.ManagedNameSpaceLabelKey: consts.ManagedLabelValue}}, Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive}}
-	cm, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: ns.Name, Bindings: bindings}).ConfigMap("capp-system", nil, nil)
+	cm, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: ns.Name, Bindings: bindings}).ConfigMap("c1", "capp-system", nil, nil)
 	require.NoError(t, err)
 	cm.UID = "policy-uid"
 	cm.ResourceVersion = "1"
@@ -338,16 +338,16 @@ func invalidateMembershipPolicy(_ *corev1.Namespace, cm *corev1.ConfigMap) {
 
 func membershipRouter(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, allowedNamespaces ...string) *gin.Engine {
 	t.Helper()
-	store, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	store, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
-	return membershipRouterWithStore(t, storage, user, logger, before, store, allowedNamespaces...)
+	return membershipRouterWithStore(t, storage, storage, user, logger, before, store, allowedNamespaces...)
 }
 
-func membershipRouterWithStore(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, store *authorization.Store, allowedNamespaces ...string) *gin.Engine {
+func membershipRouterWithStore(t *testing.T, storage, policyStorage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, store *authorization.Store, allowedNamespaces ...string) *gin.Engine {
 	t.Helper()
 	boundary, boundaryErr := cluster.New(nil, nil, zap.NewNop())
 	require.NoError(t, boundaryErr)
-	admin, err := NewAdministration(storage, "capp-system", nil, []string{"system:"})
+	admin, err := NewAdministration(storage, policyStorage, "c1", "capp-system", nil, []string{"system:"})
 	require.NoError(t, err)
 	rules, err := policy.NewRoutes("")
 	require.NoError(t, err)
@@ -430,7 +430,7 @@ func TestHandlerUpdateManagedNamespaceImmutablePolicy(t *testing.T) {
 func TestAdministrationSaveMembershipNamespaceRecreated(t *testing.T) {
 	ns, cm := membershipObjects(t, []authorization.Binding{})
 	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{}, ns)
-	admin, err := NewAdministration(storage, "capp-system", nil, nil)
+	admin, err := NewAdministration(storage, storage, "c1", "capp-system", nil, nil)
 	require.NoError(t, err)
 	users := []string{"alice"}
 	proposal, err := admin.prepareMembership(t.Context(), ns.Name, UpdateNamespaceRequest{Users: &users}, false)
@@ -449,7 +449,7 @@ func TestAdministrationSaveMembershipUnassociatedPolicy(t *testing.T) {
 	ns, cm := membershipObjects(t, []authorization.Binding{})
 	delete(cm.Annotations, authorization.NamespaceUIDAnnotation)
 	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{}, ns, cm)
-	admin, err := NewAdministration(storage, "capp-system", nil, nil)
+	admin, err := NewAdministration(storage, storage, "c1", "capp-system", nil, nil)
 	require.NoError(t, err)
 	users := []string{"alice"}
 	proposal, err := admin.prepareMembership(t.Context(), ns.Name, UpdateNamespaceRequest{Users: &users}, false)

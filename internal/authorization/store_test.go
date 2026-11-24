@@ -150,7 +150,7 @@ func TestStoreEligible(t *testing.T) {
 func TestNewStore(t *testing.T) {
 	cm, ns := readyObjects("team-a")
 	prefixes := []string{"system:"}
-	s, err := NewStore(fake.NewClientset(), StoreOptions{PolicyNamespace: cm.Namespace, RestrictedBindingNamePrefixes: prefixes})
+	s, err := NewStore(fake.NewClientset(), fake.NewClientset(), StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace, RestrictedBindingNamePrefixes: prefixes})
 	require.NoError(t, err)
 	prefixes[0] = "changed:"
 	s.synced = true
@@ -170,14 +170,14 @@ func TestNewStore(t *testing.T) {
 	require.True(t, complete)
 	require.Empty(t, eligible)
 
-	_, err = NewStore(fake.NewClientset(), StoreOptions{PolicyNamespace: cm.Namespace, RestrictedBindingNamePrefixes: []string{""}})
+	_, err = NewStore(fake.NewClientset(), fake.NewClientset(), StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace, RestrictedBindingNamePrefixes: []string{""}})
 	require.ErrorContains(t, err, "empty prefix")
 }
 
 func TestStoreRun(t *testing.T) {
 	cm, ns := readyObjects("team-a")
 	client := fake.NewClientset(cm, ns)
-	s, err := NewStore(client, StoreOptions{PolicyNamespace: cm.Namespace})
+	s, err := NewStore(client, client, StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 	require.NoError(t, err)
 	var readyNotification atomic.Bool
 	s.options.OnChange = func(namespace string) {
@@ -221,7 +221,7 @@ func TestStoreRun(t *testing.T) {
 func TestStoreNamespaceRecreation(t *testing.T) {
 	cm, ns := readyObjects("team-a")
 	client := fake.NewClientset(cm, ns)
-	s, err := NewStore(client, StoreOptions{PolicyNamespace: cm.Namespace})
+	s, err := NewStore(client, client, StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 	require.NoError(t, err)
 	_, _ = runStore(t, s)
 	require.Eventually(t, func() bool { return s.Lookup(ns.Name).Ready() }, 5*time.Second, time.Millisecond)
@@ -238,7 +238,7 @@ func TestStoreNamespaceLabelChanges(t *testing.T) {
 	cm, ns := readyObjects("team-a")
 	ns.Labels = nil
 	client := fake.NewClientset(cm, ns)
-	s, err := NewStore(client, StoreOptions{PolicyNamespace: cm.Namespace})
+	s, err := NewStore(client, client, StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 	require.NoError(t, err)
 	_, _ = runStore(t, s)
 	require.Eventually(t, func() bool {
@@ -283,7 +283,7 @@ func TestStoreObservationRecovery(t *testing.T) {
 				}
 				return false, nil, nil
 			})
-			s, err := NewStore(client, StoreOptions{PolicyNamespace: cm.Namespace})
+			s, err := NewStore(client, client, StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 			require.NoError(t, err)
 			_, _ = runStore(t, s)
 			require.Eventually(t, func() bool { return len(s.Health().Degraded) > 0 }, 5*time.Second, time.Millisecond)
@@ -315,7 +315,7 @@ func TestStoreRelistRemovals(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	s, err := NewStore(client, StoreOptions{PolicyNamespace: cm.Namespace})
+	s, err := NewStore(client, client, StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 	require.NoError(t, err)
 	_, _ = runStore(t, s)
 	require.Eventually(t, func() bool { return s.Lookup(ns.Name).Ready() && watching.Load() }, 5*time.Second, time.Millisecond)
@@ -363,7 +363,7 @@ func TestStoreIsolation(t *testing.T) {
 
 func staticStore(t *testing.T, cm *corev1.ConfigMap, ns *corev1.Namespace) *Store {
 	t.Helper()
-	s, err := NewStore(fake.NewClientset(), StoreOptions{PolicyNamespace: cm.Namespace})
+	s, err := NewStore(fake.NewClientset(), fake.NewClientset(), StoreOptions{ClusterName: "c1", PolicyNamespace: cm.Namespace})
 	require.NoError(t, err)
 	for i, obj := range []runtime.Object{cm, ns} {
 		require.NoError(t, s.informers[i].GetIndexer().Add(obj))
@@ -385,7 +385,7 @@ func runStore(t *testing.T, s *Store) (context.CancelFunc, <-chan error) {
 func readyObjects(namespace string) (*corev1.ConfigMap, *corev1.Namespace) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace, UID: types.UID(namespace + "-uid"), Labels: map[string]string{consts.ManagedNameSpaceLabelKey: consts.ManagedLabelValue}}}
 	cm := assignmentConfigMap(fmt.Sprintf(`{"version":1,"namespace":%q,"bindings":[{"kind":"User","name":"alice","role":"viewer"},{"kind":"Group","name":"developers","role":"editor"}]}`, namespace))
-	cm.Name = assignmentNamePrefix + namespace
+	cm.Name = PolicyName("c1", namespace)
 	cm.UID = types.UID(namespace + "-policy")
 	cm.Annotations = map[string]string{NamespaceUIDAnnotation: string(ns.UID)}
 
@@ -432,7 +432,7 @@ func TestStoreIdentityReplacement(t *testing.T) {
 func TestStoreRestrictions(t *testing.T) {
 	for _, namespace := range []string{"team-a", "capp-system"} {
 		cm, ns := readyObjects(namespace)
-		s, err := NewStore(fake.NewClientset(), StoreOptions{PolicyNamespace: "capp-system", ProtectedNamespaces: []string{"team-a"}})
+		s, err := NewStore(fake.NewClientset(), fake.NewClientset(), StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system", ProtectedNamespaces: []string{"team-a"}})
 		require.NoError(t, err)
 		for i, obj := range []runtime.Object{cm, ns} {
 			require.NoError(t, s.informers[i].GetIndexer().Add(obj))

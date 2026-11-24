@@ -12,8 +12,10 @@ import (
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
+	"github.com/dana-team/capp-backend/pkg/k8s"
 	"github.com/go-logr/zapr"
 	"go.uber.org/zap"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -29,7 +31,15 @@ type authorizationRuntime struct {
 	reconcilers    []*authorization.Reconciler
 }
 
-func newAuthorization(cfg *config.Config, mgr cluster.ClusterManager) (_ *authorizationRuntime, err error) {
+func newAuthorization(cfg *config.Config, mgr cluster.ClusterManager, originConfig *rest.Config) (_ *authorizationRuntime, err error) {
+	scheme, err := k8s.BuildScheme()
+	if err != nil {
+		return nil, err
+	}
+	origin, err := cluster.NewSystemClients(&cluster.ClusterClient{RestConfig: originConfig, Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("origin policy client: %w", err)
+	}
 	a := &authorizationRuntime{
 		targets:        make(map[string]policy.Target),
 		administration: make(map[string]*namespaces.Administration),
@@ -42,6 +52,12 @@ func newAuthorization(cfg *config.Config, mgr cluster.ClusterManager) (_ *author
 			}
 		}
 	}()
+	// Reserve every policy namespace, including storage for other targets when
+	// the origin is also configured as an execution target.
+	policyNamespaces := make([]string, 0, len(cfg.Clusters))
+	for _, target := range cfg.Clusters {
+		policyNamespaces = append(policyNamespaces, target.Authorization.PolicyNamespace)
+	}
 	for _, target := range cfg.Clusters {
 		cc, err := mgr.Get(target.Name)
 		if err != nil {
@@ -51,21 +67,28 @@ func newAuthorization(cfg *config.Config, mgr cluster.ClusterManager) (_ *author
 		if err != nil {
 			return nil, fmt.Errorf("cluster %q system clients: %w", target.Name, err)
 		}
+		protected := slices.Clone(target.Authorization.ProtectedNamespaces)
+		for _, namespace := range policyNamespaces {
+			if !slices.Contains(protected, namespace) {
+				protected = append(protected, namespace)
+			}
+		}
 		opts := authorization.StoreOptions{
+			ClusterName:                   target.Name,
 			PolicyNamespace:               target.Authorization.PolicyNamespace,
-			ProtectedNamespaces:           target.Authorization.ProtectedNamespaces,
+			ProtectedNamespaces:           protected,
 			RestrictedBindingNamePrefixes: cfg.Authorization.RestrictedBindingNamePrefixes,
 		}
-		store, err := authorization.NewStore(system.Kubernetes, opts)
+		store, err := authorization.NewStore(system.Kubernetes, origin.Kubernetes, opts)
 		if err != nil {
 			return nil, fmt.Errorf("cluster %q observation: %w", target.Name, err)
 		}
-		reconciler, err := authorization.NewReconciler(system.Kubernetes, store)
+		reconciler, err := authorization.NewReconciler(system.Kubernetes, origin.Kubernetes, store)
 		if err != nil {
 			return nil, err
 		}
 		a.reconcilers = append(a.reconcilers, reconciler)
-		administration, err := namespaces.NewAdministration(system.Resources, opts.PolicyNamespace, opts.ProtectedNamespaces, opts.RestrictedBindingNamePrefixes)
+		administration, err := namespaces.NewAdministration(system.Resources, origin.Resources, target.Name, opts.PolicyNamespace, opts.ProtectedNamespaces, opts.RestrictedBindingNamePrefixes)
 		if err != nil {
 			return nil, err
 		}

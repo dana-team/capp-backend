@@ -70,7 +70,7 @@ func (h *Handler) createManagedNamespace(c *gin.Context) {
 		}
 		progress.completed = append(progress.completed, stepQuotaSaved)
 	}
-	if err := admin.client.Create(c.Request.Context(), policy); err != nil {
+	if err := admin.policyClient.Create(c.Request.Context(), policy); err != nil {
 		progress.respondError(c, err)
 		return
 	}
@@ -103,7 +103,7 @@ func (h *Handler) deleteManagedNamespace(c *gin.Context) {
 	}
 	progress.completed = append(progress.completed, "namespaceDeletionAccepted")
 	if policy != nil {
-		err := admin.client.Delete(c.Request.Context(), policy, client.Preconditions{UID: &policy.UID, ResourceVersion: &policy.ResourceVersion})
+		err := admin.policyClient.Delete(c.Request.Context(), policy, client.Preconditions{UID: &policy.UID, ResourceVersion: &policy.ResourceVersion})
 		if err != nil && !k8serrors.IsNotFound(err) {
 			progress.respondError(c, err)
 			return
@@ -140,7 +140,7 @@ func (a *Administration) prepareNamespaceCreate(ctx context.Context, req CreateN
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	policy, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: req.Name, Bindings: bindings}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	policy, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: req.Name, Bindings: bindings}).ConfigMap(a.clusterName, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
 	if err != nil {
 		return nil, nil, nil, apierrors.NewBadRequest("invalid namespace membership")
 	}
@@ -152,6 +152,11 @@ func (a *Administration) prepareNamespaceCreate(ctx context.Context, req CreateN
 			return nil, nil, nil, err
 		}
 	}
+	// Check origin storage before any target write. This cannot make cross-cluster
+	// writes atomic; later failures retain acknowledged resources for recovery.
+	if err := a.checkPolicyStorage(ctx); err != nil {
+		return nil, nil, nil, authorization.ErrUnavailable
+	}
 	// Both names are create-only. In particular, an orphan policy must never be
 	// adopted by a newly created namespace, even when it is still unassociated.
 	err = a.client.Get(ctx, client.ObjectKeyFromObject(ns), &corev1.Namespace{})
@@ -161,7 +166,7 @@ func (a *Administration) prepareNamespaceCreate(ctx context.Context, req CreateN
 	if !k8serrors.IsNotFound(err) {
 		return nil, nil, nil, err
 	}
-	err = a.client.Get(ctx, client.ObjectKeyFromObject(policy), &corev1.ConfigMap{})
+	err = a.policyClient.Get(ctx, client.ObjectKeyFromObject(policy), &corev1.ConfigMap{})
 	if err == nil {
 		return nil, nil, nil, apierrors.NewConflict("policy already exists; manual recovery required")
 	}

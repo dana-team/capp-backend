@@ -119,7 +119,7 @@ func TestListAggregate(t *testing.T) {
 	t.Run("empty and unavailable collections perform no reads", func(t *testing.T) {
 		store, _, _ := policyStore(t, nil)
 		pending, _, _ := policyStore(t, func(cm *corev1.ConfigMap, _ *corev1.Namespace) { cm.Annotations = nil })
-		unsynced, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
+		unsynced, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 		require.NoError(t, err)
 		execution := aggregateClient(t, interceptor.Funcs{
 			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
@@ -293,7 +293,7 @@ func addAggregateNamespace(t *testing.T, store *authorization.Store, observation
 	_, err := observations.CoreV1().Namespaces().Create(t.Context(), ns, metav1.CreateOptions{})
 	require.NoError(t, err)
 	cm := policy.DeepCopy()
-	cm.Name = "capp-assignment-" + name
+	cm.Name = authorization.PolicyName("c1", name)
 	cm.Data["policy.json"] = aggregatePolicyJSON(t, name, []authorization.Binding{
 		{Kind: rbacv1.UserKind, Name: "alice", Role: authorization.RoleViewer},
 	})
@@ -308,7 +308,7 @@ func aggregateSecret(namespace string) *corev1.Secret {
 
 func changeAggregateAccess(t *testing.T, store *authorization.Store, observations *fake.Clientset, namespace, change string) {
 	t.Helper()
-	cm, err := observations.CoreV1().ConfigMaps("capp-system").Get(t.Context(), "capp-assignment-"+namespace, metav1.GetOptions{})
+	cm, err := observations.CoreV1().ConfigMaps("capp-system").Get(t.Context(), authorization.PolicyName("c1", namespace), metav1.GetOptions{})
 	require.NoError(t, err)
 	cm.ResourceVersion = "2"
 	switch change {
