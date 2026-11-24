@@ -227,6 +227,18 @@ resources:
   #       builderEnv:                     # set on the builder container; stored in a ConfigMap, so no tokens
   #         - name: PIP_INDEX_URL
   #           value: "https://registry.example.internal/pypi/simple"
+  #         - name: PIP_CERT              # pip ignores SSL_CERT_FILE
+  #           value: "/etc/cfunc/trusted-ca/ca-bundle.crt"
+  #       runtimeEnv:                     # set on the runtime container of every pool; a pool's own env of the same name wins
+  #         - name: SSL_CERT_FILE         # Python ssl/urllib, Go, Ruby, PHP
+  #           value: "/etc/cfunc/trusted-ca/ca-bundle.crt"
+  #         - name: REQUESTS_CA_BUNDLE    # Python requests, which ignores SSL_CERT_FILE
+  #           value: "/etc/cfunc/trusted-ca/ca-bundle.crt"
+  #     node:
+  #       image: "node-env:1.35.0"
+  #       runtimeEnv:
+  #         - name: NODE_EXTRA_CA_CERTS   # added to Node's own roots; read once, when the process starts
+  #           value: "/etc/cfunc/trusted-ca/ca-bundle.crt"
   #     java:
   #       image: "jvm-env:1.32.0"
   #       buildImage: "jvm-builder:1.32.0"
@@ -237,6 +249,15 @@ resources:
   #   builderResources:                   # the builder container of a pool with a build image (one pod per such pool); Fission sets none
   #     requests: {cpu: "100m", memory: "256Mi"}
   #     limits:   {cpu: "1", memory: "1Gi"}
+  #   trustedCA:                          # CA bundle for pools on a network with a private CA (an internal package mirror, internal APIs)
+  #     configMap: ""                     # ConfigMap name; mounted read-only at /etc/cfunc/trusted-ca in the runtime and builder containers
+  #                                       # (each key is a file). It must already exist, with data, in every namespace that holds a pool;
+  #                                       # the backend never creates it and refuses a pool create or update (409) where it is missing.
+  #                                       # On OpenShift, a ConfigMap labelled config.openshift.io/inject-trusted-cabundle=true is filled
+  #                                       # with the cluster bundle (key ca-bundle.crt); elsewhere, trust-manager can sync one.
+  #                                       # A mounted file is trusted by nothing until a flavor's runtimeEnv/builderEnv points at it,
+  #                                       # and SSL_CERT_FILE/REQUESTS_CA_BUNDLE replace the default roots: the bundle must also hold the
+  #                                       # public CAs. Existing pools get the mount on their next update. Or CAPP_RESOURCES_CFUNC_TRUSTEDCA_CONFIGMAP.
   #   onboardNamespaces: false            # true: the first pool of a namespace sets fission.io/enabled=true on it (Fission tenancy.mode=dynamic)
   #   functions:                          # code from a git repository that runs in a pool, with http and cron triggers
   #     enabled: false

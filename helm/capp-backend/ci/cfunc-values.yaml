@@ -25,10 +25,19 @@ config:
           builderEnv:
             - name: PIP_INDEX_URL
               value: "https://registry.example.internal/pypi/simple"
+            - name: PIP_CERT
+              value: /etc/cfunc/trusted-ca/ca-bundle.crt
+          runtimeEnv:
+            - name: SSL_CERT_FILE
+              value: /etc/cfunc/trusted-ca/ca-bundle.crt
+            - name: REQUESTS_CA_BUNDLE
+              value: /etc/cfunc/trusted-ca/ca-bundle.crt
         java:
           image: "jvm-env:1.32.0"
           buildImage: "jvm-builder:1.32.0"
           keepArchive: true
+      trustedCA:
+        configMap: trusted-ca-bundle
       onboardNamespaces: true
       functions:
         enabled: true

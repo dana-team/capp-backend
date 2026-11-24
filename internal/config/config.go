@@ -368,6 +368,10 @@ type CfuncConfig struct {
 	// BuilderResources are set on the builder container; Fission sets none.
 	BuilderResources ResourceSize `mapstructure:"builderResources"`
 
+	// TrustedCA mounts a CA bundle into the runtime container of every pool
+	// and the builder container of every pool with a build image.
+	TrustedCA CfuncTrustedCA `mapstructure:"trustedCA"`
+
 	// OnboardNamespaces makes the first pool of a namespace set the
 	// fission.io/enabled=true label on that namespace. It has an effect only
 	// when Fission runs with tenancy.mode=dynamic. Default: false.
@@ -442,11 +446,26 @@ type CfuncFlavor struct {
 	// lowercases map keys, which would rename the variables.
 	BuilderEnv []CfuncEnvVar `mapstructure:"builderEnv"`
 
+	// RuntimeEnv is set on the runtime container of every pool of the
+	// flavor, for example the variables that point a language at the trusted
+	// CA bundle. A variable of the same name in the pool's own env wins.
+	RuntimeEnv []CfuncEnvVar `mapstructure:"runtimeEnv"`
+
 	// KeepArchive hands the runtime the package as one archive (JVM .jar).
 	KeepArchive bool `mapstructure:"keepArchive"`
 }
 
-// CfuncEnvVar is one name/value pair of a builder container.
+// CfuncTrustedCA names the ConfigMap that holds the CA bundle pools trust.
+type CfuncTrustedCA struct {
+	// ConfigMap is the name of a ConfigMap that must exist in every namespace
+	// that holds a pool; the backend does not create it. It is mounted whole,
+	// read-only, at /etc/cfunc/trusted-ca, so each key is a file there. A
+	// mounted file is not trusted by itself: a flavor's runtimeEnv and
+	// builderEnv point the language at it. Empty mounts nothing.
+	ConfigMap string `mapstructure:"configMap"`
+}
+
+// CfuncEnvVar is one name/value pair of a builder or runtime container.
 type CfuncEnvVar struct {
 	Name  string `mapstructure:"name"`
 	Value string `mapstructure:"value"`
@@ -870,6 +889,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("resources.cfunc.builderResources.requests.memory", "256Mi")
 	v.SetDefault("resources.cfunc.builderResources.limits.cpu", "1")
 	v.SetDefault("resources.cfunc.builderResources.limits.memory", "1Gi")
+	v.SetDefault("resources.cfunc.trustedCA.configMap", "")
 	v.SetDefault("resources.cfunc.onboardNamespaces", false)
 	v.SetDefault("resources.cfunc.functions.enabled", false)
 	v.SetDefault("resources.cfunc.functions.git.baseURL", "")

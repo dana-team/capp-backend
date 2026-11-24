@@ -63,3 +63,22 @@ func NewCatalog(cfg config.CfuncConfig) (*Catalog, error) {
 	}
 	return c, nil
 }
+
+// trustedCA returns the volume and mount of the trusted CA ConfigMap, or two
+// nils when none is configured. The ConfigMap is mounted whole, with no items
+// and no subPath, so the kubelet updates the files of running pods when the
+// bundle rotates, and a key is a file without being named here.
+func (c *Catalog) trustedCA() (*corev1.Volume, *corev1.VolumeMount) {
+	name := c.cfg.TrustedCA.ConfigMap
+	if name == "" {
+		return nil, nil
+	}
+	volume := &corev1.Volume{
+		Name: trustedCAVolumeName,
+		VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: name},
+		}},
+	}
+	mount := &corev1.VolumeMount{Name: trustedCAVolumeName, MountPath: TrustedCAMountPath, ReadOnly: true}
+	return volume, mount
+}

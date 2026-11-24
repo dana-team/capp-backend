@@ -181,6 +181,12 @@ data:
         builderResources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
+        {{- with .trustedCA }}
+        {{- if .configMap }}
+        trustedCA:
+          configMap: {{ .configMap | quote }}
+        {{- end }}
+        {{- end }}
         onboardNamespaces: {{ .onboardNamespaces | default false }}
         {{- with .functions }}
         {{- if .enabled }}
