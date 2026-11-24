@@ -8,6 +8,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/pkg/k8s"
@@ -238,4 +239,26 @@ func (h *Handler) kubernetesMigrationTarget(c *gin.Context, req MigrateRequest) 
 	}
 
 	return targetClient
+}
+
+// recordMigrated records the desired state of everything a migration created.
+// The copies are recorded as they were created, so drift of the source is
+// carried over as the target's desired state.
+func (h *Handler) recordMigrated(c *gin.Context, targetClient client.Client, req MigrateRequest, capp *cappv1alpha1.Capp, secrets []corev1.Secret, configMaps []corev1.ConfigMap) []Warning {
+	if !h.tracker.Enabled() {
+		return nil
+	}
+	ref := func(kind desiredstate.Kind, name string) desiredstate.Ref {
+		return desiredstate.Ref{Cluster: req.TargetCluster, Kind: kind, Namespace: req.TargetNamespace, Name: name}
+	}
+	warnings := h.tracker.Record(c, ref(desiredstate.KindCapp, capp.Name), targetClient, capp)
+	for i := range secrets {
+		copied := prepareDependentResource(&secrets[i], req.TargetNamespace)
+		warnings = append(warnings, h.tracker.Record(c, ref(desiredstate.KindSecret, copied.Name), targetClient, copied)...)
+	}
+	for i := range configMaps {
+		copied := prepareDependentResource(&configMaps[i], req.TargetNamespace)
+		warnings = append(warnings, h.tracker.Record(c, ref(desiredstate.KindConfigMap, copied.Name), targetClient, copied)...)
+	}
+	return warnings
 }

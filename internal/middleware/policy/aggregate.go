@@ -52,6 +52,33 @@ func ListAggregates(c *gin.Context, lists ...client.ObjectList) bool {
 	return true
 }
 
+// AggregateNamespaces returns the namespaces the prepared aggregate request may
+// read. The result is never nil, so an empty one grants nothing.
+func AggregateNamespaces(c *gin.Context) ([]string, error) {
+	decision, ok := requestPolicyDecision(c)
+	if !Enabled(c) || !ok || decision.category != Aggregate || decision.aggregateNamespaces == nil {
+		return nil, authorization.ErrDenied
+	}
+	return decision.aggregateNamespaces()
+}
+
+func eligibleNamespaces(target Target, cred auth.ClusterCredential, roles []string, decision policyDecision) ([]string, error) {
+	if target.Store == nil {
+		return nil, authorization.ErrUnavailable
+	}
+	states, synced := target.Store.Eligible(cred.ImpersonateUser, cred.ImpersonateGroups, roles)
+	if !synced {
+		return nil, authorization.ErrUnavailable
+	}
+	namespaces := make([]string, 0, len(states))
+	for _, state := range states {
+		if decision.namespaceAllowed(state.Namespace.Name) {
+			namespaces = append(namespaces, state.Namespace.Name)
+		}
+	}
+	return namespaces, nil
+}
+
 func listAggregate(c *gin.Context, list client.ObjectList, target Target, cred auth.ClusterCredential, roles []string, decision policyDecision, logger *zap.Logger, options ...client.ListOption) error {
 	if target.Store == nil {
 		return authorization.ErrUnavailable

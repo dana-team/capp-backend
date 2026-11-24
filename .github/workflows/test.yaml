@@ -12,7 +12,7 @@ on:
       - "internal/apierrors/**"
       - "internal/cluster/**"
       - "internal/config/**"
-      - "internal/gitops/**"
+      - "internal/desiredstate/**"
       - "internal/middleware/**"
       - "internal/resources/**"
       - "internal/server/**"
@@ -33,7 +33,7 @@ on:
       - "internal/apierrors/**"
       - "internal/cluster/**"
       - "internal/config/**"
-      - "internal/gitops/**"
+      - "internal/desiredstate/**"
       - "internal/middleware/**"
       - "internal/resources/**"
       - "internal/server/**"
@@ -63,6 +63,13 @@ jobs:
   go:
     name: Go lint & test
     runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+    env:
+      CAPP_TEST_MONGO_URI: mongodb://127.0.0.1:27017
     steps:
       - name: Checkout
         uses: actions/checkout@v7

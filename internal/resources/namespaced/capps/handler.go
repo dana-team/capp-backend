@@ -1,17 +1,18 @@
 package capps
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
-	"github.com/dana-team/capp-backend/pkg/k8s"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
+	"github.com/dana-team/capp-backend/pkg/api/drift"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -19,40 +20,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// GitOpsSyncer is the subset of the gitops.Client interface that the
-// sync handler needs. Using an interface allows unit testing with fakes.
-type GitOpsSyncer interface {
-	SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error)
-	DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error)
-	BuildRelPath(gitOpsPath, namespace, cappName string) string
-}
-
 // Handler implements resources.ResourceHandler for the rcs.dana.io/v1alpha1
 // Capp custom resource. It provides full CRUD over Capps through the
 // per-request scoped Kubernetes client prepared by the active authorization middleware.
 type Handler struct {
-	gitopsEnabled bool
-	gitops        GitOpsSyncer
 	clusterMgr    cluster.ClusterManager
 	sizes         config.CappSizes
 	observability config.ObservabilityConfig
 	prometheus    promv1.API
+	tracker       *tracking.Tracker
 	// logStreams holds one token per open log stream; its capacity is
 	// resources.capps.maxLogStreams.
 	logStreams chan struct{}
 }
 
-// New returns a ready-to-use Capp Handler. When gitops is disabled, pass nil
-// for the syncer — the sync endpoint will return 501. Pass nil for clusterMgr
-// when migration is not needed (e.g. in tests that don't exercise migrate).
+// New returns a ready-to-use Capp Handler. Pass nil for clusterMgr when
+// migration is not needed (e.g. in tests that don't exercise migrate).
 // When observability is disabled, the metrics endpoints return 501.
 //
 // It returns an error only when observability is enabled and the Prometheus
 // client cannot be built; config.Validate already parses QueryURL, so this
 // is a startup-time configuration failure, not a condition the metrics
 // endpoints should have to handle at request time.
-func New(gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes, observability config.ObservabilityConfig) (*Handler, error) {
-	h := &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, clusterMgr: clusterMgr, sizes: sizes, observability: observability,
+func New(clusterMgr cluster.ClusterManager, sizes config.CappSizes, observability config.ObservabilityConfig) (*Handler, error) {
+	h := &Handler{clusterMgr: clusterMgr, sizes: sizes, observability: observability,
 		logStreams: make(chan struct{}, defaultMaxLogStreams)}
 	prometheus, err := newPrometheusAPI(observability)
 	if err != nil {
@@ -71,6 +62,13 @@ func (h *Handler) WithMaxLogStreams(n int) *Handler {
 	return h
 }
 
+// WithTracker records the desired state of Capps and reports their drift. A nil
+// tracker leaves both off.
+func (h *Handler) WithTracker(tracker *tracking.Tracker) *Handler {
+	h.tracker = tracker
+	return h
+}
+
 // Name returns the handler's identifier, matching the resources.capps config key.
 func (h *Handler) Name() string { return "capps" }
 
@@ -86,14 +84,22 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	ns.GET("/:name", h.get)
 	ns.PUT("/:name", h.update)
 	ns.DELETE("/:name", h.delete)
-	ns.POST("/:name/sync", h.sync)
 	ns.POST("/:name/migrate", h.migrate)
-	ns.DELETE("/:name/sync", h.unsync)
 	ns.POST("/:name/rollout", h.rolloutAction)
 	ns.DELETE("/:name/rollout/strategy", h.removeRolloutStrategy)
 	ns.GET("/:name/metrics", h.listMetrics)
 	ns.GET("/:name/metrics/:metric", h.queryMetric)
 	ns.GET("/:name/logs", h.logs)
+
+	tracking.Actions{
+		Tracker: h.tracker,
+		Kind:    desiredstate.KindCapp,
+		New:     func() client.Object { return &cappv1alpha1.Capp{} },
+	}.Register(ns)
+}
+
+func cappRef(c *gin.Context) desiredstate.Ref {
+	return tracking.Ref(c, desiredstate.KindCapp, c.Param("namespace"), c.Param("name"))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -106,7 +112,8 @@ func (h *Handler) listAll(c *gin.Context) {
 		return
 	}
 
-	h.respondList(c, cappList)
+	drifts, missing := h.tracker.InspectAll(c, desiredstate.KindCapp, tracking.Objects(cappList.Items))
+	h.respondList(c, cappList, drifts, missing)
 }
 
 // list handles GET /api/v1/clusters/:cluster/namespaces/:namespace/capps
@@ -123,7 +130,8 @@ func (h *Handler) list(c *gin.Context) {
 		return
 	}
 
-	h.respondList(c, cappList)
+	drifts, missing := h.tracker.InspectList(c, desiredstate.KindCapp, namespace, tracking.Objects(cappList.Items))
+	h.respondList(c, cappList, drifts, missing)
 }
 
 // get handles GET /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
@@ -138,14 +146,15 @@ func (h *Handler) get(c *gin.Context) {
 	var capp cappv1alpha1.Capp
 	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &capp); err != nil {
 		if k8serrors.IsNotFound(err) {
-			apierrors.Respond(c, apierrors.NewNotFound("Capp", name))
-			return
+			err = apierrors.NewNotFound("Capp", name)
 		}
-		apierrors.Respond(c, err)
+		h.tracker.RespondReadError(c, cappRef(c), nil, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, FromK8s(&capp, h.sizes))
+	resp := FromK8s(&capp, h.sizes)
+	resp.Drift = h.tracker.Inspect(c, cappRef(c), &capp)
+	c.JSON(http.StatusOK, resp)
 }
 
 // create handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps
@@ -167,12 +176,15 @@ func (h *Handler) create(c *gin.Context) {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
 	}
+	write := h.tracker.Begin(c, tracking.Ref(c, desiredstate.KindCapp, namespace, capp.Name))
 	if err := k8sClient.Create(c.Request.Context(), capp); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
 
-	c.JSON(http.StatusCreated, FromK8s(capp, h.sizes))
+	resp := FromK8s(capp, h.sizes)
+	resp.Warnings = append(resp.Warnings, write.Save(c, k8sClient, capp)...)
+	c.JSON(http.StatusCreated, resp)
 }
 
 // update handles PUT /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name
@@ -205,6 +217,11 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
+	write := h.tracker.Begin(c, cappRef(c))
+	if _, ok := write.ResolveDrift(c, &existing); !ok {
+		return
+	}
+
 	updated, err := ToK8s(req, &existing, namespace, h.sizes)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
@@ -212,28 +229,13 @@ func (h *Handler) update(c *gin.Context) {
 	}
 	updated.Name = name // URL param is authoritative
 
-	backup := h.isGitSyncEnabledForCapp(&existing)
-	var meta cluster.ClusterMeta
-	if backup {
-		meta, err = ExtractClusterMeta(c)
-		if err != nil {
-			apierrors.Respond(c, apierrors.NewInternal(err))
-			return
-		}
-	}
-
 	if err := k8sClient.Update(ctx, updated); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
 
 	resp := FromK8s(updated, h.sizes)
-	if backup {
-		if _, err := h.syncCappValues(ctx, meta, updated); err != nil {
-			resp.Warnings = append(resp.Warnings, BackupWarning(c, err))
-		}
-	}
-
+	resp.Warnings = append(resp.Warnings, write.Save(c, k8sClient, updated)...)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -257,141 +259,13 @@ func (h *Handler) delete(c *gin.Context) {
 		return
 	}
 
-	backup := h.isGitSyncEnabledForCapp(&capp)
-	var meta cluster.ClusterMeta
-	if backup {
-		var err error
-		meta, err = ExtractClusterMeta(c)
-		if err != nil {
-			apierrors.Respond(c, apierrors.NewInternal(err))
-			return
-		}
-	}
-
+	write := h.tracker.Begin(c, cappRef(c))
 	if err := k8sClient.Delete(ctx, &capp); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
 
-	if backup {
-		if _, err := h.gitops.DeleteValues(ctx, meta.Name, namespace, name); err != nil {
-			c.JSON(http.StatusOK, DeleteResponse{Warnings: []Warning{BackupWarning(c, err)}})
-			return
-		}
-	}
-
-	c.Status(http.StatusNoContent)
-}
-
-// sync handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync
-// It enables Git sync (adds the backup label) and pushes the current values.
-func (h *Handler) sync(c *gin.Context) {
-	h.setGitSync(c, true)
-}
-
-// unsync handles DELETE /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync
-// It disables Git sync: removes the values file and the backup label from the capp.
-func (h *Handler) unsync(c *gin.Context) {
-	h.setGitSync(c, false)
-}
-
-func (h *Handler) setGitSync(c *gin.Context, enable bool) {
-	if !h.isGitOpsConfigured() {
-		apierrors.Respond(c, apierrors.NewNotSupported("sync"))
-		return
-	}
-
-	k8sClient := namespaced.ExtractClient(c)
-	if k8sClient == nil {
-		return
-	}
-	namespace := c.Param("namespace")
-	name := c.Param("name")
-	ctx := c.Request.Context()
-
-	var capp cappv1alpha1.Capp
-	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &capp); err != nil {
-		if k8serrors.IsNotFound(err) {
-			apierrors.Respond(c, apierrors.NewNotFound("Capp", name))
-			return
-		}
-		apierrors.Respond(c, err)
-		return
-	}
-
-	meta, err := ExtractClusterMeta(c)
-	if err != nil {
-		apierrors.Respond(c, apierrors.NewInternal(err))
-		return
-	}
-
-	// Write git before the label. If git fails nothing has changed anywhere, so
-	// the caller can simply retry. The reverse order can leave the label and the
-	// values file disagreeing, which orphans the backup.
-	var commitSHA string
-	if enable {
-		commitSHA, err = h.syncCappValues(ctx, meta, &capp)
-	} else {
-		commitSHA, err = h.gitops.DeleteValues(ctx, meta.Name, namespace, name)
-	}
-	if err != nil {
-		apierrors.Respond(c, apierrors.NewGitopsFailed(err))
-		return
-	}
-
-	patched := capp.DeepCopy()
-	if enable {
-		if patched.Labels == nil {
-			patched.Labels = map[string]string{}
-		}
-		patched.Labels[k8s.LabelBackupToGit] = "true"
-	} else {
-		delete(patched.Labels, k8s.LabelBackupToGit)
-	}
-
-	if err := k8sClient.Patch(ctx, patched, client.MergeFrom(&capp)); err != nil {
-		apierrors.Respond(c, err)
-		return
-	}
-
-	c.JSON(http.StatusOK, SyncResponse{
-		Enabled:   enable,
-		CommitSHA: commitSHA,
-		Path:      h.gitops.BuildRelPath(meta.Name, namespace, name),
-	})
-}
-
-// Git sync helpers
-
-func (h *Handler) isGitOpsConfigured() bool {
-	return h.gitopsEnabled && h.gitops != nil
-}
-
-func (h *Handler) isGitSyncEnabledForCapp(capp *cappv1alpha1.Capp) bool {
-	return h.isGitOpsConfigured() && k8s.HasBackupLabel(capp.Labels)
-}
-
-// BackupWarning records err on the request and returns the warning attached
-// to a response whose cluster write succeeded but whose Git backup failed.
-func BackupWarning(c *gin.Context, err error) Warning {
-	_ = c.Error(fmt.Errorf("git backup: %w", err))
-	return Warning{
-		Code:    apierrors.CodeGitopsFailed,
-		Message: "the Capp was changed in the cluster, but its Git backup was not updated; sync/unsync to refresh it",
-	}
-}
-
-func (h *Handler) syncCappValues(ctx context.Context, meta cluster.ClusterMeta, capp *cappv1alpha1.Capp) (string, error) {
-	return SyncCappValues(ctx, h.gitops, meta, capp)
-}
-
-// SyncCappValues renders capp's Helm values and pushes them to the GitOps repo.
-func SyncCappValues(ctx context.Context, gitops GitOpsSyncer, meta cluster.ClusterMeta, capp *cappv1alpha1.Capp) (string, error) {
-	valuesYAML, err := GenerateValues(capp)
-	if err != nil {
-		return "", fmt.Errorf("generate values: %w", err)
-	}
-	return gitops.SyncValues(ctx, meta.Name, capp.Namespace, capp.Name, valuesYAML)
+	tracking.RespondDeleted(c, write.Delete(c))
 }
 
 // migrate handles POST /api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate
@@ -498,6 +372,7 @@ func (h *Handler) migrate(c *gin.Context) {
 	for i := range configMaps {
 		resp.CopiedConfigMaps = append(resp.CopiedConfigMaps, configMaps[i].Name)
 	}
+	resp.Warnings = h.recordMigrated(c, targetClient, req, targetCapp, secrets, configMaps)
 
 	if req.DeleteSource {
 		if err := sourceClient.Delete(ctx, &sourceCapp); err != nil {
@@ -506,6 +381,7 @@ func (h *Handler) migrate(c *gin.Context) {
 			return
 		}
 		resp.SourceDeleted = true
+		resp.Warnings = append(resp.Warnings, h.tracker.Forget(c, cappRef(c))...)
 
 		if _, hasBypass := targetCapp.Annotations[migrationBypassAnnotation]; hasBypass {
 			patch := client.MergeFrom(targetCapp.DeepCopy())
@@ -533,10 +409,12 @@ func ExtractClusterMeta(c *gin.Context) (cluster.ClusterMeta, error) {
 }
 
 // respondList converts a CappList into a CappListResponse and writes it.
-func (h *Handler) respondList(c *gin.Context, cappList cappv1alpha1.CappList) {
+func (h *Handler) respondList(c *gin.Context, cappList cappv1alpha1.CappList, drifts []*drift.Drift, missing []drift.Missing) {
 	items := make([]CappResponse, 0, len(cappList.Items))
 	for i := range cappList.Items {
-		items = append(items, FromK8s(&cappList.Items[i], h.sizes))
+		item := FromK8s(&cappList.Items[i], h.sizes)
+		item.Drift = drifts[i]
+		items = append(items, item)
 	}
-	c.JSON(http.StatusOK, CappListResponse{Items: items, Total: len(items)})
+	c.JSON(http.StatusOK, CappListResponse{Items: items, Total: len(items), Missing: missing})
 }

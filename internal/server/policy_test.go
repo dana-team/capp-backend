@@ -108,7 +108,7 @@ func TestBackendPolicyDeniedAPIs(t *testing.T) {
 	r := policyRouter(t, policyIdentity("editor"), mgr, requestpolicy.Target{ExecutionClient: &clientThatMustNotRun{t: t}}, zap.NewNop())
 	group := r.Group("/api/v1/clusters/:cluster")
 	nshandler.New(zap.NewNop()).RegisterRoutes(group)
-	newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{
+	newCappsHandler(t, nil, config.ObservabilityConfig{
 		Enabled:  true,
 		QueryURL: prometheus.URL,
 		Metrics:  []config.MetricsQuery{{Name: "cpu", Type: "gauge", Query: "up{$selector}", NamespaceLabel: "namespace", ObjectLabel: "capp"}},
@@ -276,7 +276,7 @@ func (c *clientThatMustNotRun) List(context.Context, client.ObjectList, ...clien
 // Fake clients need explicit REST mappings for the namespace wrapper's scope checks.
 func policyExecutionMapper() meta.RESTMapper {
 	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{corev1.SchemeGroupVersion, cappv1alpha1.GroupVersion})
-	for _, kind := range []string{"Secret", "SecretList", "ConfigMapList"} {
+	for _, kind := range []string{"Secret", "SecretList", "ConfigMap", "ConfigMapList"} {
 		mapper.Add(corev1.SchemeGroupVersion.WithKind(kind), meta.RESTScopeNamespace)
 	}
 	for _, kind := range []string{"Capp", "CappList", "CappRevision", "CappRevisionList"} {
@@ -503,7 +503,7 @@ func TestBackendPolicyProviderRoutes(t *testing.T) {
 					router := p.router(t, map[string]requestpolicy.Target{"c1": {Store: store, OperatorGroups: []string{"operators"}}})
 					group := router.Group("/api/v1/clusters/:cluster")
 					configmaps.New().RegisterRoutes(group)
-					newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
+					newCappsHandler(t, nil, config.ObservabilityConfig{}).RegisterRoutes(group)
 					admin, err := nshandler.NewAdministration(p.clients["c1"].Resources, "capp-system", nil, nil)
 					if err != nil {
 						t.Fatal(err)

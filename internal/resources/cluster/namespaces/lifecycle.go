@@ -9,9 +9,11 @@ import (
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	requestpolicy "github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -57,20 +59,8 @@ func (h *Handler) createManagedNamespace(c *gin.Context) {
 		return
 	}
 	progress.policy = policy
-	if err := admin.client.Create(c.Request.Context(), ns); err != nil {
-		progress.respondError(c, err)
-		return
-	}
-	progress.completed = append(progress.completed, "namespaceCreated")
-	metav1.SetMetaDataAnnotation(&policy.ObjectMeta, authorization.NamespaceUIDAnnotation, string(ns.UID))
-	if quota != nil {
-		if err := admin.client.Create(c.Request.Context(), quota); err != nil {
-			progress.respondError(c, err)
-			return
-		}
-		progress.completed = append(progress.completed, stepQuotaSaved)
-	}
-	if err := admin.client.Create(c.Request.Context(), policy); err != nil {
+	write := h.tracker.Begin(c, desiredstate.NamespaceRef(c.Param("cluster"), req.Name))
+	if err := admin.createNamespace(c.Request.Context(), &progress, ns, quota, policy); err != nil {
 		progress.respondError(c, err)
 		return
 	}
@@ -79,7 +69,25 @@ func (h *Handler) createManagedNamespace(c *gin.Context) {
 	if quota != nil {
 		item.Quota = quotaInfoFromK8s(quota)
 	}
+	item.Warnings = record(c, write, admin.access(req.Name))
 	c.JSON(http.StatusCreated, item)
+}
+
+// createNamespace creates the prepared namespace, quota and policy, in this
+// order, and records every finished step in progress.
+func (a *Administration) createNamespace(ctx context.Context, progress *namespaceOperation, ns *corev1.Namespace, quota *corev1.ResourceQuota, policy *corev1.ConfigMap) error {
+	if err := a.client.Create(ctx, ns); err != nil {
+		return err
+	}
+	progress.completed = append(progress.completed, "namespaceCreated")
+	metav1.SetMetaDataAnnotation(&policy.ObjectMeta, authorization.NamespaceUIDAnnotation, string(ns.UID))
+	if quota != nil {
+		if err := a.client.Create(ctx, quota); err != nil {
+			return err
+		}
+		progress.completed = append(progress.completed, stepQuotaSaved)
+	}
+	return a.client.Create(ctx, policy)
 }
 
 func (h *Handler) deleteManagedNamespace(c *gin.Context) {
@@ -110,7 +118,7 @@ func (h *Handler) deleteManagedNamespace(c *gin.Context) {
 		}
 	}
 	progress.succeeded = true
-	c.Status(http.StatusNoContent)
+	tracking.RespondDeleted(c, h.tracker.DeleteNamespace(c, progress.namespace))
 }
 
 // requireAdministration verifies operator access and returns the cluster's

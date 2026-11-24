@@ -156,7 +156,7 @@ func appCapp() *cappv1alpha1.Capp {
 
 func logEngine(t *testing.T, streamer cluster.PodStream, objects ...client.Object) *gin.Engine {
 	t.Helper()
-	return logEngineWith(t, mustHandler(t, false, nil, nil, makeSizes()), streamer, objects...)
+	return logEngineWith(t, mustHandler(t, nil, makeSizes()), streamer, objects...)
 }
 
 func logEngineWith(t *testing.T, h *Handler, streamer cluster.PodStream, objects ...client.Object) *gin.Engine {
@@ -655,7 +655,7 @@ func TestLogsRetryAfterARestartResumes(t *testing.T) {
 
 func TestLogsCapsTheOpenStreams(t *testing.T) {
 	streamer := newFakeStreamer()
-	engine := logEngineWith(t, mustHandler(t, false, nil, nil, makeSizes()).WithMaxLogStreams(1), streamer, appCapp())
+	engine := logEngineWith(t, mustHandler(t, nil, makeSizes()).WithMaxLogStreams(1), streamer, appCapp())
 	first := openStream(t, engine, "")
 	streamer.nextWatch(t)
 

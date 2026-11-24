@@ -36,7 +36,6 @@ type (
 	ScaleSpec                = api.ScaleSpec
 	CappRequest              = api.CappRequest
 	ConditionResponse        = api.ConditionResponse
-	SyncResponse             = api.SyncResponse
 	StateStatusResponse      = api.StateStatusResponse
 	RevisionTrafficResponse  = api.RevisionTrafficResponse
 	RolloutStatusResponse    = api.RolloutStatusResponse

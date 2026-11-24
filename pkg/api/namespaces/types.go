@@ -1,15 +1,24 @@
 // Package namespaces holds the namespace request/response DTOs of the REST API.
 //
-// It imports nothing, so clients (cappctl, capp-mcp) can share these types
+// It imports only other DTO packages, so clients (cappctl, capp-mcp) can share these types
 // without pulling in the server handler and its Kubernetes/Gin dependencies.
 // The handler package internal/resources/cluster/namespaces aliases them.
 package namespaces
+
+import (
+	"github.com/dana-team/capp-backend/pkg/api/common"
+	"github.com/dana-team/capp-backend/pkg/api/drift"
+)
 
 // NamespaceListResponse is the response envelope for the list endpoint.
 type NamespaceListResponse struct {
 	Items     []NamespaceItem `json:"items"`
 	Total     int             `json:"total"`
 	CanCreate bool            `json:"canCreate"`
+
+	// Missing lists namespaces that have a recorded desired state but no longer
+	// exist. Only callers who can create namespaces receive it.
+	Missing []drift.Missing `json:"missing,omitempty"`
 }
 
 // UsedQuotaInfo holds current resource usage within a namespace's quota.
@@ -51,6 +60,13 @@ type NamespaceItem struct {
 	// CanEdit is true when the authenticated user has admin-level permission
 	// to modify the namespace's quota and full user list (via PUT).
 	CanEdit bool `json:"canEdit"`
+
+	// Warnings reports side effects that failed although the request succeeded.
+	Warnings []common.Warning `json:"warnings,omitempty"`
+
+	// Drift compares the namespace with its recorded desired state. Only
+	// requests for one namespace set it.
+	Drift *drift.Drift `json:"drift,omitempty"`
 }
 
 // ResourceQuota is the requested CPU/memory/pod limits for a namespace.

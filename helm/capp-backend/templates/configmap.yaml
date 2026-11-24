@@ -78,9 +78,6 @@ data:
       {{- range $i, $cluster := .Values.config.clusters }}
       - name: {{ $cluster.name | quote }}
         displayName: {{ $cluster.displayName | quote }}
-        {{- if $cluster.gitOpsPath }}
-        gitOpsPath: {{ $cluster.gitOpsPath | quote }}
-        {{- end }}
         {{- if $cluster.cfuncRouterURL }}
         cfuncRouterURL: {{ $cluster.cfuncRouterURL | quote }}
         {{- end }}
@@ -205,15 +202,13 @@ data:
       {{- end }}
       {{- end }}
 
-    {{- if .Values.config.gitops.enabled }}
-    gitops:
+    {{- if (dig "desiredState" "enabled" false .Values.config) }}
+
+    desiredState:
       enabled: true
-      repoURL: {{ .Values.config.gitops.repoURL | quote }}
-      branch: {{ .Values.config.gitops.branch | quote }}
-      authMethod: {{ .Values.config.gitops.authMethod | quote }}
-      {{- if .Values.config.gitops.sshKeyPath }}
-      sshKeyPath: {{ .Values.config.gitops.sshKeyPath | quote }}
-      {{- end }}
-      insecureHostKey: {{ .Values.config.gitops.insecureHostKey }}
-      pathPrefix: {{ .Values.config.gitops.pathPrefix | quote }}
+      mongo:
+        database: {{ dig "mongo" "database" "capp" .Values.config.desiredState | quote }}
+        timeoutSeconds: {{ dig "mongo" "timeoutSeconds" 3 .Values.config.desiredState }}
+      encryption:
+        activeKeyID: {{ required "config.desiredState.encryption.activeKeyID is required when desiredState is enabled" (dig "encryption" "activeKeyID" "" .Values.config.desiredState) | quote }}
     {{- end }}

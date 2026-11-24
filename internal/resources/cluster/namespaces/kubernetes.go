@@ -8,9 +8,12 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	"github.com/dana-team/capp-backend/internal/resources/utils"
+	"github.com/dana-team/capp-backend/pkg/api/drift"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -31,7 +34,10 @@ const (
 	clusterRoleKind = "ClusterRole"
 )
 
-const quotaNameSuffix = "-quota"
+const (
+	quotaNameSuffix       = "-quota"
+	roleBindingNameSuffix = "-capp-access"
+)
 
 // listKubernetes uses the OpenShift Projects API with the user-scoped client,
 // which returns only projects the user has access to. On vanilla Kubernetes the
@@ -81,7 +87,11 @@ func (h *Handler) listKubernetes(c *gin.Context) {
 		items[i].CanEdit = canCreate
 	}
 
-	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, Total: len(items), CanCreate: canCreate})
+	var missing []drift.Missing
+	if canCreate {
+		missing = h.missing(c, adminClient, func(string) bool { return true })
+	}
+	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, Total: len(items), CanCreate: canCreate, Missing: missing})
 }
 
 // canCreateCapps performs a SelfSubjectAccessReview to check whether the current
@@ -169,7 +179,7 @@ func (h *Handler) getKubernetes(c *gin.Context) {
 
 	ns := &corev1.Namespace{}
 	if err := adminClient.Get(c.Request.Context(), client.ObjectKey{Name: namespaceName}, ns); err != nil {
-		apierrors.Respond(c, err)
+		h.respondNamespaceReadError(c, userClient, err)
 		return
 	}
 
@@ -179,30 +189,27 @@ func (h *Handler) getKubernetes(c *gin.Context) {
 		return
 	}
 
-	rq := &corev1.ResourceQuota{}
-	err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: namespaceName + quotaNameSuffix, Namespace: namespaceName}, rq)
-	if err != nil && !k8serrors.IsNotFound(err) {
+	item, err := readKubernetesNamespace(c.Request.Context(), adminClient, namespaceName)
+	if err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
+	item.Status = string(ns.Status.Phase)
+	item.CanEdit, _ = canAccessNamespaces(c.Request.Context(), userClient, "create")
+	item.Drift = h.inspect(c, ns, item)
+	c.JSON(http.StatusOK, item)
+}
 
-	rb := &rbacv1.RoleBinding{}
-	err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: fmt.Sprintf("%s-capp-access", namespaceName), Namespace: namespaceName}, rb)
-	if err != nil && !k8serrors.IsNotFound(err) {
-		apierrors.Respond(c, err)
-		return
-	}
-
-	quota := quotaInfoFromK8s(rq)
-	users := []string{}
-	for _, subject := range rb.Subjects {
-		if subject.Kind == rbacv1.UserKind {
-			users = append(users, subject.Name)
+// respondNamespaceReadError adds the drift of a missing namespace to the error
+// for callers who could read the namespace if it existed.
+func (h *Handler) respondNamespaceReadError(c *gin.Context, userClient client.Client, err error) {
+	if h.tracker.Enabled() && k8serrors.IsNotFound(err) {
+		if allowed, reviewErr := canCreateCapps(c.Request.Context(), userClient, c.Param("namespace")); reviewErr == nil && allowed {
+			h.tracker.RespondReadError(c, namespaceRef(c), nil, err)
+			return
 		}
 	}
-	canEdit, _ := canAccessNamespaces(c.Request.Context(), userClient, "create")
-	item := NamespaceItem{Name: ns.Name, Status: string(ns.Status.Phase), Quota: quota, Users: &users, CanEdit: canEdit}
-	c.JSON(http.StatusOK, item)
+	apierrors.Respond(c, err)
 }
 
 // create handles POST /api/v1/clusters/:cluster/namespaces.
@@ -232,6 +239,7 @@ func (h *Handler) createKubernetes(c *gin.Context) {
 		return
 	}
 
+	write := h.tracker.Begin(c, desiredstate.NamespaceRef(c.Param("cluster"), ns.Name))
 	if err := createNamespace(c.Request.Context(), adminClient, ns); err != nil {
 		apierrors.Respond(c, err)
 		return
@@ -239,6 +247,7 @@ func (h *Handler) createKubernetes(c *gin.Context) {
 
 	item := buildNamespaceItem(c.Request.Context(), adminClient, ns.Name, string(corev1.NamespaceActive))
 	item.CanEdit = true
+	item.Warnings = record(c, write, kubernetesAccess(adminClient, ns.Name))
 	c.JSON(http.StatusCreated, item)
 }
 
@@ -274,6 +283,12 @@ func (h *Handler) updateKubernetes(c *gin.Context) {
 		return
 	}
 
+	access := kubernetesAccess(adminClient, nsName)
+	write := h.tracker.Begin(c, namespaceRef(c))
+	if !h.resolveDrift(c, write, access) {
+		return
+	}
+
 	if req.Quota != nil {
 		if err := updateNamespaceQuota(c.Request.Context(), adminClient, ns, *req.Quota); err != nil {
 			apierrors.Respond(c, err)
@@ -290,6 +305,7 @@ func (h *Handler) updateKubernetes(c *gin.Context) {
 
 	item := buildNamespaceItem(c.Request.Context(), adminClient, nsName, string(ns.Status.Phase))
 	item.CanEdit = true
+	item.Warnings = record(c, write, access)
 	c.JSON(http.StatusOK, item)
 }
 
@@ -316,7 +332,7 @@ func updateNamespaceQuota(ctx context.Context, adminClient client.Client, ns *co
 }
 
 func updateNamespaceRoleBinding(ctx context.Context, adminClient client.Client, ns *corev1.Namespace, users []string) error {
-	rbName := fmt.Sprintf("%s-capp-access", ns.Name)
+	rbName := ns.Name + roleBindingNameSuffix
 	existingRB := &rbacv1.RoleBinding{}
 	err := adminClient.Get(ctx, client.ObjectKey{Name: rbName, Namespace: ns.Name}, existingRB)
 	if err != nil {
@@ -361,9 +377,24 @@ func (h *Handler) patchKubernetes(c *gin.Context) {
 		return
 	}
 
+	access := kubernetesAccess(adminClient, namespaceName)
+	// Adding users needs less than a revert, which also resets the quota and
+	// removes users.
+	revert := access.update
+	access.update = func(ctx context.Context, desired desiredstate.NamespaceState) error {
+		if allowed, err := canAccessNamespaces(ctx, userClient, "create"); err != nil || !allowed {
+			return apierrors.NewForbidden("not allowed to revert namespaces")
+		}
+		return revert(ctx, desired)
+	}
+	write := h.tracker.Begin(c, namespaceRef(c))
+	if !h.resolveDrift(c, write, access) {
+		return
+	}
+
 	if req.Users != nil {
 		existingRoleBinding := &rbacv1.RoleBinding{}
-		err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: fmt.Sprintf("%s-capp-access", namespaceName), Namespace: namespaceName}, existingRoleBinding)
+		err = adminClient.Get(c.Request.Context(), client.ObjectKey{Name: namespaceName + roleBindingNameSuffix, Namespace: namespaceName}, existingRoleBinding)
 		if err != nil {
 			apierrors.Respond(c, err)
 			return
@@ -393,6 +424,7 @@ func (h *Handler) patchKubernetes(c *gin.Context) {
 	}
 
 	item := buildNamespaceItem(c.Request.Context(), adminClient, namespaceName, string(ns.Status.Phase))
+	item.Warnings = record(c, write, access)
 	canEdit, _ := canAccessNamespaces(c.Request.Context(), userClient, "create")
 	item.CanEdit = canEdit
 	c.JSON(http.StatusOK, item)
@@ -457,7 +489,7 @@ func (h *Handler) deleteKubernetes(c *gin.Context) {
 		return
 	}
 
-	c.Status(http.StatusNoContent)
+	tracking.RespondDeleted(c, h.tracker.DeleteNamespace(c, namespaceName))
 }
 
 // buildNamespaceItem returns namespace metadata with quota and users when their
@@ -471,7 +503,7 @@ func buildNamespaceItem(ctx context.Context, adminClient client.Client, nsName, 
 	}
 
 	rb := &rbacv1.RoleBinding{}
-	if err := adminClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-capp-access", nsName), Namespace: nsName}, rb); err == nil {
+	if err := adminClient.Get(ctx, client.ObjectKey{Name: nsName + roleBindingNameSuffix, Namespace: nsName}, rb); err == nil {
 		users := make([]string, 0, len(rb.Subjects))
 		for _, s := range rb.Subjects {
 			if s.Kind == rbacv1.UserKind {
@@ -560,7 +592,7 @@ func generateRoleBinding(users []string, ns *corev1.Namespace) *rbacv1.RoleBindi
 
 	userRoleBinding := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-capp-access", ns.Name),
+			Name:      ns.Name + roleBindingNameSuffix,
 			Namespace: ns.Name,
 		},
 		Subjects: subjects,
@@ -634,7 +666,7 @@ func listUsersMap(ctx context.Context, adminClient client.Client, logger *zap.Lo
 	result := make(map[string][]string, len(rbList.Items))
 	for i := range rbList.Items {
 		rb := &rbList.Items[i]
-		expectedName := fmt.Sprintf("%s-capp-access", rb.Namespace)
+		expectedName := rb.Namespace + roleBindingNameSuffix
 		if rb.Name != expectedName {
 			continue
 		}

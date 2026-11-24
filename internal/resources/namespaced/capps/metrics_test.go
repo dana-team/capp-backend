@@ -126,7 +126,7 @@ func metricsEngine(t *testing.T, obs config.ObservabilityConfig, k8sClient clien
 		c.Set(string(middleware.K8sClientKey), k8sClient)
 		c.Next()
 	})
-	h, err := New(false, nil, nil, makeSizes(), obs)
+	h, err := New(nil, makeSizes(), obs)
 	require.NoError(t, err)
 	h.RegisterRoutes(e.Group("/clusters/:cluster"))
 	return e
@@ -539,7 +539,7 @@ func TestQueryMetric_UnreachableErrorDropsURL(t *testing.T) {
 			logged = append(logged, ginErr.Err)
 		}
 	})
-	h, err := New(false, nil, nil, makeSizes(), observabilityConfig(queryURL))
+	h, err := New(nil, makeSizes(), observabilityConfig(queryURL))
 	require.NoError(t, err)
 	h.RegisterRoutes(e.Group("/clusters/:cluster"))
 

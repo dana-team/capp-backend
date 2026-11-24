@@ -285,38 +285,6 @@ func TestClusterManager_StartHealthChecks(t *testing.T) {
 	assert.True(t, mgr.IsAnyHealthy())
 }
 
-// ── BuildClusterClient GitOpsPath tests ───────────────────────────────────────
-
-func TestBuildClusterClient_GitOpsPath(t *testing.T) {
-	tests := []struct {
-		name           string
-		clusterName    string
-		gitOpsPath     string
-		wantGitOpsPath string
-	}{
-		{
-			name:           "explicit GitOpsPath used",
-			clusterName:    "default",
-			gitOpsPath:     "site1",
-			wantGitOpsPath: "site1",
-		},
-		{
-			name:           "fallback to cluster Name",
-			clusterName:    "production",
-			wantGitOpsPath: "production",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := inlineClusterConfig(tt.clusterName, "https://api.example.com")
-			cfg.GitOpsPath = tt.gitOpsPath
-			cc, err := BuildClusterClient(cfg, testScheme(t))
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantGitOpsPath, cc.Meta.GitOpsPath)
-		})
-	}
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func mustBuildRestConfig(t *testing.T, cfg config.ClusterConfig) *rest.Config {

@@ -11,7 +11,7 @@ imagePullSecrets: []
 
 # ── Trusted CA bundle ─────────────────────────────────────────────────────────
 # A ConfigMap in `namespace` holding PEM CAs the backend trusts on top of the
-# public roots of its image: the cfunc git server, GitOps, Prometheus, LDAP
+# public roots of its image: the cfunc git server, MongoDB, Prometheus, LDAP
 # without auth.ldap.caCert, and clusters without a CA of their own. Mounted
 # read-only at /etc/capp-trusted-ca and named by SSL_CERT_FILE. Go reads it once
 # at start, so restart the pods after the bundle changes. Empty mounts nothing.
@@ -100,7 +100,6 @@ config:
   clusters:
     - name: "default"
       displayName: "Default Cluster"
-      gitOpsPath: ""      # defaults to cluster name if empty
       credential:
         inline:
           apiServer: "https://kubernetes.default.svc"
@@ -314,17 +313,19 @@ config:
         # Shortest interval between two runs of a cron trigger.
         minCronIntervalSeconds: 60
 
-  # GitOps — push Capp values to a git repository for ArgoCD sync.
-  # Disabled by default. Enable and provide credentials to activate.
-  gitops:
+  # Desired state — record the desired state of Capps, ConfigMaps, Secrets and
+  # namespaces in MongoDB and report drift when they are read. Disabled by
+  # default. See docs/desired-state.md before enabling it.
+  desiredState:
     enabled: false
-    repoURL: ""           # e.g. "https://github.com/org/capps-gitops.git"
-    branch: "main"
-    authMethod: "token"   # "token" or "ssh"
-    sshKeyPath: "/etc/capp/ssh/id_rsa"  # path to SSH key file when authMethod is "ssh"
-    insecureHostKey: false # skip SSH host key verification (required in containers without known_hosts)
-    pathPrefix: "sites"   # directory prefix: <pathPrefix>/<gitOpsPath>/<ns>/<capp>.yaml
-    timeoutSeconds: 20    # timeout for each git sync/delete operation
+    mongo:
+      # The connection string is secret.desiredStateMongoURI.
+      database: "capp"
+      timeoutSeconds: 3   # bounds every MongoDB operation
+    encryption:
+      # Id of the key in secret.desiredStateEncryptionKeys that encrypts new
+      # Secret values.
+      activeKeyID: ""
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # These values are placed in a Kubernetes Secret and injected as environment
@@ -348,10 +349,6 @@ secret:
   # Override: --set-file secret.ldapSigningPrivateKey=/path/to/private/key
   ldapSigningPrivateKey: ""
 
-  # GitOps token. Required when config.gitops.authMethod is "token".
-  # Override: --set secret.gitopsToken="<personal-access-token>"
-  gitopsToken: ""
-
   # Token for config.resources.cfunc.functions.git.baseURL, with read access
   # to every repository a function may name. Required when functions are
   # enabled. Injected as CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN.
@@ -364,9 +361,16 @@ secret:
   # Override: --set secret.observabilityQueryURL="http://vm-query.monitoring.svc:8428"
   observabilityQueryURL: ""
 
-  # SSH private key for GitOps. Required when config.gitops.authMethod is "ssh".
-  # Override: --set-file secret.sshKey=/path/to/private/key
-  sshKey: ""
+  # MongoDB connection string. Required when config.desiredState.enabled is true.
+  # Injected as CAPP_DESIREDSTATE_MONGO_URI.
+  desiredStateMongoURI: ""
+
+  # Keys that encrypt Secret values in MongoDB, as "<id>=<base64 of 32 bytes>"
+  # pairs separated by commas. Required when config.desiredState.enabled is true.
+  # Losing a key makes the Secrets it encrypted unrecoverable.
+  # Injected as CAPP_DESIREDSTATE_ENCRYPTION_KEYS.
+  # Create one with: echo "k1=$(openssl rand -base64 32)"
+  desiredStateEncryptionKeys: ""
 
 # ── User permissions ─────────────────────────────────────────────────────────
 rbac:

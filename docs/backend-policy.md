@@ -90,7 +90,7 @@ Here `C` is `/api/v1/clusters/:cluster` and `N` is `C/namespaces/:namespace`.
 | GET Capp revisions and revision detail | viewer or editor |
 | GET `C/{capps,configmaps,secrets,cfunc/pools,cfunc/functions}` | viewer or editor separately in each included namespace |
 | POST resource collections; PUT/DELETE resource objects | editor |
-| Capp revision rollback, Git sync/unsync, including Git effects in update/delete | editor; feature settings still apply |
+| Capp revision rollback | editor |
 | Capp migration | editor at source **and** destination, even for copy-only or same-cluster requests |
 | Capp metrics APIs (`.../capps/:name/metrics[/:metric]`) | Denied, even for operators/editors; no Prometheus calls |
 | cfunc function test call (`.../cfunc/functions/:name/test`) | editor |

@@ -24,7 +24,7 @@ func TestRequireExecution(t *testing.T) {
 		{"wrong context type", func(c *gin.Context, _ *policyDecision) { c.Set(string(policyDecisionKey), "allowed") }, false},
 		{"other request", func(c *gin.Context, d *policyDecision) { d.request = c.Request.Clone(c.Request.Context()) }, false},
 		{"changed operation", func(_ *gin.Context, d *policyDecision) { d.method = http.MethodDelete }, false},
-		{"changed route", func(_ *gin.Context, d *policyDecision) { d.route += "/sync" }, false},
+		{"changed route", func(_ *gin.Context, d *policyDecision) { d.route += "/migrate" }, false},
 		{"changed cluster", func(_ *gin.Context, d *policyDecision) { d.cluster = "other" }, false},
 		{"changed namespace", func(_ *gin.Context, d *policyDecision) { d.namespace = "other" }, false},
 		{"administration decision cannot authorize resource execution", func(_ *gin.Context, d *policyDecision) { d.category = Administration; d.operator = true }, false},

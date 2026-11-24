@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -54,7 +53,7 @@ func (h *Handler) rolloutAction(c *gin.Context) {
 	}
 
 	// The optimistic lock makes the checks above hold for the version being
-	// written. Values files contain only the spec, so Git is not involved.
+	// written.
 	patched := capp.DeepCopy()
 	if patched.Annotations == nil {
 		patched.Annotations = map[string]string{}
@@ -96,15 +95,9 @@ func (h *Handler) removeRolloutStrategy(c *gin.Context) {
 		return
 	}
 
-	backup := h.isGitSyncEnabledForCapp(&existing)
-	var meta cluster.ClusterMeta
-	if backup {
-		var err error
-		meta, err = ExtractClusterMeta(c)
-		if err != nil {
-			apierrors.Respond(c, apierrors.NewInternal(err))
-			return
-		}
+	write := h.tracker.Begin(c, cappRef(c))
+	if _, ok := write.ResolveDrift(c, &existing); !ok {
+		return
 	}
 
 	updated := existing.DeepCopy()
@@ -115,12 +108,7 @@ func (h *Handler) removeRolloutStrategy(c *gin.Context) {
 	}
 
 	resp := FromK8s(updated, h.sizes)
-	if backup {
-		if _, err := h.syncCappValues(ctx, meta, updated); err != nil {
-			resp.Warnings = append(resp.Warnings, BackupWarning(c, err))
-		}
-	}
-
+	resp.Warnings = append(resp.Warnings, write.Save(c, k8sClient, updated)...)
 	c.JSON(http.StatusOK, resp)
 }
 

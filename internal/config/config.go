@@ -280,12 +280,6 @@ type ClusterConfig struct {
 	// cluster entry. An empty list permits all namespaces.
 	AllowedNamespaces []string `mapstructure:"allowedNamespaces"`
 
-	// GitOpsPath is the directory name used in the GitOps repository path:
-	// <pathPrefix>/<gitOpsPath>/<namespace>/<cappName>.yaml
-	// Defaults to Name if unset. Must be a valid filesystem path segment
-	// (no slashes or spaces).
-	GitOpsPath string `mapstructure:"gitOpsPath"`
-
 	// CfuncRouterURL is the base URL of this cluster's Fission router. The
 	// cfunc function test route calls it, and a function response shows the
 	// full URL of each http trigger with it. Empty turns both off.
@@ -583,42 +577,39 @@ func (m MetricsQuery) AllSeries() []MetricSeries {
 	return []MetricSeries{{Legend: m.Name, Query: m.Query}}
 }
 
-// GitOpsConfig controls Helm values generation and git push for ArgoCD sync.
-type GitOpsConfig struct {
-	// Enabled toggles the /sync endpoints and auto-sync on Capps. Default: false.
+// DesiredStateConfig controls the desired state store and drift detection.
+type DesiredStateConfig struct {
+	// Enabled records the desired state of Capps, ConfigMaps, Secrets and
+	// namespaces, and reports drift when they are read. Default: false.
 	Enabled bool `mapstructure:"enabled"`
 
-	// RepoURL is the git repository where values files are pushed.
-	// Supports both HTTPS (https://github.com/org/repo.git) and SSH (git@github.com:org/repo.git).
-	RepoURL string `mapstructure:"repoURL"`
+	Mongo DesiredStateMongoConfig `mapstructure:"mongo"`
 
-	// Branch is the target branch in the git repository. Default: "main".
-	Branch string `mapstructure:"branch"`
+	Encryption DesiredStateEncryptionConfig `mapstructure:"encryption"`
+}
 
-	// AuthMethod selects how the backend authenticates to the git repo.
-	// One of: "token" (HTTPS personal/deploy token) or "ssh" (SSH key file).
-	// Default: "token".
-	AuthMethod string `mapstructure:"authMethod"`
+// DesiredStateMongoConfig is the connection to MongoDB.
+type DesiredStateMongoConfig struct {
+	// URI is the connection string. Required when enabled.
+	// Inject via CAPP_DESIREDSTATE_MONGO_URI.
+	URI string `mapstructure:"uri"`
 
-	// Token is the HTTPS bearer/personal-access token. Required when authMethod is "token".
-	// Inject via CAPP_GITOPS_TOKEN.
-	Token string `mapstructure:"token"`
+	// Database holds the "objects" collection. Default: "capp".
+	Database string `mapstructure:"database"`
 
-	// SSHKeyPath is the path to an SSH private key file. Required when authMethod is "ssh".
-	SSHKeyPath string `mapstructure:"sshKeyPath"`
-
-	// InsecureHostKey skips SSH host key verification when true. Required for
-	// environments without a known_hosts file (e.g. distroless containers,
-	// air-gapped clusters with self-signed git servers). Default: false.
-	InsecureHostKey bool `mapstructure:"insecureHostKey"`
-
-	// PathPrefix is the directory prefix for per-capp values files in the git
-	// repository: <pathPrefix>/<siteName>/<namespace>/<cappName>.yaml
-	// Default: "sites".
-	PathPrefix string `mapstructure:"pathPrefix"`
-
-	// TimeoutSeconds bounds each git sync/delete operation. Default: 20.
+	// TimeoutSeconds bounds every operation. Default: 3.
 	TimeoutSeconds int `mapstructure:"timeoutSeconds"`
+}
+
+// DesiredStateEncryptionConfig holds the keys that encrypt Secret values.
+type DesiredStateEncryptionConfig struct {
+	// ActiveKeyID names the key that encrypts new values. Required when enabled.
+	ActiveKeyID string `mapstructure:"activeKeyID"`
+
+	// Keys lists "<id>=<base64 of 32 bytes>" pairs separated by commas. Keep a
+	// retired key here until every Secret it encrypted was written again.
+	// Inject via CAPP_DESIREDSTATE_ENCRYPTION_KEYS.
+	Keys string `mapstructure:"keys"`
 }
 
 type ResourceQuantities struct {
@@ -653,8 +644,12 @@ type Config struct {
 	Tracing       TracingConfig       `mapstructure:"tracing"`
 	Clusters      []ClusterConfig     `mapstructure:"clusters"`
 	Resources     ResourcesConfig     `mapstructure:"resources"`
-	GitOps        GitOpsConfig        `mapstructure:"gitops"`
+	DesiredState  DesiredStateConfig  `mapstructure:"desiredState"`
 	Sizes         CappSizes           `mapstructure:"cappSizes"`
+
+	// GitSyncConfigured is true when the configuration still turns on the
+	// removed Git sync. It has no effect except for a warning at startup.
+	GitSyncConfigured bool `mapstructure:"-"`
 }
 
 // Load reads configuration from the file at path (if non-empty) and from
@@ -702,9 +697,6 @@ func Load(path string) (*Config, error) {
 		if cfg.Clusters[i].DisplayName == "" {
 			cfg.Clusters[i].DisplayName = cfg.Clusters[i].Name
 		}
-		if cfg.Clusters[i].GitOpsPath == "" {
-			cfg.Clusters[i].GitOpsPath = cfg.Clusters[i].Name
-		}
 
 		// Viper's AutomaticEnv does not apply env var overrides to elements
 		// inside a slice when using Unmarshal (only to top-level/mapped keys),
@@ -718,6 +710,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.Resources.Observability.QueryURL = strings.TrimSpace(cfg.Resources.Observability.QueryURL)
+	cfg.GitSyncConfigured = v.GetBool("gitops.enabled")
 
 	return &cfg, nil
 }
@@ -868,12 +861,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("resources.configmaps.enabled", true)
 	v.SetDefault("resources.secrets.enabled", true)
 
-	// GitOps — disabled by default
-	v.SetDefault("gitops.enabled", false)
-	v.SetDefault("gitops.branch", "main")
-	v.SetDefault("gitops.authMethod", "token")
-	v.SetDefault("gitops.pathPrefix", "sites")
-	v.SetDefault("gitops.timeoutSeconds", 20)
+	// Desired state — disabled by default
+	v.SetDefault("desiredState.enabled", false)
+	v.SetDefault("desiredState.mongo.uri", "")
+	v.SetDefault("desiredState.mongo.database", "capp")
+	v.SetDefault("desiredState.mongo.timeoutSeconds", 3)
+	v.SetDefault("desiredState.encryption.activeKeyID", "")
+	v.SetDefault("desiredState.encryption.keys", "")
 
 	// Observability — disabled by default
 	v.SetDefault("resources.observability.enabled", false)

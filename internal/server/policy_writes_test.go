@@ -23,39 +23,28 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-func TestBackendPolicyGitOperations(t *testing.T) {
+func TestBackendPolicyCappWrites(t *testing.T) {
 	for _, provider := range []string{config.AuthModeOpenShift, config.AuthModePassthrough} {
-		t.Run(provider, func(t *testing.T) { testBackendPolicyGitOperations(t, provider) })
+		t.Run(provider, func(t *testing.T) { testBackendPolicyCappWrites(t, provider) })
 	}
 }
 
-func testBackendPolicyGitOperations(t *testing.T, provider string) {
+func testBackendPolicyCappWrites(t *testing.T, provider string) {
 	store, _, _ := policyStore(t, nil)
 	operations := []struct {
 		name, method, suffix, body string
 		status                     int
-		gitFirst                   bool
 	}{
-		{"sync", http.MethodPost, "/sync", "", http.StatusOK, true},
-		{"unsync", http.MethodDelete, "/sync", "", http.StatusOK, true},
-		{"update", http.MethodPut, "", `{"name":"app","image":"nginx:2"}`, http.StatusOK, false},
-		{"delete", http.MethodDelete, "", "", http.StatusNoContent, false},
-		{"rollback", http.MethodPost, "/revisions/1/rollback", "", http.StatusOK, false},
+		{"update", http.MethodPut, "", `{"name":"app","image":"nginx:2"}`, http.StatusOK},
+		{"delete", http.MethodDelete, "", "", http.StatusNoContent},
+		{"rollback", http.MethodPost, "/revisions/1/rollback", "", http.StatusOK},
 	}
 	for _, op := range operations {
-		scenarios := []string{"viewer", "unassigned", "editor"}
-		// Cover both effect orderings here; handler tests own the Git failure matrix.
-		switch op.name {
-		case "sync", "update":
-			scenarios = append(scenarios, "git disabled", "kubernetes failure")
-		case "rollback":
-			scenarios = append(scenarios, "kubernetes failure")
-		}
-		for _, scenario := range scenarios {
+		for _, scenario := range []string{"viewer", "unassigned", "editor", "kubernetes failure"} {
 			t.Run(op.name+"/"+scenario, func(t *testing.T) {
 				var spec cappv1alpha1.CappSpec
 				spec.ConfigurationSpec.Template.Spec.Containers = []corev1.Container{{Name: "app", Image: "nginx:1"}}
-				capp := &cappv1alpha1.Capp{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a", Labels: map[string]string{k8s.LabelBackupToGit: "true"}}, Spec: spec}
+				capp := &cappv1alpha1.Capp{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"}, Spec: spec}
 				rev := &cappv1alpha1.CappRevision{
 					ObjectMeta: metav1.ObjectMeta{Name: "app-1", Namespace: "team-a", Labels: map[string]string{k8s.LabelCappName: "app"}},
 					Spec:       cappv1alpha1.CappRevisionSpec{RevisionNumber: 1, CappTemplate: cappv1alpha1.CappTemplate{Spec: spec}},
@@ -96,7 +85,6 @@ func testBackendPolicyGitOperations(t *testing.T, provider string) {
 						return c.Patch(ctx, obj, patch, opts...)
 					},
 				}).Build()
-				git := &policyGitRecorder{}
 				user := "editor"
 				if scenario == "viewer" {
 					user = "alice"
@@ -108,52 +96,24 @@ func testBackendPolicyGitOperations(t *testing.T, provider string) {
 				identity := newPolicyProvider(t, provider, map[string]authv1.UserInfo{"c1": {Username: user}}, nil)
 				r := policyRouter(t, identity.auth, mgr, policy.Target{Store: store, ExecutionClient: execution}, zap.NewNop())
 				group := r.Group("/api/v1/clusters/:cluster")
-				enabled := scenario != "git disabled"
-				newCappsHandler(t, enabled, git, mgr, config.ObservabilityConfig{}).RegisterRoutes(group)
-				revisions.New(enabled, git, config.CappSizes{}).RegisterRoutes(group)
+				newCappsHandler(t, mgr, config.ObservabilityConfig{}).RegisterRoutes(group)
+				revisions.New(config.CappSizes{}).RegisterRoutes(group)
 				w := policyRequest(r, op.method, "/api/v1/clusters/c1/namespaces/team-a/capps/app"+op.suffix, op.body)
-				status, wantWrites, wantGit := op.status, 1, 1
+				status, wantWrites := op.status, 1
 				switch scenario {
 				case "viewer", "unassigned":
-					status, wantWrites, wantGit = http.StatusForbidden, 0, 0
-				case "git disabled":
-					wantGit = 0
-					if op.gitFirst {
-						status, wantWrites = http.StatusNotImplemented, 0
-					}
+					status, wantWrites = http.StatusForbidden, 0
 				case "kubernetes failure":
 					status = http.StatusInternalServerError
-					if !op.gitFirst {
-						wantGit = 0
-					}
 				}
 				require.Equal(t, status, w.Code, w.Body.String())
 				require.Equal(t, wantWrites, writes, "resource mutations")
-				require.Equal(t, wantGit, git.calls, "Git effects")
-				if status == http.StatusForbidden || status == http.StatusNotImplemented {
-					require.Zero(t, reads, "denied or disabled operation must not read resources")
-				}
 				if status == http.StatusForbidden {
+					require.Zero(t, reads, "a denied operation must not read resources")
 					requirePolicyError(t, w, apierrors.CodeForbidden, "POLICY_DENIED")
 				}
 				require.NotContains(t, w.Body.String(), "private-")
 			})
 		}
 	}
-}
-
-type policyGitRecorder struct {
-	calls int
-}
-
-func (g *policyGitRecorder) SyncValues(context.Context, string, string, string, []byte) (string, error) {
-	g.calls++
-	return "commit", nil
-}
-func (g *policyGitRecorder) DeleteValues(context.Context, string, string, string) (string, error) {
-	g.calls++
-	return "commit", nil
-}
-func (*policyGitRecorder) BuildRelPath(cluster, namespace, name string) string {
-	return cluster + "/" + namespace + "/" + name
 }

@@ -69,12 +69,17 @@ spec:
                     name: {{ include "capp-backend.secretName" $ }}
                     key: clusterToken-{{ $i }}
               {{- end }}
-              {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "token") }}
-              - name: CAPP_GITOPS_TOKEN
+              {{- if (dig "desiredState" "enabled" false .Values.config) }}
+              - name: CAPP_DESIREDSTATE_MONGO_URI
                 valueFrom:
                   secretKeyRef:
                     name: {{ include "capp-backend.secretName" . }}
-                    key: gitopsToken
+                    key: desiredStateMongoURI
+              - name: CAPP_DESIREDSTATE_ENCRYPTION_KEYS
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ include "capp-backend.secretName" . }}
+                    key: desiredStateEncryptionKeys
               {{- end }}
               {{- if (and (dig "resources" "cfunc" "enabled" false .Values.config) (dig "resources" "cfunc" "functions" "enabled" false .Values.config)) }}
               - name: CAPP_RESOURCES_CFUNC_FUNCTIONS_GIT_TOKEN
@@ -99,11 +104,6 @@ spec:
               - name: config
                 mountPath: /etc/capp
                 readOnly: true
-              {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "ssh") }}
-              - name: ssh-key
-                mountPath: /etc/capp/ssh
-                readOnly: true
-              {{- end }}
               {{- if .Values.trustedCA.configMap }}
               - name: trusted-ca
                 mountPath: /etc/capp-trusted-ca
@@ -123,15 +123,6 @@ spec:
           - name: config
             configMap:
               name: {{ include "capp-backend.configMapName" . }}
-          {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "ssh") }}
-          - name: ssh-key
-            secret:
-              secretName: {{ include "capp-backend.secretName" . }}
-              items:
-                - key: id_rsa
-                  path: id_rsa
-              defaultMode: 420
-          {{- end }}
           {{- if .Values.trustedCA.configMap }}
           - name: trusted-ca
             configMap:

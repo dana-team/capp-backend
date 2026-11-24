@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/dana-team/capp-backend/internal/authorization"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/go-ldap/ldap/v3"
 	"github.com/golang-jwt/jwt/v5"
 	imagename "github.com/google/go-containerregistry/pkg/name"
@@ -26,12 +27,6 @@ var validAuthModes = map[string]struct{}{
 	AuthModePassthrough: {},
 	AuthModeOpenShift:   {},
 	AuthModeLDAP:        {},
-}
-
-// validGitOpsAuthMethods is the set of accepted values for GitOpsConfig.AuthMethod.
-var validGitOpsAuthMethods = map[string]struct{}{
-	"token": {},
-	"ssh":   {},
 }
 
 // validMetricTypes is the set of accepted values for MetricsQuery.Type.
@@ -58,7 +53,7 @@ func Validate(cfg *Config) error {
 	errs = append(errs, validateAuthorization(cfg)...)
 	errs = append(errs, validateClusters(cfg.Clusters)...)
 	errs = append(errs, validateAuth(&cfg.Auth)...)
-	errs = append(errs, validateGitOps(&cfg.GitOps)...)
+	errs = append(errs, validateDesiredState(&cfg.DesiredState)...)
 	errs = append(errs, validateObservability(&cfg.Resources.Observability, len(cfg.Clusters))...)
 	errs = append(errs, validateCfunc(&cfg.Resources.Cfunc)...)
 	if cfg.Resources.Capps.Enabled && cfg.Resources.Capps.MaxLogStreams < 1 {
@@ -70,10 +65,6 @@ func Validate(cfg *Config) error {
 		if err := ValidateMetricsPath(cfg.Metrics.Path); err != nil {
 			errs = append(errs, fmt.Errorf("config: metrics.path: %w", err))
 		}
-	}
-
-	if cfg.GitOps.Enabled {
-		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
 	}
 
 	// Backend policy always executes with a system credential; LDAP and OpenShift
@@ -408,52 +399,31 @@ func validateLDAPVerificationKeyID(id string) error {
 
 var ldapKeyIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
-// validateGitOps checks that gitops configuration is complete when enabled.
-func validateGitOps(g *GitOpsConfig) []error {
-	if !g.Enabled {
+// validateDesiredState checks that the desired state store is configured when
+// enabled. Errors never contain the connection string or key material.
+func validateDesiredState(d *DesiredStateConfig) []error {
+	if !d.Enabled {
 		return nil
 	}
-
 	var errs []error
-
-	if g.RepoURL == "" {
+	if !strings.HasPrefix(d.Mongo.URI, "mongodb://") && !strings.HasPrefix(d.Mongo.URI, "mongodb+srv://") {
 		errs = append(errs, errors.New(
-			"config: gitops.repoURL is required when gitops.enabled is true",
+			"config: desiredState.mongo.uri must be a mongodb:// or mongodb+srv:// URI; set via CAPP_DESIREDSTATE_MONGO_URI environment variable",
 		))
 	}
-
-	if g.TimeoutSeconds <= 0 {
-		errs = append(errs, fmt.Errorf(
-			"config: gitops.timeoutSeconds must be greater than 0, got %d",
-			g.TimeoutSeconds,
-		))
+	if d.Mongo.Database == "" {
+		errs = append(errs, errors.New("config: desiredState.mongo.database is required when desiredState.enabled is true"))
 	}
-
-	if _, ok := validGitOpsAuthMethods[g.AuthMethod]; !ok {
-		errs = append(errs, fmt.Errorf(
-			"config: gitops.authMethod %q is not valid; must be one of: token, ssh",
-			g.AuthMethod,
-		))
-		return errs
+	if d.Mongo.TimeoutSeconds <= 0 {
+		errs = append(errs, fmt.Errorf("config: desiredState.mongo.timeoutSeconds must be greater than 0, got %d", d.Mongo.TimeoutSeconds))
 	}
-
-	switch g.AuthMethod {
-	case "token":
-		if g.Token == "" {
-			errs = append(errs, errors.New(
-				"config: gitops.token is required when gitops.authMethod is 'token'; "+
-					"set via CAPP_GITOPS_TOKEN environment variable",
-			))
-		}
-	case "ssh":
-		if g.SSHKeyPath == "" {
-			errs = append(errs, errors.New(
-				"config: gitops.sshKeyPath is required when gitops.authMethod is 'ssh'; "+
-					"set via CAPP_GITOPS_SSHKEYPATH environment variable",
-			))
-		}
+	keys, err := desiredstate.ParseKeys(d.Encryption.Keys)
+	if err != nil {
+		return append(errs, fmt.Errorf("config: desiredState.encryption.keys: %w", err))
 	}
-
+	if _, err := desiredstate.NewSealer(d.Encryption.ActiveKeyID, keys); err != nil {
+		errs = append(errs, fmt.Errorf("config: desiredState.encryption: %w; set keys via CAPP_DESIREDSTATE_ENCRYPTION_KEYS environment variable", err))
+	}
 	return errs
 }
 
@@ -925,25 +895,6 @@ func sizeValues(size ResourceSize) (string, error) {
 		return "", errors.New("requests.memory is larger than limits.memory")
 	}
 	return strings.Join(canonical, "/"), nil
-}
-
-// validateGitOpsPaths checks that every cluster's GitOpsPath (after fallback)
-// is a valid filesystem path segment. Called only when gitops.enabled is true.
-func validateGitOpsPaths(clusters []ClusterConfig) []error {
-	var errs []error
-	for i, c := range clusters {
-		p := c.GitOpsPath
-		if p == "" {
-			p = c.Name
-		}
-		if strings.ContainsAny(p, "/ ") {
-			errs = append(errs, fmt.Errorf(
-				"config: clusters[%d] (%q): gitOpsPath %q must not contain slashes or spaces",
-				i, c.Name, p,
-			))
-		}
-	}
-	return errs
 }
 
 func validateAuthorization(cfg *Config) []error {

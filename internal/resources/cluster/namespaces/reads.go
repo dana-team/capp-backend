@@ -38,8 +38,9 @@ func (h *Handler) getManagedNamespace(c *gin.Context) {
 	}
 	var item NamespaceItem
 	var err error
+	ns := state.Namespace
 	if operator {
-		ns := &corev1.Namespace{}
+		ns = &corev1.Namespace{}
 		if err = admin.client.Get(c.Request.Context(), client.ObjectKey{Name: progress.namespace}, ns); err == nil {
 			item, progress.policy, err = admin.readNamespace(c.Request.Context(), ns)
 		}
@@ -49,11 +50,26 @@ func (h *Handler) getManagedNamespace(c *gin.Context) {
 		item, err = admin.readObservedNamespace(c.Request.Context(), state)
 	}
 	if err != nil {
-		progress.respondError(c, err)
+		progress.respondError(c, h.describeMissing(c, operator, err))
 		return
 	}
 	progress.succeeded = true
+	item.Drift = h.inspect(c, ns, item)
 	c.JSON(http.StatusOK, item)
+}
+
+// describeMissing adds the drift of a missing namespace to an operator's error.
+func (h *Handler) describeMissing(c *gin.Context, operator bool, err error) error {
+	if !operator || !k8serrors.IsNotFound(err) {
+		return err
+	}
+	current := h.tracker.Inspect(c, namespaceRef(c), nil)
+	if current == nil {
+		return err
+	}
+	described := *administrationError(err)
+	described.Details = map[string]any{"drift": current}
+	return &described
 }
 
 func (h *Handler) listAuthorizedNamespaces(c *gin.Context) {
@@ -125,7 +141,10 @@ func (h *Handler) listManagedNamespaces(c *gin.Context) {
 		return
 	}
 	progress.succeeded = true
-	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, Total: len(items), CanCreate: true})
+	missing := h.missing(c, admin.client, func(name string) bool {
+		return requestpolicy.NamespaceAllowed(c, name) && admin.checkNamespaceName(name) == nil
+	})
+	c.JSON(http.StatusOK, NamespaceListResponse{Items: items, Total: len(items), CanCreate: true, Missing: missing})
 }
 
 // readNamespaceItems preserves input order and joins all reads before returning.

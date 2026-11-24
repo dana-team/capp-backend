@@ -23,18 +23,23 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
-	"github.com/dana-team/capp-backend/internal/gitops"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/resources"
+	"github.com/dana-team/capp-backend/internal/resources/consts"
 	capphandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	revhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/capps/revisions"
 	functionhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/functions"
 	poolhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/pools"
 	cmhandler "github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	secrethandler "github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	"github.com/dana-team/capp-backend/internal/server"
 	"github.com/dana-team/capp-backend/pkg/k8s"
+	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // version is set at build time via -ldflags "-X main.version=vX.Y.Z". cappctl
@@ -88,18 +93,15 @@ func main() {
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	go clusterMgr.StartHealthChecks(rootCtx, 30)
 
-	// ── 5. Build GitOps client (optional) ─────────────────────────────────────
-	var gitopsClient *gitops.Client
-	if cfg.GitOps.Enabled {
-		var err error
-		gitopsClient, err = gitops.NewClient(cfg.GitOps, logger, "")
-		if err != nil {
-			logger.Fatal("failed to initialise gitops client", zap.Error(err))
-		}
-		logger.Info("gitops client initialised",
-			zap.String("repo", cfg.GitOps.RepoURL),
-			zap.String("branch", cfg.GitOps.Branch),
+	// ── 5. Connect the desired state store (optional) ────────────────────────
+	if cfg.GitSyncConfigured {
+		logger.Warn("gitops.enabled is ignored: Git sync was removed and Capps are no longer backed up to Git; see \"Moving off Git sync\" in docs/desired-state.md",
+			zap.Bool("desiredStateEnabled", cfg.DesiredState.Enabled),
 		)
+	}
+	tracker, closeTracker, err := buildTracker(rootCtx, cfg.DesiredState, logger)
+	if err != nil {
+		logger.Fatal("failed to initialise desired state", zap.Error(err))
 	}
 
 	// ── 6. Build resource registry ────────────────────────────────────────────
@@ -120,14 +122,15 @@ func main() {
 			zap.Strings("metrics", unscoped),
 		)
 	}
-	cappHandler, err := capphandler.New(cfg.GitOps.Enabled, gitopsClient, clusterMgr, cfg.Sizes, cfg.Resources.Observability)
+	cappHandler, err := capphandler.New(clusterMgr, cfg.Sizes, cfg.Resources.Observability)
 	if err != nil {
 		logger.Fatal("failed to initialise capps handler", zap.Error(err))
 	}
-	registry.Register(cappHandler.WithMaxLogStreams(cfg.Resources.Capps.MaxLogStreams))
-	registry.Register(revhandler.New(cfg.GitOps.Enabled, gitopsClient, cfg.Sizes))
-	registry.Register(cmhandler.New().WithFunctionGuard(functionsEnabled))
-	registry.Register(secrethandler.New().WithFunctionGuard(functionsEnabled))
+	registry.Register(cappHandler.WithMaxLogStreams(cfg.Resources.Capps.MaxLogStreams).WithTracker(tracker))
+	registry.Register(revhandler.New(cfg.Sizes).WithTracker(tracker))
+	registry.Register(cmhandler.New().WithFunctionGuard(functionsEnabled).WithTracker(tracker))
+	registry.Register(secrethandler.New().WithFunctionGuard(functionsEnabled).WithTracker(tracker))
+	registry.Register(tracking.NewAdopter(tracker, adoptedKinds(cfg.Resources)...))
 	poolHandler, err := poolhandler.New(cfg.Resources.Cfunc)
 	if err != nil {
 		logger.Fatal("failed to initialise cfunc pools handler", zap.Error(err))
@@ -141,7 +144,7 @@ func main() {
 		registry.Register(functionHandler)
 	}
 	// ── 7. Build and start HTTP server ────────────────────────────────────────
-	srv, err := server.New(cfg, version, nil, clusterMgr, registry, logger)
+	srv, err := server.New(cfg, version, nil, clusterMgr, registry, logger, server.WithTracker(tracker))
 	if err != nil {
 		logger.Fatal("failed to initialise server", zap.Error(err))
 	}
@@ -180,8 +183,59 @@ func main() {
 	}
 
 	shutdownCancel()
+	closeTracker()
 	logger.Info("capp-backend stopped")
 	_ = logger.Sync()
+}
+
+// buildTracker connects the desired state store. It returns a nil tracker when
+// desired state is disabled. MongoDB being down does not fail the startup.
+func buildTracker(ctx context.Context, cfg config.DesiredStateConfig, logger *zap.Logger) (*tracking.Tracker, func(), error) {
+	if !cfg.Enabled {
+		return nil, func() {}, nil
+	}
+	keys, err := desiredstate.ParseKeys(cfg.Encryption.Keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	sealer, err := desiredstate.NewSealer(cfg.Encryption.ActiveKeyID, keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	timeout := time.Duration(cfg.Mongo.TimeoutSeconds) * time.Second
+	store, err := desiredstate.NewMongoStore(cfg.Mongo.URI, cfg.Mongo.Database, timeout)
+	if err != nil {
+		return nil, nil, err
+	}
+	indexCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := store.EnsureIndexes(indexCtx); err != nil {
+		logger.Warn("desired state store is not ready; changes are not backed up until it is", zap.Error(err))
+	} else {
+		logger.Info("desired state store initialised", zap.String("database", cfg.Mongo.Database))
+	}
+	return tracking.New(desiredstate.WithCooldown(store, desiredstate.Cooldown), sealer, timeout), func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		_ = store.Close(closeCtx)
+	}, nil
+}
+
+// adoptedKinds lists what the adopt endpoint covers: every tracked kind whose
+// handler is enabled.
+func adoptedKinds(cfg config.ResourcesConfig) []tracking.AdoptKind {
+	managed := []client.ListOption{client.MatchingLabels{consts.ManagedLabelKey: consts.ManagedLabelValue}}
+	var kinds []tracking.AdoptKind
+	if cfg.Capps.Enabled {
+		kinds = append(kinds, tracking.AdoptKind{Kind: desiredstate.KindCapp, NewList: func() client.ObjectList { return &cappv1alpha1.CappList{} }})
+	}
+	if cfg.Configmaps.Enabled {
+		kinds = append(kinds, tracking.AdoptKind{Kind: desiredstate.KindConfigMap, NewList: func() client.ObjectList { return &corev1.ConfigMapList{} }, Options: managed})
+	}
+	if cfg.Secrets.Enabled {
+		kinds = append(kinds, tracking.AdoptKind{Kind: desiredstate.KindSecret, NewList: func() client.ObjectList { return &corev1.SecretList{} }, Options: managed})
+	}
+	return kinds
 }
 
 // buildLogger constructs a zap.Logger from the logging config.

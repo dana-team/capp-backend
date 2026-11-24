@@ -8,6 +8,8 @@
 //	PUT    /api/v1/clusters/:cluster/namespaces/:namespace    — update quota and membership
 //	PATCH  /api/v1/clusters/:cluster/namespaces/:namespace    — add namespace membership
 //	DELETE /api/v1/clusters/:cluster/namespaces/:namespace    — delete empty namespace
+//	POST   /api/v1/clusters/:cluster/namespaces/:namespace/drift/revert — restore the desired state
+//	POST   /api/v1/clusters/:cluster/namespaces/:namespace/drift/accept — take over the live state
 //
 // In Kubernetes authorization mode, OpenShift discovery lists project.openshift.io/v1
 // Projects using the user-scoped client, returning only accessible projects.
@@ -20,6 +22,7 @@ import (
 	"maps"
 
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -28,6 +31,7 @@ import (
 type Handler struct {
 	logger         *zap.Logger
 	administration map[string]*Administration
+	tracker        *tracking.Tracker
 }
 
 // New returns a ready-to-use namespace Handler.
@@ -50,6 +54,8 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.PUT("/namespaces/:namespace", h.update)
 	rg.PATCH("/namespaces/:namespace", h.patch)
 	rg.DELETE("/namespaces/:namespace", h.delete)
+	rg.POST("/namespaces/:namespace/drift/revert", h.revertDrift)
+	rg.POST("/namespaces/:namespace/drift/accept", h.acceptDrift)
 }
 
 // list handles GET /api/v1/clusters/:cluster/namespaces.

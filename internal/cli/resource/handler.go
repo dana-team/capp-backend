@@ -18,14 +18,14 @@ type ResourceCommand interface {
 	RegisterUpdateCommand(parent *cobra.Command)
 	// RegisterDeleteCommand attaches the delete sub-command to parent.
 	RegisterDeleteCommand(parent *cobra.Command)
-	// RegisterSyncCommand attaches the sync sub-command to parent.
-	RegisterSyncCommand(parent *cobra.Command)
 	// RegisterMigrateCommand attaches the migrate sub-command to parent.
 	RegisterMigrateCommand(parent *cobra.Command)
 	// RegisterRollbackCommand attaches the rollback sub-command to parent.
 	RegisterRollbackCommand(parent *cobra.Command)
 	// RegisterRolloutCommand attaches the rollout sub-command to parent.
 	RegisterRolloutCommand(parent *cobra.Command)
+	// RegisterDriftCommand attaches the drift revert and drift accept sub-commands.
+	RegisterDriftCommand(revert, accept *cobra.Command)
 }
 
 // Registry holds all registered ResourceCommands.
@@ -41,16 +41,22 @@ func (r *Registry) Register(h ResourceCommand) {
 	r.handlers = append(r.handlers, h)
 }
 
-// MountAll attaches each handler's commands to the eight verb parents.
-func (r *Registry) MountAll(get, create, update, delete, sync, migrate, rollback, rollout *cobra.Command) {
+// MountAll attaches each handler's commands to the seven verb parents.
+func (r *Registry) MountAll(get, create, update, delete, migrate, rollback, rollout *cobra.Command) {
 	for _, h := range r.handlers {
 		h.RegisterGetCommand(get)
 		h.RegisterCreateCommand(create)
 		h.RegisterUpdateCommand(update)
 		h.RegisterDeleteCommand(delete)
-		h.RegisterSyncCommand(sync)
 		h.RegisterMigrateCommand(migrate)
 		h.RegisterRollbackCommand(rollback)
 		h.RegisterRolloutCommand(rollout)
+	}
+}
+
+// MountDrift attaches each handler's drift commands.
+func (r *Registry) MountDrift(revert, accept *cobra.Command) {
+	for _, h := range r.handlers {
+		h.RegisterDriftCommand(revert, accept)
 	}
 }

@@ -59,8 +59,7 @@ info:
 
     In backend-policy mode, ordinary Capp/ConfigMap/Secret reads, names-only
     lists and revision reads require viewer or editor. Reads include Secret
-    payloads without field redaction. Mutations, rollback and Git sync/unsync
-    (including Git effects in update/delete) require editor. Migration requires
+    payloads without field redaction. Mutations, and rollback require editor. Migration requires
     editor at both endpoints, even for copy-only and same-cluster requests.
     Capp metrics APIs (`.../capps/{name}/metrics[/{metric}]`) are denied for every role.
     Disabled features remain disabled; no grant is implied for other operations.
@@ -121,6 +120,8 @@ tags:
     description: ConfigMap resource management
   - name: secrets
     description: Secret resource management
+  - name: drift
+    description: Differences between the cluster and the recorded desired state. Present only when desiredState.enabled is true; the routes answer 501 otherwise.
   - name: cfunc
     description: cfunc (function as a service, on Fission) — pools of warm pods that functions run in. Present only when resources.cfunc.enabled is true.
 
@@ -288,10 +289,6 @@ components:
           type: boolean
           description: True when the cluster exposes the OpenShift API groups.
           example: false
-        gitOpsPath:
-          type: string
-          description: Directory name used in the GitOps repository path for this cluster.
-          example: example
         allowedNamespaces:
           type: array
           items:
@@ -341,6 +338,13 @@ components:
           type: boolean
           description: Kubernetes-mode administration permission, or configured operator authority in backend-policy mode; false for operator list items with policy ownership, termination or namespace-UID conflicts. Not ordinary resource access.
           example: false
+        warnings:
+          type: array
+          description: Side effects that failed although the request succeeded, such as recording the desired state.
+          items:
+            $ref: '#/components/schemas/Warning'
+        drift:
+          $ref: '#/components/schemas/Drift'
 
     QuotaInfo:
       type: object
@@ -391,6 +395,11 @@ components:
         canCreate:
           type: boolean
           description: Kubernetes-mode namespace creation permission, or configured backend-policy operator authority (target allowlist/protection still applies).
+        missing:
+          type: array
+          description: Namespaces with a recorded desired state that no longer exist. Only callers who can create namespaces receive it.
+          items:
+            $ref: '#/components/schemas/DriftMissing'
 
     NamespaceQuota:
       type: object
@@ -1049,6 +1058,13 @@ components:
           example:
             key1: value1
             key2: value2
+        warnings:
+          type: array
+          description: Side effects that failed although the request succeeded, such as recording the desired state.
+          items:
+            $ref: '#/components/schemas/Warning'
+        drift:
+          $ref: '#/components/schemas/Drift'
 
     ConfigMapList:
       type: object
@@ -1061,6 +1077,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ConfigMapResponse'
+        missing:
+          type: array
+          description: Objects with a recorded desired state that no longer exist. Not counted in total.
+          items:
+            $ref: '#/components/schemas/DriftMissing'
 
     ConfigMapNameListResponse:
       type: object
@@ -1145,6 +1166,13 @@ components:
           example:
             username: admin
             password: s3cr3t
+        warnings:
+          type: array
+          description: Side effects that failed although the request succeeded, such as recording the desired state.
+          items:
+            $ref: '#/components/schemas/Warning'
+        drift:
+          $ref: '#/components/schemas/Drift'
 
     SecretList:
       type: object
@@ -1157,6 +1185,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SecretResponse'
+        missing:
+          type: array
+          description: Objects with a recorded desired state that no longer exist. Not counted in total.
+          items:
+            $ref: '#/components/schemas/DriftMissing'
 
     SecretNameListResponse:
       type: object
@@ -1751,6 +1784,8 @@ components:
               description: Side effects that failed while the cluster write itself succeeded. Absent on the happy path.
               items:
                 $ref: '#/components/schemas/Warning'
+            drift:
+              $ref: '#/components/schemas/Drift'
 
     CappRevisionResponse:
       description: |
@@ -1853,16 +1888,112 @@ components:
           type: integer
           example: 3
 
+    Drift:
+      type: object
+      description: |
+        Compares the live object with its recorded desired state. It is computed
+        when the object is read and omitted when desired state is disabled or the
+        object is being deleted.
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [inSync, changed, missing, unmanaged, unavailable]
+          description: |
+            `changed`: both exist and differ. `missing`: a desired state is recorded
+            but the object is gone. `unmanaged`: the object has no recorded desired
+            state. `unavailable`: the desired state could not be read or compared.
+        generation:
+          type: integer
+          format: int64
+          description: Generation of the desired state that was compared.
+        liveVersion:
+          type: string
+          description: Opaque version of the live object that was compared.
+        fields:
+          type: array
+          description: The differences when state is `changed`.
+          items:
+            $ref: '#/components/schemas/DriftField'
+        updatedBy:
+          type: string
+          description: User who last wrote the desired state. Omitted when the username is not known.
+        updatedAt:
+          type: string
+          format: date-time
+
+    DriftField:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: JSON pointer into the compared state.
+          example: /spec/scaleSpec/maxReplicas
+        desired:
+          description: Value in the desired state. Omitted when unset, and always for Secrets.
+          example: 5
+        live:
+          description: Value in the cluster. Omitted when unset, and always for Secrets.
+          example: 10
+
+    DriftMissing:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        drift:
+          $ref: '#/components/schemas/Drift'
+
+    DriftActionRequest:
+      type: object
+      description: Identifies the drift the caller saw. A newer one answers 409.
+      required: [generation]
+      properties:
+        generation:
+          type: integer
+          format: int64
+        liveVersion:
+          type: string
+          description: Omit for a missing object.
+
+    DriftActionResponse:
+      type: object
+      properties:
+        drift:
+          $ref: '#/components/schemas/Drift'
+
+    DriftAdoptResponse:
+      type: object
+      properties:
+        adopted:
+          type: array
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                example: Capp
+              name:
+                type: string
+                example: my-app
+        total:
+          type: integer
+          example: 3
+
     Warning:
       type: object
       description: A non-fatal problem attached to an otherwise successful response.
       properties:
         code:
           type: string
-          example: GITOPS_FAILED
+          enum: [DESIRED_STATE_FAILED]
+          example: DESIRED_STATE_FAILED
         message:
           type: string
-          example: the Capp was changed in the cluster, but its Git backup was not updated; re-sync to refresh it
+          example: the change was made but not backed up, because its desired state could not be recorded; it will show as drift
 
     CappList:
       type: object
@@ -1874,21 +2005,11 @@ components:
         total:
           type: integer
           example: 3
-
-    SyncResponse:
-      type: object
-      properties:
-        enabled:
-          type: boolean
-          description: Whether Git sync is enabled for the Capp after the call.
-        commitSha:
-          type: string
-          description: Git commit SHA. Empty when nothing was deleted.
-          example: "a1b2c3d4e5f6"
-        path:
-          type: string
-          description: Relative path of the values file in the GitOps repository.
-          example: "namespaces/default/my-app/values.yaml"
+        missing:
+          type: array
+          description: Objects with a recorded desired state that no longer exist. Not counted in total.
+          items:
+            $ref: '#/components/schemas/DriftMissing'
 
     MigrateRequest:
       type: object
@@ -1989,6 +2110,11 @@ components:
             type: string
           description: Names of ConfigMaps copied to the target namespace.
           example: ["app-config"]
+        warnings:
+          type: array
+          description: Desired states that could not be recorded.
+          items:
+            $ref: '#/components/schemas/Warning'
 
   parameters:
     clusterParam:
@@ -2028,7 +2154,39 @@ components:
       description: CappRevision number (spec.revisionNumber).
       example: 3
 
+
+    onDriftParam:
+      name: onDrift
+      in: query
+      schema:
+        type: string
+        enum: [accept, revert]
+      description: |
+        What to do when the live object differs from its desired state. `accept`
+        starts from the live object and `revert` from the desired state; fields in
+        the request always win. Without it the request answers 409 with
+        `details.drift`. Ignored when there is no drift. When the desired state
+        cannot be read, the request starts from the live object and its response
+        carries a warning, except that `revert` answers 503.
+
   responses:
+    DriftDetected:
+      description: |
+        The live object differs from its desired state, or no longer is what the
+        caller saw (`DRIFT_DETECTED`). `details.drift` holds the current drift.
+        Also returned for other conflicts (`CONFLICT`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    DriftDisabled:
+      description: Desired state is not enabled on this backend.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
     Unauthorized:
       description: Missing, invalid, expired or explicitly rejected credentials; backend-policy OpenShift/passthrough also reject empty/anonymous identities with UNAUTHORIZED and "request is not authenticated". Unavailable reviewers return 503 instead. In LDAP mode, invalid bearer tokens report "request is not authenticated" and expired tokens report "token has expired", both with code UNAUTHORIZED.
       content:
@@ -2099,12 +2257,6 @@ components:
               code: INTERNAL_ERROR
               message: directory service unavailable
               status: 503
-    GitopsFailed:
-      description: Writing to the GitOps repository failed (`GITOPS_FAILED`). Only the sync endpoints return this, because there the Git write is the requested operation. Handlers whose primary job is a cluster write report a failed backup as a `warnings` entry on a 2xx response instead.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
 
 security:
   - bearerAuth: []
@@ -2565,6 +2717,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/onDriftParam'
       requestBody:
         required: true
         content:
@@ -2615,6 +2768,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/onDriftParam'
       requestBody:
         required: true
         content:
@@ -2665,6 +2819,17 @@ paths:
       responses:
         "503":
           $ref: '#/components/responses/NamespaceAdministrationUnavailable'
+        "200":
+          description: Namespace deleted, but its desired state was not removed. The next list shows it as missing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Warning'
         "204":
           description: Namespace deleted.
         "401":
@@ -3425,6 +3590,7 @@ paths:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
+        - $ref: '#/components/parameters/onDriftParam'
       requestBody:
         required: true
         content:
@@ -3458,6 +3624,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+
 
     delete:
       tags: [configmaps]
@@ -3469,6 +3638,17 @@ paths:
       responses:
         "503":
           $ref: '#/components/responses/PolicyUnavailable'
+        "200":
+          description: ConfigMap deleted, but its desired state was not removed. The next list shows it as missing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Warning'
         "204":
           description: ConfigMap deleted.
         "401":
@@ -3683,6 +3863,7 @@ paths:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
+        - $ref: '#/components/parameters/onDriftParam'
       requestBody:
         required: true
         content:
@@ -3716,6 +3897,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+
 
     delete:
       tags: [secrets]
@@ -3729,6 +3913,17 @@ paths:
       responses:
         "503":
           $ref: '#/components/responses/PolicyUnavailable'
+        "200":
+          description: Secret deleted, but its desired state was not removed. The next list shows it as missing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Warning'
         "204":
           description: Secret deleted.
         "401":
@@ -3889,12 +4084,11 @@ paths:
       description: |
         Replaces the Capp spec. The backend fetches the current `resourceVersion`
         before applying the update to satisfy Kubernetes optimistic concurrency control.
-
-        If Git sync is enabled, the new values are committed to the GitOps repository after the update.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
+        - $ref: '#/components/parameters/onDriftParam'
       requestBody:
         required: true
         content:
@@ -3922,15 +4116,16 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+
 
     delete:
       tags: [capps]
       summary: Delete a Capp
       description: |
-        If Git sync is enabled, the Capp's values file is also deleted from the GitOps repository.
-
-        The Capp is removed from the cluster first. If the backup cleanup then fails the
-        delete still succeeds, answering `200` with a `warnings` entry instead of `204`.
+        The Capp is removed from the cluster first. If removing its recorded desired state then
+        fails, the delete still succeeds, answering `200` with a `warnings` entry instead of `204`.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -3939,9 +4134,9 @@ paths:
         "503":
           $ref: '#/components/responses/PolicyUnavailable'
         "204":
-          description: Capp deleted, and its backup cleaned up if Git sync was enabled.
+          description: Capp deleted.
         "200":
-          description: Capp deleted, but its Git backup was not cleaned up. The values file is stale.
+          description: Capp deleted, but its recorded desired state was not removed. It is reported as missing.
           content:
             application/json:
               schema:
@@ -3957,91 +4152,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
-
-  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/sync:
-    post:
-      tags: [capps]
-      summary: Enable Git sync for a Capp
-      description: |
-        Pushes the Capp's values file to the GitOps repository and adds the
-        `rcs.dana.io/backup-to-git=true` label. Safe to call again to re-sync.
-
-        Returns `501 Not Implemented` when `gitops.enabled` is false.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-        - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/objectNameParam'
-      responses:
-        "200":
-          description: Git sync enabled and values pushed.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SyncResponse'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          $ref: '#/components/responses/NotFound'
-        "501":
-          description: GitOps integration is not enabled on this backend.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        "500":
-          $ref: '#/components/responses/InternalError'
-        "502":
-          $ref: '#/components/responses/GitopsFailed'
-        "503":
-          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-    delete:
-      tags: [capps]
-      summary: Disable Git sync for a Capp
-      description: |
-        Deletes the Capp's values file from the GitOps repository and removes the
-        `rcs.dana.io/backup-to-git` label. No-op if Git sync is already disabled.
-
-        Returns `501 Not Implemented` when `gitops.enabled` is false.
-      parameters:
-        - $ref: '#/components/parameters/clusterParam'
-        - $ref: '#/components/parameters/namespaceParam'
-        - $ref: '#/components/parameters/objectNameParam'
-      responses:
-        "200":
-          description: Git sync disabled.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SyncResponse'
-        "401":
-          $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
-        "404":
-          $ref: '#/components/responses/NotFound'
-        "501":
-          description: GitOps integration is not enabled on this backend.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        "500":
-          $ref: '#/components/responses/InternalError'
-        "502":
-          $ref: '#/components/responses/GitopsFailed'
-        "503":
-          description: Cluster is unhealthy, or backend-policy observations required by this operation are unavailable (INTERNAL_ERROR with details.reason POLICY_UNAVAILABLE).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
 
   /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/revisions:
     get:
@@ -4118,12 +4228,8 @@ paths:
       summary: Roll a Capp back to a revision
       description: |
         Replaces the live Capp's spec, labels and annotations with those
-        recorded in the revision. The `rcs.dana.io/backup-to-git` label keeps
-        its current value. The operator records the result as a new revision.
-
-        When the Capp is Git-synced, the new values are pushed to the GitOps
-        repository; a push failure is reported in `warnings` and does not undo
-        the rollback.
+        recorded in the revision. The operator records the result as a new
+        revision.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -4237,14 +4343,11 @@ paths:
         has not been superseded, the operator promotes it to 100%. Otherwise
         the operator pins traffic to the stable revision until a newer revision
         is Ready. A Capp with no strategy is returned unchanged.
-
-        When the Capp is Git-synced, the new values are pushed to the GitOps
-        repository; a push failure is reported in `warnings` and does not undo
-        the removal.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
+        - $ref: '#/components/parameters/onDriftParam'
       responses:
         "200":
           description: Strategy removed.
@@ -4724,3 +4827,401 @@ paths:
           content:
             application/yaml:
               example: "openapi: 3.1.0\ninfo:...\n"
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/drift/revert:
+    post:
+      tags: [drift]
+      summary: Make the cluster match a Capp's desired state
+      description: |
+        Updates the live Capp, or recreates a missing one, with the caller's credential.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/capps/{name}/drift/accept:
+    post:
+      tags: [drift]
+      summary: Make a Capp's desired state match the cluster
+      description: |
+        Records the live Capp as the desired state. Only the store changes, so every caller who can read the Capp may do it. Accepting that it is missing archives the recorded state instead of deleting it.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/{name}/drift/revert:
+    post:
+      tags: [drift]
+      summary: Make the cluster match a ConfigMap's desired state
+      description: |
+        Updates the live ConfigMap, or recreates a missing one, with the caller's credential. Capps bound to it that opted in are restarted.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/{name}/drift/accept:
+    post:
+      tags: [drift]
+      summary: Make a ConfigMap's desired state match the cluster
+      description: |
+        Records the live ConfigMap as the desired state. Only the store changes, so every caller who can read the ConfigMap may do it. Accepting that it is missing archives the recorded state instead of deleting it.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets/{name}/drift/revert:
+    post:
+      tags: [drift]
+      summary: Make the cluster match a Secret's desired state
+      description: |
+        Updates the live Secret, or recreates a missing one, with the caller's credential. Capps bound to it that opted in are restarted.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/secrets/{name}/drift/accept:
+    post:
+      tags: [drift]
+      summary: Make a Secret's desired state match the cluster
+      description: |
+        Records the live Secret as the desired state. Only the store changes, so every caller who can read the Secret may do it. Accepting that it is missing archives the recorded state instead of deleting it.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+        - $ref: '#/components/parameters/objectNameParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/drift/revert:
+    post:
+      tags: [drift]
+      summary: Make the cluster match a namespace's desired state
+      description: |
+        Restores quota and membership, or recreates a missing namespace. Needs the permission that PUT needs.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/drift/accept:
+    post:
+      tags: [drift]
+      summary: Make a namespace's desired state match the cluster
+      description: |
+        Records the live quota and membership as the desired state. Every caller who can read the namespace may do it.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriftActionRequest'
+      responses:
+        "200":
+          description: Done. `drift` is what is left, and is omitted when there is nothing to compare.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftActionResponse'
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/DriftDetected'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/clusters/{cluster}/namespaces/{namespace}/drift/adopt:
+    post:
+      tags: [drift]
+      summary: Record everything that has no desired state yet
+      description: |
+        Records the live Capps, managed ConfigMaps and managed Secrets of the namespace
+        that have no desired state. An existing desired state is never changed. Kinds
+        the caller may not list are skipped. Run it once per namespace when enabling
+        desired state on an existing installation.
+      parameters:
+        - $ref: '#/components/parameters/clusterParam'
+        - $ref: '#/components/parameters/namespaceParam'
+      responses:
+        "200":
+          description: What was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftAdoptResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "501":
+          $ref: '#/components/responses/DriftDisabled'
+        "503":
+          description: The desired state store, the cluster or the authorization policy is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'

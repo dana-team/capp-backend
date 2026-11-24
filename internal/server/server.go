@@ -17,6 +17,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources"
 	"github.com/dana-team/capp-backend/internal/resources/cluster/namespaces"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	"github.com/dana-team/capp-backend/internal/server/ui"
 	cfuncapi "github.com/dana-team/capp-backend/pkg/api/cfunc"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
@@ -33,6 +34,18 @@ type Server struct {
 	authManager   auth.AuthManager
 }
 
+// Option configures optional parts of the server.
+type Option func(*serverOptions)
+
+type serverOptions struct {
+	tracker *tracking.Tracker
+}
+
+// WithTracker records the desired state of namespaces and reports their drift.
+func WithTracker(tracker *tracking.Tracker) Option {
+	return func(o *serverOptions) { o.tracker = tracker }
+}
+
 // New builds the Gin engine and starts authorization observation when enabled.
 // Namespace handlers are assembled here; registry supplies the other resources.
 // Call Stop to release workers, even when Start has not been called.
@@ -47,7 +60,12 @@ func New(
 	clusterMgr cluster.ClusterManager,
 	registry *resources.Registry,
 	logger *zap.Logger,
+	opts ...Option,
 ) (*Server, error) {
+	var options serverOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	var authorization *authorizationRuntime
 	var rules *policy.Routes
 	if cfg.Authorization.Mode == config.AuthorizationModeBackendPolicy {
@@ -159,9 +177,9 @@ func New(
 	}
 	if cfg.Resources.Namespaces.Enabled {
 		if authorization != nil {
-			registry.Register(namespaces.NewWithAdministration(logger, authorization.administration))
+			registry.Register(namespaces.NewWithAdministration(logger, authorization.administration).WithTracker(options.tracker))
 		} else {
-			registry.Register(namespaces.New(logger))
+			registry.Register(namespaces.New(logger).WithTracker(options.tracker))
 		}
 	}
 	registry.Mount(resourceGroup)

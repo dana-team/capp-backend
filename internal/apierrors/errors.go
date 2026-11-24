@@ -42,13 +42,14 @@ const (
 	CodeClusterUnhealthy      = "CLUSTER_UNHEALTHY"
 	CodeNotSupported          = "NOT_SUPPORTED"
 	CodeNamespaceDenied       = "NAMESPACE_DENIED"
-	CodeGitopsFailed          = "GITOPS_FAILED"
 	CodePrometheusQueryFailed = "PROMETHEUS_QUERY_FAILED"
 	CodePrometheusTimeout     = "PROMETHEUS_TIMEOUT"
 	CodeCfuncSourceFailed     = "CFUNC_SOURCE_FAILED"
 	CodeCfuncSourceBusy       = "CFUNC_SOURCE_BUSY"
 	CodeCfuncRouterFailed     = "CFUNC_ROUTER_FAILED"
 	CodeLogStreamsBusy        = "LOG_STREAMS_BUSY"
+	CodeDriftDetected         = "DRIFT_DETECTED"
+	CodeDesiredStateFailed    = "DESIRED_STATE_FAILED"
 )
 
 // ReasonPolicyDenied is the public reason for an authorization policy denial.
@@ -169,18 +170,6 @@ func NewNamespaceDenied(namespace, cluster string) *APIError {
 	}
 }
 
-// NewGitopsFailed returns a 502 error for the sync endpoints, where writing to
-// the GitOps repository is the operation the caller asked for. Handlers whose
-// primary job is a cluster write report a backup failure as a warning instead.
-func NewGitopsFailed(err error) *APIError {
-	return &APIError{
-		Code:    CodeGitopsFailed,
-		Message: "writing to the GitOps repository failed; retry the sync/unsync operation",
-		Status:  http.StatusBadGateway,
-		cause:   err,
-	}
-}
-
 // NewCfuncSourceFailed returns a 502 error when the git server that holds a
 // function's code cannot be reached or read. The cause is kept for server
 // logs and is not included in the client message.
@@ -221,6 +210,30 @@ func NewCfuncRouterFailed(err error) *APIError {
 		Code:    CodeCfuncRouterFailed,
 		Message: "the Fission router did not answer the test call",
 		Status:  http.StatusBadGateway,
+		cause:   err,
+	}
+}
+
+// NewDriftDetected returns a 409 error when a request was refused because of
+// how the live object differs from its desired state. drift is returned to the
+// client so it can decide what to do.
+func NewDriftDetected(msg string, drift any) *APIError {
+	return &APIError{
+		Code:    CodeDriftDetected,
+		Message: msg,
+		Status:  http.StatusConflict,
+		Details: map[string]any{"drift": drift},
+	}
+}
+
+// NewDesiredStateUnavailable returns a 503 error when the desired state store
+// cannot be used. Nothing was changed in the cluster. The cause is kept for
+// server logs and is not included in the client message.
+func NewDesiredStateUnavailable(err error) *APIError {
+	return &APIError{
+		Code:    CodeDesiredStateFailed,
+		Message: "the desired state store is unavailable; nothing was changed, retry the request",
+		Status:  http.StatusServiceUnavailable,
 		cause:   err,
 	}
 }

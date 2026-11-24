@@ -18,6 +18,7 @@ func (h *handler) RegisterRolloutCommand(parent *cobra.Command) {
 		revision       string
 		removeStrategy bool
 		skipConfirm    bool
+		onDrift        string
 	)
 
 	cmd := &cobra.Command{
@@ -34,6 +35,9 @@ func (h *handler) RegisterRolloutCommand(parent *cobra.Command) {
 			if ns == "" {
 				return fmt.Errorf("--namespace is required")
 			}
+			if err := validateOnDrift(onDrift); err != nil {
+				return err
+			}
 			if (action == "") == !removeStrategy {
 				return fmt.Errorf("exactly one of --action or --remove-strategy is required")
 			}
@@ -46,8 +50,8 @@ func (h *handler) RegisterRolloutCommand(parent *cobra.Command) {
 					return nil
 				}
 				var updated apitypes.CappResponse
-				if err := h.state.Client.Delete(cmd.Context(), cappPath+"/rollout/strategy", &updated); err != nil {
-					return err
+				if err := h.state.Client.Delete(cmd.Context(), cappPath+"/rollout/strategy"+onDriftQuery(onDrift), &updated); err != nil {
+					return explainDrift(err)
 				}
 				return h.render(cmd.OutOrStdout(), []apitypes.CappResponse{updated}, updated)
 			}
@@ -91,6 +95,7 @@ func (h *handler) RegisterRolloutCommand(parent *cobra.Command) {
 	cmd.Flags().StringVar(&revision, "revision", "", "candidate revision the action targets (default: the current candidate, required with -y)")
 	cmd.Flags().BoolVar(&removeStrategy, "remove-strategy", false, "remove the rollout strategy (promotes a Ready candidate, otherwise pins traffic to stable)")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
+	addOnDriftFlag(cmd, &onDrift)
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }

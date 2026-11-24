@@ -1,0 +1,7 @@
+{{- if (.Values.config.gitops).enabled }}
+WARNING: config.gitops is ignored. Git sync was removed and Capps are no longer backed up to Git.
+{{- if not (dig "desiredState" "enabled" false .Values.config) }}
+config.desiredState is not enabled either, so nothing is backed up.
+{{- end }}
+Follow "Moving off Git sync" in docs/desired-state.md, then remove config.gitops, secret.gitopsToken and secret.sshKey.
+{{- end }}
