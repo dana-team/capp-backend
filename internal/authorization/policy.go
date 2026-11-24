@@ -2,6 +2,7 @@
 package authorization
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	policyDataKey        = "policy.json"
-	assignmentNamePrefix = "capp-assignment-"
-	backendPolicy        = "backend-policy"
+	policyDataKey          = "policy.json"
+	assignmentNamePrefix   = "capp-assignment-"
+	backendPolicy          = "backend-policy"
+	policyClusterHashBytes = 8
 )
 
 // PolicySchemaVersion is the supported assignment document version.
@@ -64,8 +66,8 @@ type Assignment struct {
 // No defaults are supplied here.
 // Errors deliberately omit policy contents, including unknown field names.
 // Binding validation errors identify the zero-based index in the input array.
-func ParseAssignment(cm *corev1.ConfigMap, policyNamespace string, protectedNamespaces, restrictedBindingNamePrefixes []string) (*Assignment, error) {
-	if cm == nil || cm.Namespace != policyNamespace || cm.Labels[assignmentLabel] != backendPolicy {
+func ParseAssignment(cm *corev1.ConfigMap, clusterName, policyNamespace string, protectedNamespaces, restrictedBindingNamePrefixes []string) (*Assignment, error) {
+	if clusterName == "" || cm == nil || cm.Namespace != policyNamespace || cm.Labels[assignmentLabel] != backendPolicy {
 		return nil, errors.New("assignment must be selected in the policy namespace")
 	}
 	payload, ok := cm.Data[policyDataKey]
@@ -80,7 +82,7 @@ func ParseAssignment(cm *corev1.ConfigMap, policyNamespace string, protectedName
 	if err != nil || len(strictErrors) != 0 {
 		return nil, errors.New("assignment must contain strict JSON with only supported fields")
 	}
-	if cm.Name != assignmentNamePrefix+policy.Namespace {
+	if cm.Name != PolicyName(clusterName, policy.Namespace) {
 		return nil, errors.New("assignment name must match a valid target namespace")
 	}
 	if err := policy.validate(policyNamespace, protectedNamespaces, restrictedBindingNamePrefixes); err != nil {
@@ -115,7 +117,10 @@ func (a *Assignment) Allows(username string, groups, allowedRoles []string) bool
 // ConfigMap builds and validates canonical policy storage. Metadata and target
 // fields are controlled by the server; callers may preserve existing metadata.
 // Name restrictions follow the same rules as ParseAssignment.
-func (p Policy) ConfigMap(policyNamespace string, protectedNamespaces, restrictedBindingNamePrefixes []string) (*corev1.ConfigMap, error) {
+func (p Policy) ConfigMap(clusterName, policyNamespace string, protectedNamespaces, restrictedBindingNamePrefixes []string) (*corev1.ConfigMap, error) {
+	if clusterName == "" {
+		return nil, errors.New("policy requires a target cluster")
+	}
 	if err := p.validate(policyNamespace, protectedNamespaces, restrictedBindingNamePrefixes); err != nil {
 		return nil, err
 	}
@@ -127,9 +132,22 @@ func (p Policy) ConfigMap(policyNamespace string, protectedNamespaces, restricte
 		return nil, errors.New("assignment payload exceeds 512 KiB")
 	}
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-		Name: assignmentNamePrefix + p.Namespace, Namespace: policyNamespace,
-		Labels: map[string]string{assignmentLabel: backendPolicy},
+		Name: PolicyName(clusterName, p.Namespace), Namespace: policyNamespace,
+		Annotations: map[string]string{cappv1alpha1.GroupVersion.Group + "/cluster": clusterName},
+		Labels:      map[string]string{assignmentLabel: backendPolicy},
 	}, Data: map[string]string{policyDataKey: string(payload)}}, nil
+}
+
+// PolicyName identifies a target namespace within shared origin-cluster storage.
+// Hashing the cluster name preserves arbitrary configured names without ambiguous
+// separators. Keeping the namespace first makes names readable and sortable.
+func PolicyName(clusterName, namespace string) string {
+	return assignmentNamePrefix + namespace + policyNameSuffix(clusterName)
+}
+
+func policyNameSuffix(clusterName string) string {
+	hash := sha256.Sum256([]byte(clusterName))
+	return fmt.Sprintf("-%x", hash[:policyClusterHashBytes])
 }
 
 // Bindings returns a detached copy of the validated assignment's bindings.

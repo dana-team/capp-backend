@@ -200,7 +200,7 @@ func (a *Administration) policyNamespaceItem(ns *corev1.Namespace, policy *corev
 		return item
 	}
 	item.PolicyResourceVersion = policy.ResourceVersion
-	assignment, err := authorization.ParseAssignment(policy, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	assignment, err := authorization.ParseAssignment(policy, a.clusterName, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
 	if err != nil {
 		item.PolicyState = policyStateInvalid
 		item.Users, item.Bindings = nil, nil

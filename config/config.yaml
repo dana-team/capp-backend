@@ -167,7 +167,7 @@ clusters:
     # policyNamespace is required in backend-policy mode;
     # the lists are optional.
     authorization:
-      policyNamespace: capp-platform-system
+      policyNamespace: capp-platform-system # Existing namespace on the cluster running capp-backend.
       protectedNamespaces: [capp-platform-system]
       operatorUsers: []
       operatorGroups: []

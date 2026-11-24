@@ -18,6 +18,8 @@ import (
 // Administration manages privileged namespace, quota, and policy operations for one cluster.
 // Its client must use the system identity and must never be installed on requests.
 type Administration struct {
+	policyClient                  client.Client
+	clusterName                   string
 	client                        client.Client
 	policyNamespace               string
 	protectedNamespaces           []string
@@ -25,30 +27,41 @@ type Administration struct {
 }
 
 // NewAdministration prepares namespace administration without storage I/O.
-func NewAdministration(systemClient client.Client, policyNamespace string, protectedNamespaces, restrictedBindingNamePrefixes []string) (*Administration, error) {
-	if systemClient == nil || len(validation.ValidateNamespaceName(policyNamespace, false)) != 0 {
+func NewAdministration(systemClient, policyClient client.Client, clusterName, policyNamespace string, protectedNamespaces, restrictedBindingNamePrefixes []string) (*Administration, error) {
+	if systemClient == nil || policyClient == nil || clusterName == "" || len(validation.ValidateNamespaceName(policyNamespace, false)) != 0 {
 		return nil, errors.New("administration requires a client and valid policy namespace")
 	}
 	if err := authorization.ValidateBindingNamePrefixes(restrictedBindingNamePrefixes); err != nil {
 		return nil, err
 	}
 	return &Administration{
-		client: systemClient, policyNamespace: policyNamespace,
+		client: systemClient, policyClient: policyClient, clusterName: clusterName, policyNamespace: policyNamespace,
 		protectedNamespaces:           slices.Clone(protectedNamespaces),
 		restrictedBindingNamePrefixes: slices.Clone(restrictedBindingNamePrefixes),
 	}, nil
+}
+
+func (a *Administration) checkPolicyStorage(ctx context.Context) error {
+	var namespace corev1.Namespace
+	if err := a.policyClient.Get(ctx, client.ObjectKey{Name: a.policyNamespace}, &namespace); err != nil {
+		return authorization.ErrUnavailable
+	}
+	if namespace.DeletionTimestamp != nil {
+		return authorization.ErrUnavailable
+	}
+	return nil
 }
 
 // readOwnedPolicy fetches the canonical policy without validating its membership.
 // Missing policies return nil; ownership or identity errors retain the fetched
 // policy for auditing. Each call reads storage afresh.
 func (a *Administration) readOwnedPolicy(ctx context.Context, ns *corev1.Namespace) (*corev1.ConfigMap, error) {
-	template, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: ns.Name, Bindings: []authorization.Binding{}}).ConfigMap(a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
+	template, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: ns.Name, Bindings: []authorization.Binding{}}).ConfigMap(a.clusterName, a.policyNamespace, a.protectedNamespaces, a.restrictedBindingNamePrefixes)
 	if err != nil {
 		return nil, err
 	}
 	policy := &corev1.ConfigMap{}
-	if err := a.client.Get(ctx, client.ObjectKeyFromObject(template), policy); err != nil {
+	if err := a.policyClient.Get(ctx, client.ObjectKeyFromObject(template), policy); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil, nil
 		}

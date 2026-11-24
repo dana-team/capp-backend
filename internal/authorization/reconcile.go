@@ -24,16 +24,17 @@ var errObservationsNotSynced = errors.New("authorization observations are not sy
 // Reconciler persists the initial namespace UID association on valid assignments.
 // Run the store and reconciler with the same cancellation scope.
 type Reconciler struct {
-	client  kubernetes.Interface
-	store   *Store
-	queue   workqueue.TypedRateLimitingInterface[string]
-	started atomic.Bool
+	client       kubernetes.Interface
+	policyClient kubernetes.Interface
+	store        *Store
+	queue        workqueue.TypedRateLimitingInterface[string]
+	started      atomic.Bool
 }
 
 // NewReconciler registers change handlers before the store starts.
 // Each store supports one reconciler; replicas use independent stores and queues.
-func NewReconciler(client kubernetes.Interface, store *Store) (*Reconciler, error) {
-	if client == nil || store == nil {
+func NewReconciler(client, policyClient kubernetes.Interface, store *Store) (*Reconciler, error) {
+	if client == nil || policyClient == nil || store == nil {
 		return nil, errors.New("reconciliation requires a client and observation store")
 	}
 	store.mu.Lock()
@@ -45,8 +46,8 @@ func NewReconciler(client kubernetes.Interface, store *Store) (*Reconciler, erro
 		return nil, errors.New("observation store already has a reconciler")
 	}
 	r := &Reconciler{
-		client: client,
-		store:  store,
+		client: client, policyClient: policyClient,
+		store: store,
 		queue: workqueue.NewTypedRateLimitingQueue(
 			newReconciliationRateLimiter(),
 		),
@@ -112,8 +113,8 @@ func (r *Reconciler) reconcile(ctx context.Context, namespace string) error {
 	defer cancel()
 
 	// Re-read before writes: observations may lag policy edits or replacement.
-	cm, err := r.client.CoreV1().ConfigMaps(r.store.options.PolicyNamespace).Get(
-		ctx, assignmentNamePrefix+namespace, metav1.GetOptions{},
+	cm, err := r.policyClient.CoreV1().ConfigMaps(r.store.options.PolicyNamespace).Get(
+		ctx, PolicyName(r.store.options.ClusterName, namespace), metav1.GetOptions{},
 	)
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -124,7 +125,7 @@ func (r *Reconciler) reconcile(ctx context.Context, namespace string) error {
 	if cm.UID != state.PolicyUID {
 		return nil
 	}
-	if _, err := ParseAssignment(cm, r.store.options.PolicyNamespace, r.store.options.ProtectedNamespaces, r.store.options.RestrictedBindingNamePrefixes); err != nil {
+	if _, err := ParseAssignment(cm, r.store.options.ClusterName, r.store.options.PolicyNamespace, r.store.options.ProtectedNamespaces, r.store.options.RestrictedBindingNamePrefixes); err != nil {
 		return nil
 	}
 	if cm.DeletionTimestamp != nil {
@@ -164,7 +165,7 @@ func (r *Reconciler) associateNamespace(ctx context.Context, cm *corev1.ConfigMa
 	if err != nil {
 		return err
 	}
-	_, err = r.client.CoreV1().ConfigMaps(cm.Namespace).Patch(
+	_, err = r.policyClient.CoreV1().ConfigMaps(cm.Namespace).Patch(
 		ctx, cm.Name, types.MergePatchType, data, metav1.PatchOptions{},
 	)
 	return err

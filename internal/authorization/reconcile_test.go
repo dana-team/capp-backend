@@ -17,6 +17,7 @@ import (
 	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,10 +36,10 @@ func TestNewReconciler(t *testing.T) {
 	cm, ns := readyObjects("team-a")
 	store := staticStore(t, cm, ns)
 	client := fake.NewClientset()
-	r, err := NewReconciler(client, store)
+	r, err := NewReconciler(client, client, store)
 	require.NoError(t, err)
 	t.Cleanup(r.queue.ShutDown)
-	_, err = NewReconciler(client, store)
+	_, err = NewReconciler(client, client, store)
 	require.ErrorContains(t, err, "already has a reconciler")
 }
 
@@ -87,7 +88,7 @@ func TestReconcilerReconcile(t *testing.T) {
 			store.options.RestrictedBindingNamePrefixes = []string{"system:"}
 			tt.change(cm, ns)
 			client := fake.NewClientset(cm, ns)
-			r, err := NewReconciler(client, store)
+			r, err := NewReconciler(client, client, store)
 			require.NoError(t, err)
 			defer r.queue.ShutDown()
 			require.NoError(t, r.reconcile(t.Context(), ns.Name))
@@ -103,7 +104,7 @@ func TestReconcilerReconcile(t *testing.T) {
 		store.options.ProtectedNamespaces = []string{ns.Name}
 		store.changed(policies, cm)
 		client := fake.NewClientset(cm, ns)
-		r, err := NewReconciler(client, store)
+		r, err := NewReconciler(client, client, store)
 		require.NoError(t, err)
 		defer r.queue.ShutDown()
 		require.NoError(t, r.reconcile(t.Context(), ns.Name))
@@ -133,7 +134,7 @@ func TestReconcilerReconcile(t *testing.T) {
 			}}, body)
 			return true, nil, conflict
 		})
-		r, err := NewReconciler(client, store)
+		r, err := NewReconciler(client, client, store)
 		require.NoError(t, err)
 		defer r.queue.ShutDown()
 		require.ErrorIs(t, r.reconcile(t.Context(), ns.Name), conflict)
@@ -157,9 +158,15 @@ func TestReconcilerRun(t *testing.T) {
 	cfg, err := environment.Start()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, environment.Stop()) })
+	originEnvironment := &envtest.Environment{}
+	originConfig, err := originEnvironment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, originEnvironment.Stop()) })
+	origin, err := kubernetes.NewForConfig(originConfig)
+	require.NoError(t, err)
 	client, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err)
-	_, err = client.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: policyNamespace}}, metav1.CreateOptions{})
+	_, err = origin.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: policyNamespace}}, metav1.CreateOptions{})
 	require.NoError(t, err)
 	// Inject transient write failures over real transport, without simulating API semantics.
 	var failPatch atomic.Bool
@@ -174,10 +181,14 @@ func TestReconcilerRun(t *testing.T) {
 	}
 	replicaClient, err := kubernetes.NewForConfig(replicaConfig)
 	require.NoError(t, err)
+	originReplicaConfig := rest.CopyConfig(originConfig)
+	originReplicaConfig.WrapTransport = replicaConfig.WrapTransport
+	originReplica, err := kubernetes.NewForConfig(originReplicaConfig)
+	require.NoError(t, err)
 	start := func() (*Store, func()) {
-		store, err := NewStore(replicaClient, StoreOptions{PolicyNamespace: policyNamespace, ProtectedNamespaces: []string{"protected"}})
+		store, err := NewStore(replicaClient, originReplica, StoreOptions{ClusterName: "c1", PolicyNamespace: policyNamespace, ProtectedNamespaces: []string{"protected"}})
 		require.NoError(t, err)
-		reconciler, err := NewReconciler(replicaClient, store)
+		reconciler, err := NewReconciler(replicaClient, originReplica, store)
 		require.NoError(t, err)
 		ctx, cancel := context.WithCancel(t.Context())
 		var workers sync.WaitGroup
@@ -211,7 +222,7 @@ func TestReconcilerRun(t *testing.T) {
 		if namespace == "replicas" {
 			cm.Immutable = new(true)
 		}
-		cm, err = client.CoreV1().ConfigMaps(cm.Namespace).Create(t.Context(), cm, metav1.CreateOptions{})
+		cm, err = origin.CoreV1().ConfigMaps(cm.Namespace).Create(t.Context(), cm, metav1.CreateOptions{})
 		require.NoError(t, err)
 		return cm, ns
 	}
@@ -221,7 +232,7 @@ func TestReconcilerRun(t *testing.T) {
 		require.Eventually(t, func() bool { return patchFailures.Load() >= 2 }, reconcileTimeout, pollInterval)
 		failPatch.Store(false)
 		waitReady(ns.Name)
-		persisted, err := client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
+		persisted, err := origin.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
 		require.NoError(t, err)
 		require.Equal(t, map[string]string{"operator": "preserve", NamespaceUIDAnnotation: string(ns.UID)}, persisted.Annotations)
 		require.Equal(t, cm.Data, persisted.Data)
@@ -247,19 +258,19 @@ func TestReconcilerRun(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return first.Lookup(ns.Name).Reason == NamespaceUIDMismatch && second.Lookup(ns.Name).Reason == NamespaceUIDMismatch
 		}, reconcileTimeout, pollInterval)
-		persisted, err := client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
+		persisted, err := origin.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
 		require.NoError(t, err)
 		require.Equal(t, string(ns.UID), persisted.Annotations[NamespaceUIDAnnotation])
 		require.NotEqual(t, ns.UID, replacement.UID)
-		require.NoError(t, client.CoreV1().ConfigMaps(cm.Namespace).Delete(t.Context(), cm.Name, metav1.DeleteOptions{}))
+		require.NoError(t, origin.CoreV1().ConfigMaps(cm.Namespace).Delete(t.Context(), cm.Name, metav1.DeleteOptions{}))
 		cm.UID, cm.ResourceVersion = "", ""
-		cm, err = client.CoreV1().ConfigMaps(cm.Namespace).Create(t.Context(), cm, metav1.CreateOptions{})
+		cm, err = origin.CoreV1().ConfigMaps(cm.Namespace).Create(t.Context(), cm, metav1.CreateOptions{})
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
 			return first.Lookup(ns.Name).PolicyUID == cm.UID && second.Lookup(ns.Name).PolicyUID == cm.UID
 		}, reconcileTimeout, pollInterval)
 		waitReady(ns.Name)
-		persisted, err = client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
+		persisted, err = origin.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
 		require.NoError(t, err)
 		require.Equal(t, string(replacement.UID), persisted.Annotations[NamespaceUIDAnnotation])
 	})
@@ -269,12 +280,12 @@ func TestReconcilerRun(t *testing.T) {
 	t.Run("restart retains persisted associations", func(t *testing.T) {
 		cm, ns := create("restart")
 		cm.Annotations[NamespaceUIDAnnotation] = string(ns.UID)
-		cm, err = client.CoreV1().ConfigMaps(cm.Namespace).Update(t.Context(), cm, metav1.UpdateOptions{})
+		cm, err = origin.CoreV1().ConfigMaps(cm.Namespace).Update(t.Context(), cm, metav1.UpdateOptions{})
 		require.NoError(t, err)
 		first, _ = start()
 		second, _ = start()
 		waitReady(ns.Name)
-		persisted, err := client.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
+		persisted, err := origin.CoreV1().ConfigMaps(cm.Namespace).Get(t.Context(), cm.Name, metav1.GetOptions{})
 		require.NoError(t, err)
 		require.Equal(t, cm.ResourceVersion, persisted.ResourceVersion, "an existing association needs no rewrite after restart")
 	})
@@ -327,7 +338,7 @@ func TestReconcilerRunAttemptTimeout(t *testing.T) {
 		})
 		client, err := kubernetes.NewForConfigAndClient(&rest.Config{Host: "http://cluster"}, httpClient)
 		require.NoError(t, err)
-		r, err := NewReconciler(client, store)
+		r, err := NewReconciler(client, client, store)
 		require.NoError(t, err)
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
@@ -373,7 +384,7 @@ func TestReconcilerRunFailureDiagnostics(t *testing.T) {
 				}
 				return false, nil, nil
 			})
-			r, err := NewReconciler(client, store)
+			r, err := NewReconciler(client, client, store)
 			require.NoError(t, err)
 			var logsMu sync.Mutex
 			var entries []string
@@ -413,4 +424,46 @@ func TestReconcilerRunFailureDiagnostics(t *testing.T) {
 			require.NotContains(t, entries[0], "private")
 		})
 	}
+}
+
+func TestReconcilerReconcileSharedStorage(t *testing.T) {
+	origin := fake.NewClientset()
+	stores := make([]*Store, 2)
+	policies := make([]*corev1.ConfigMap, 2)
+	for i, name := range []string{"cluster-a", "cluster-b"} {
+		policy, ns := readyObjects("team-a")
+		ns.UID = types.UID(name + "-uid")
+		policy.Name = PolicyName(name, ns.Name)
+		policy.UID = types.UID(name + "-policy")
+		policy.Annotations = nil
+		payload, err := json.Marshal(Policy{
+			Version: PolicySchemaVersion, Namespace: ns.Name,
+			Bindings: []Binding{{Kind: rbacv1.UserKind, Name: name, Role: RoleViewer}},
+		})
+		require.NoError(t, err)
+		policy.Data[policyDataKey] = string(payload)
+		policies[i], err = origin.CoreV1().ConfigMaps(policy.Namespace).Create(t.Context(), policy, metav1.CreateOptions{})
+		require.NoError(t, err)
+		target := fake.NewClientset(ns)
+		store, err := NewStore(target, origin, StoreOptions{ClusterName: name, PolicyNamespace: policy.Namespace})
+		require.NoError(t, err)
+		reconciler, err := NewReconciler(target, origin, store)
+		require.NoError(t, err)
+		t.Cleanup(reconciler.Close)
+		runStore(t, store)
+		require.Eventually(t, func() bool { return store.Health().Synced && store.Lookup(ns.Name).Reason == AssociationPending }, 5*time.Second, time.Millisecond)
+		require.NoError(t, reconciler.reconcile(t.Context(), ns.Name))
+		require.Eventually(t, func() bool { return store.Lookup(ns.Name).Ready() }, 5*time.Second, time.Millisecond)
+		stored, err := origin.CoreV1().ConfigMaps(policy.Namespace).Get(t.Context(), policy.Name, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Equal(t, string(ns.UID), stored.Annotations[NamespaceUIDAnnotation])
+		stores[i] = store
+	}
+	require.True(t, stores[0].Lookup("team-a").Allows("cluster-a", nil, []string{RoleViewer}))
+	require.False(t, stores[0].Lookup("team-a").Allows("cluster-b", nil, []string{RoleViewer}))
+	require.True(t, stores[1].Lookup("team-a").Allows("cluster-b", nil, []string{RoleViewer}))
+	require.False(t, stores[1].Lookup("team-a").Allows("cluster-a", nil, []string{RoleViewer}))
+	require.NoError(t, origin.CoreV1().ConfigMaps(policies[0].Namespace).Delete(t.Context(), policies[0].Name, metav1.DeleteOptions{}))
+	require.Eventually(t, func() bool { return !stores[0].Lookup("team-a").Ready() }, 5*time.Second, time.Millisecond)
+	require.True(t, stores[1].Lookup("team-a").Allows("cluster-b", nil, []string{RoleViewer}))
 }

@@ -159,7 +159,7 @@ func TestHandlerListManagedNamespaces(t *testing.T) {
 		{allowed: []string{"excluded"}, want: []string{}},
 	} {
 		t.Run(fmt.Sprint(tc.allowed), func(t *testing.T) {
-			policy, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: "zeta", Bindings: bindings}).ConfigMap("capp-system", nil, nil)
+			policy, err := (authorization.Policy{Version: authorization.PolicySchemaVersion, Namespace: "zeta", Bindings: bindings}).ConfigMap("c1", "capp-system", nil, nil)
 			require.NoError(t, err)
 			policy.ResourceVersion = "7"
 			storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{
@@ -350,7 +350,7 @@ func TestHandlerGetManagedNamespaceReadFailure(t *testing.T) {
 }
 
 func TestHandlerCreateManagedNamespaceResponse(t *testing.T) {
-	storage := testutil.FakeClientWithInterceptors(t, interceptor.Funcs{})
+	storage := testutil.FakeClient(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capp-system"}})
 	router := membershipRouter(t, storage, "operator", zap.NewNop(), nil)
 	w := membershipRequest(router, http.MethodPost, "", `{"name":"team-a","users":["alice"],"quota":{"cpu":"2"}}`)
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
@@ -391,7 +391,7 @@ func TestHandlerKubernetesBindings(t *testing.T) {
 func TestHandlerGetManagedNamespaceObservation(t *testing.T) {
 	ns, policy := membershipObjects(t, []authorization.Binding{{Kind: rbacv1.UserKind, Name: "reader", Role: authorization.RoleViewer}})
 	ns.Labels[consts.ManagedNameSpaceLabelKey] = consts.ManagedLabelValue
-	store, err := authorization.NewStore(fake.NewClientset(ns, policy), authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	store, err := authorization.NewStore(fake.NewClientset(ns, policy), fake.NewClientset(ns, policy), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -403,7 +403,7 @@ func TestHandlerGetManagedNamespaceObservation(t *testing.T) {
 		require.IsType(t, &corev1.ResourceQuota{}, obj)
 		return c.Get(ctx, key, obj, opts...)
 	}}, existingResourceQuota(ns.Name, "1", ""))
-	router := membershipRouterWithStore(t, storage, "reader", zap.NewNop(), nil, store)
+	router := membershipRouterWithStore(t, storage, storage, "reader", zap.NewNop(), nil, store)
 	w := membershipRequest(router, http.MethodGet, ns.Name, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var item NamespaceItem
@@ -420,7 +420,7 @@ func TestHandlerListAuthorizedNamespaces(t *testing.T) {
 	for _, name := range []string{"zeta", "alpha", "unmanaged", "pending", "recreated", "capp-system"} {
 		ns, policy := membershipObjects(t, []authorization.Binding{})
 		ns.Name = name
-		policy.Name = "capp-assignment-" + name
+		policy.Name = authorization.PolicyName("c1", name)
 		policy.Data["policy.json"] = fmt.Sprintf(`{"version":1,"namespace":%q,"bindings":[{"kind":"User","name":"reader","role":"viewer"},{"kind":"User","name":"editor","role":"editor"}]}`, name)
 		switch name {
 		case "unmanaged":
@@ -433,14 +433,14 @@ func TestHandlerListAuthorizedNamespaces(t *testing.T) {
 		objects = append(objects, ns, policy)
 	}
 	observations := fake.NewClientset(objects...)
-	store, err := authorization.NewStore(observations, authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	store, err := authorization.NewStore(observations, observations, authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- store.Run(ctx) }()
 	t.Cleanup(func() { cancel(); require.NoError(t, <-done) })
 	require.Eventually(t, func() bool { return store.Health().Synced }, 5*time.Second, time.Millisecond)
-	unsynced, err := authorization.NewStore(fake.NewClientset(), authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	unsynced, err := authorization.NewStore(fake.NewClientset(), fake.NewClientset(), authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
 	for _, tc := range []struct {
 		name, user    string
@@ -481,7 +481,7 @@ func TestHandlerListAuthorizedNamespaces(t *testing.T) {
 				},
 			}, existingResourceQuota("alpha", "1", ""), existingResourceQuota("zeta", "2", ""))
 			core, logs := observer.New(zap.InfoLevel)
-			router := membershipRouterWithStore(t, storage, tc.user, zap.New(core), nil, tc.store, tc.allowed...)
+			router := membershipRouterWithStore(t, storage, storage, tc.user, zap.New(core), nil, tc.store, tc.allowed...)
 			observations.ClearActions()
 			w := membershipRequest(router, http.MethodGet, "", "")
 			require.Equal(t, tc.status, w.Code, w.Body.String())
@@ -519,7 +519,7 @@ func TestHandlerListAuthorizedNamespaces(t *testing.T) {
 func TestHandlerListAuthorizedNamespacesChanges(t *testing.T) {
 	ns, policy := membershipObjects(t, []authorization.Binding{{Kind: rbacv1.UserKind, Name: "reader", Role: authorization.RoleViewer}})
 	observations := fake.NewClientset(ns, policy)
-	store, err := authorization.NewStore(observations, authorization.StoreOptions{PolicyNamespace: "capp-system"})
+	store, err := authorization.NewStore(observations, observations, authorization.StoreOptions{ClusterName: "c1", PolicyNamespace: "capp-system"})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -532,7 +532,7 @@ func TestHandlerListAuthorizedNamespacesChanges(t *testing.T) {
 		reads++
 		return c.Get(ctx, key, obj, opts...)
 	}})
-	router := membershipRouterWithStore(t, storage, "reader", zap.NewNop(), nil, store)
+	router := membershipRouterWithStore(t, storage, storage, "reader", zap.NewNop(), nil, store)
 	check := func(want int) {
 		t.Helper()
 		reads = 0

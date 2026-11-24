@@ -13,7 +13,7 @@ import (
 func BenchmarkAssignmentAllows(b *testing.B) {
 	for _, size := range []int{16, 1024} {
 		cm := benchmarkPolicy(size)
-		assignment, err := ParseAssignment(cm, "capp-system", nil, nil)
+		assignment, err := ParseAssignment(cm, "c1", "capp-system", nil, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -53,7 +53,7 @@ func BenchmarkParseAssignment(b *testing.B) {
 		b.Run(fmt.Sprintf("bindings=%d", size), func(b *testing.B) {
 			cm := benchmarkPolicy(size)
 			for b.Loop() {
-				if _, err := ParseAssignment(cm, "capp-system", nil, nil); err != nil {
+				if _, err := ParseAssignment(cm, "c1", "capp-system", nil, nil); err != nil {
 					b.Fatal(err)
 				}
 			}

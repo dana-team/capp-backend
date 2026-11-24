@@ -14,7 +14,7 @@ import (
 const validPolicy = `{"version":1,"namespace":"team-a","bindings":[{"kind":"User","name":"alice","role":"viewer"}]}`
 
 func TestAssignmentBindings(t *testing.T) {
-	assignment, err := ParseAssignment(assignmentConfigMap(validPolicy), "capp-system", nil, nil)
+	assignment, err := ParseAssignment(assignmentConfigMap(validPolicy), "c1", "capp-system", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestParseAssignment(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				assignment, err := ParseAssignment(assignmentConfigMap(string(payload)), "capp-system", nil, []string{"system:"})
+				assignment, err := ParseAssignment(assignmentConfigMap(string(payload)), "c1", "capp-system", nil, []string{"system:"})
 				if err == nil || !strings.HasPrefix(err.Error(), "bindings[1]: ") {
 					t.Fatalf("ParseAssignment() error = %v, want bindings[1] index", err)
 				}
@@ -84,14 +84,14 @@ func TestParseAssignment(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = ParseAssignment(assignmentConfigMap(string(payload)), "capp-system", nil, tc.prefixes)
+				_, err = ParseAssignment(assignmentConfigMap(string(payload)), "c1", "capp-system", nil, tc.prefixes)
 				if (err != nil) != tc.wantErr {
 					t.Fatalf("ParseAssignment() error = %v, want error %v", err, tc.wantErr)
 				}
 				if err != nil && strings.Contains(err.Error(), tc.identity) {
 					t.Fatalf("error exposes identity: %v", err)
 				}
-				_, err = policy.ConfigMap("capp-system", nil, tc.prefixes)
+				_, err = policy.ConfigMap("c1", "capp-system", nil, tc.prefixes)
 				if (err != nil) != tc.wantErr {
 					t.Fatalf("ConfigMap() error = %v, want error %v", err, tc.wantErr)
 				}
@@ -141,7 +141,7 @@ func TestParseAssignment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cm := assignmentConfigMap(tt.payload)
 			before := cm.DeepCopy()
-			got, err := ParseAssignment(cm, "capp-system", nil, nil)
+			got, err := ParseAssignment(cm, "c1", "capp-system", nil, nil)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ParseAssignment() error = %v, want error %v", err, tt.wantErr)
 			}
@@ -172,11 +172,11 @@ func TestParseAssignment(t *testing.T) {
 			{"extra data", func(cm *corev1.ConfigMap) { cm.Data["extra"] = "" }},
 			{"binary data", func(cm *corev1.ConfigMap) { cm.BinaryData = map[string][]byte{"extra": {}} }},
 			{"policy namespace target", func(cm *corev1.ConfigMap) {
-				cm.Name = "capp-assignment-capp-system"
+				cm.Name = PolicyName("c1", "capp-system")
 				cm.Data[policyDataKey] = strings.Replace(validPolicy, "team-a", "capp-system", 1)
 			}},
 			{"protected target", func(cm *corev1.ConfigMap) {
-				cm.Name = "capp-assignment-kube-system"
+				cm.Name = PolicyName("c1", "kube-system")
 				cm.Data[policyDataKey] = strings.Replace(validPolicy, "team-a", "kube-system", 1)
 			}},
 		}
@@ -185,7 +185,7 @@ func TestParseAssignment(t *testing.T) {
 				cm := assignmentConfigMap(validPolicy)
 				tt.change(cm)
 				before := cm.DeepCopy()
-				got, err := ParseAssignment(cm, "capp-system", []string{"kube-system"}, nil)
+				got, err := ParseAssignment(cm, "c1", "capp-system", []string{"kube-system"}, nil)
 				if err == nil || got != nil {
 					t.Fatalf("ParseAssignment() = %v, %v; want nil and error", got, err)
 				}
@@ -194,10 +194,10 @@ func TestParseAssignment(t *testing.T) {
 				}
 			})
 		}
-		if _, err := ParseAssignment(nil, "capp-system", nil, nil); err == nil {
+		if _, err := ParseAssignment(nil, "c1", "capp-system", nil, nil); err == nil {
 			t.Error("nil ConfigMap accepted")
 		}
-		if _, err := ParseAssignment(assignmentConfigMap(validPolicy), "", nil, nil); err == nil {
+		if _, err := ParseAssignment(assignmentConfigMap(validPolicy), "c1", "", nil, nil); err == nil {
 			t.Error("empty policy namespace accepted")
 		}
 	})
@@ -214,7 +214,7 @@ func TestAssignmentAllows(t *testing.T) {
 		{"kind":"User","name":"carol","role":"viewer"},
 		{"kind":"User","name":"carol","role":"editor"}
 	]}`)
-	assignment, err := ParseAssignment(cm, "capp-system", nil, nil)
+	assignment, err := ParseAssignment(cm, "c1", "capp-system", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestAssignmentAllows(t *testing.T) {
 			}
 		})
 	}
-	empty, err := ParseAssignment(assignmentConfigMap(`{"version":1,"namespace":"team-a","bindings":[]}`), "capp-system", nil, nil)
+	empty, err := ParseAssignment(assignmentConfigMap(`{"version":1,"namespace":"team-a","bindings":[]}`), "c1", "capp-system", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,5 +272,32 @@ func TestAssignmentAllows(t *testing.T) {
 }
 
 func assignmentConfigMap(payload string) *corev1.ConfigMap {
-	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "capp-assignment-team-a", Namespace: "capp-system", Labels: map[string]string{assignmentLabel: backendPolicy}}, Data: map[string]string{policyDataKey: payload}}
+	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: PolicyName("c1", "team-a"), Namespace: "capp-system", Labels: map[string]string{assignmentLabel: backendPolicy}}, Data: map[string]string{policyDataKey: payload}}
+}
+
+func TestPolicyName(t *testing.T) {
+	const want = "capp-assignment-team-a-ab8e18ef4ebebedd"
+	if got := PolicyName("production", "team-a"); got != want {
+		t.Errorf("PolicyName(%q, %q) = %q, want %q", "production", "team-a", got, want)
+	}
+
+	names := make(map[string]bool)
+	for _, pair := range [][2]string{{"a-b", "c"}, {"a", "b-c"}, {"a", "team-a"}, {"b", "team-a"}, {"A", "team-a"}, {strings.Repeat("x", 300), "team-a"}} {
+		name := PolicyName(pair[0], pair[1])
+		if names[name] {
+			t.Fatalf("PolicyName(%q, %q) collides: %q", pair[0], pair[1], name)
+		}
+		names[name] = true
+		policy := Policy{Version: PolicySchemaVersion, Namespace: pair[1], Bindings: []Binding{}}
+		cm, err := policy.ConfigMap(pair[0], "capp-system", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ParseAssignment(cm, pair[0], "capp-system", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ParseAssignment(cm, "different-target", "capp-system", nil, nil); err == nil {
+			t.Fatal("policy accepted for another cluster")
+		}
+	}
 }
