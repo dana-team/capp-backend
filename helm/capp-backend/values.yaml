@@ -223,6 +223,22 @@ config:
       #       buildImage: "jvm-builder:1.32.0"
       #       keepArchive: true
       flavors: {}
+      # Requests and limits of Fission's fetcher container, which runs next
+      # to the runtime in every pool pod and next to the builder in every
+      # builder pod. Fission's chart gives it no limits (fetcher.resource),
+      # and a namespace whose ResourceQuota sets limits.cpu or limits.memory
+      # then refuses every pod of the pool. A low cpu limit slows the first
+      # call of a function, because the fetcher loads the code then.
+      fetcherResources:
+        requests: {cpu: "10m", memory: "16Mi"}
+        limits: {cpu: "200m", memory: "128Mi"}
+      # Requests and limits of the builder container, which Fission runs in
+      # one pod per pool with a build image (all the time, in the pool's
+      # namespace) and gives no resources. Builds that install many
+      # dependencies, such as Maven, may need more memory.
+      builderResources:
+        requests: {cpu: "100m", memory: "256Mi"}
+        limits: {cpu: "1", memory: "1Gi"}
       # Makes the first pool of a namespace set the fission.io/enabled=true
       # label on that namespace. Turn it on only when Fission runs with
       # tenancy.mode=dynamic; it gives the backend the right to patch

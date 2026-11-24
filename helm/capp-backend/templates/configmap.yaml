@@ -173,6 +173,14 @@ data:
           {{- toYaml .sizes | nindent 10 }}
         flavors:
           {{- toYaml .flavors | nindent 10 }}
+        {{- with .fetcherResources }}
+        fetcherResources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .builderResources }}
+        builderResources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         onboardNamespaces: {{ .onboardNamespaces | default false }}
         {{- with .functions }}
         {{- if .enabled }}

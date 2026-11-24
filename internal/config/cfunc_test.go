@@ -27,6 +27,14 @@ func validCfuncConfig() CfuncConfig {
 			"python": {Image: "python-env:1.35.0", BuildImage: "python-builder:1.35.0"},
 			"java":   {Image: "jvm-env:1.32.0", BuildImage: "jvm-builder:1.32.0", KeepArchive: true},
 		},
+		FetcherResources: ResourceSize{
+			Requests: ResourceQuantities{CPU: "10m", Memory: "16Mi"},
+			Limits:   ResourceQuantities{CPU: "200m", Memory: "128Mi"},
+		},
+		BuilderResources: ResourceSize{
+			Requests: ResourceQuantities{CPU: "100m", Memory: "256Mi"},
+			Limits:   ResourceQuantities{CPU: "1", Memory: "1Gi"},
+		},
 	}
 }
 
@@ -40,6 +48,14 @@ func TestLoad_CfuncDefaults(t *testing.T) {
 	assert.Equal(t, 10, cfg.Resources.Cfunc.MaxPoolSize)
 	assert.Empty(t, cfg.Resources.Cfunc.Flavors)
 	assert.Empty(t, cfg.Resources.Cfunc.Sizes)
+	assert.Equal(t, ResourceSize{
+		Requests: ResourceQuantities{CPU: "10m", Memory: "16Mi"},
+		Limits:   ResourceQuantities{CPU: "200m", Memory: "128Mi"},
+	}, cfg.Resources.Cfunc.FetcherResources)
+	assert.Equal(t, ResourceSize{
+		Requests: ResourceQuantities{CPU: "100m", Memory: "256Mi"},
+		Limits:   ResourceQuantities{CPU: "1", Memory: "1Gi"},
+	}, cfg.Resources.Cfunc.BuilderResources)
 }
 
 func TestLoad_CfuncFromFile(t *testing.T) {
@@ -279,6 +295,16 @@ func TestValidate_Cfunc(t *testing.T) {
 		{
 			name:   "flavor image in a sub-path of the prefix",
 			mutate: func(e *CfuncConfig) { e.Flavors["ruby"] = CfuncFlavor{Image: "team/ruby-env:1.32.0"} },
+		},
+		{
+			name:       "fetcher resources without a limit",
+			mutate:     func(e *CfuncConfig) { e.FetcherResources.Limits.CPU = "" },
+			errContain: "fetcherResources: invalid limits.cpu",
+		},
+		{
+			name:       "builder request larger than its limit",
+			mutate:     func(e *CfuncConfig) { e.BuilderResources.Requests.Memory = "2Gi" },
+			errContain: "builderResources: requests.memory is larger than limits.memory",
 		},
 		{
 			name: "builder variable without a name",

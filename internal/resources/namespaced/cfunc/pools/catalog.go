@@ -15,11 +15,13 @@ import (
 type Catalog struct {
 	cfg config.CfuncConfig
 
-	flavorNames   []string
-	sizeNames     []string
-	flavorByImage map[string]string
-	sizes         map[string]corev1.ResourceRequirements
-	ceiling       corev1.ResourceList
+	flavorNames      []string
+	sizeNames        []string
+	flavorByImage    map[string]string
+	sizes            map[string]corev1.ResourceRequirements
+	ceiling          corev1.ResourceList
+	fetcherResources corev1.ResourceRequirements
+	builderResources corev1.ResourceRequirements
 }
 
 // NewCatalog resolves cfg. It fails on a size that does not parse, which
@@ -48,6 +50,16 @@ func NewCatalog(cfg config.CfuncConfig) (*Catalog, error) {
 				c.ceiling[resourceName] = limit
 			}
 		}
+	}
+	if !cfg.Enabled { // validated only when enabled
+		return c, nil
+	}
+	var err error
+	if c.fetcherResources, err = containerspec.ParseResourceQuantities(cfg.FetcherResources.Requests, cfg.FetcherResources.Limits); err != nil {
+		return nil, fmt.Errorf("cfunc fetcherResources: %w", err)
+	}
+	if c.builderResources, err = containerspec.ParseResourceQuantities(cfg.BuilderResources.Requests, cfg.BuilderResources.Limits); err != nil {
+		return nil, fmt.Errorf("cfunc builderResources: %w", err)
 	}
 	return c, nil
 }

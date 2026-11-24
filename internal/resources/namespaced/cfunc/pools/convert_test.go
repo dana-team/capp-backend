@@ -78,7 +78,10 @@ func TestToK8s_FlavorBuildSettings(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, java.Spec.KeepArchive)
 	assert.Equal(t, "build", java.Spec.Builder.Command)
-	assert.Nil(t, java.Spec.Builder.Container, "a flavor with no builder variables must not create a builder container")
+	require.NotNil(t, java.Spec.Builder.Container, "a pool with a build image needs a builder container for its resources")
+	assert.Empty(t, java.Spec.Builder.Container.Env, "the java flavor has no builder variables")
+	assertResources(t, builderResources(), java.Spec.Builder.Container.Resources)
+	assertResources(t, fetcherResources(), containerNamed(java.Spec.Builder.PodSpec, "fetcher").Resources)
 }
 
 func TestToK8s_FlavorWithoutBuilder(t *testing.T) {
@@ -89,6 +92,8 @@ func TestToK8s_FlavorWithoutBuilder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, env.Spec.Builder.Image, "an empty build image must not become the bare registry prefix")
 	assert.Empty(t, env.Spec.Builder.Command, "no build image, so no default command")
+	assert.Nil(t, env.Spec.Builder.Container)
+	assert.Nil(t, env.Spec.Builder.PodSpec)
 }
 
 func TestToK8s_WithAdvanced(t *testing.T) {
@@ -516,7 +521,7 @@ func TestToK8s_BuilderEnvReplacedOnUpdate(t *testing.T) {
 
 	require.NotNil(t, updated.Spec.Builder.Container)
 	assert.Empty(t, updated.Spec.Builder.Container.Env, "the java flavor has no builder variables, so python's must go")
-	assertResources(t, resourcesOf("1", "1Gi", "1", "1Gi"), updated.Spec.Builder.Container.Resources)
+	assertResources(t, builderResources(), updated.Spec.Builder.Container.Resources)
 }
 
 func TestFromK8s_MinimalEnvironment(t *testing.T) {
@@ -650,4 +655,85 @@ func TestFromK8s_UsesEmptyRegistryPrefix(t *testing.T) {
 	env.Spec.Runtime.Image = "python-env:1.35.0"
 
 	assert.Equal(t, "python", FromK8s(env, catalogOf(t, cfg)).Flavor)
+}
+
+func containerNamed(spec *corev1.PodSpec, name string) *corev1.Container {
+	if spec == nil {
+		return nil
+	}
+	for i := range spec.Containers {
+		if spec.Containers[i].Name == name {
+			return &spec.Containers[i]
+		}
+	}
+	return nil
+}
+
+func TestToK8s_RuntimePodSpecNamesTheRuntimeContainer(t *testing.T) {
+	req := minimalRequest()
+	req.Env = []EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}
+
+	env, err := ToK8s(req, nil, "default", testCatalog(t))
+	require.NoError(t, err)
+
+	require.NotNil(t, env.Spec.Runtime.Container)
+	runtime := containerNamed(env.Spec.Runtime.PodSpec, env.Spec.Runtime.Container.Name)
+	require.NotNil(t, runtime, "the pod spec must name the runtime container")
+	assert.Equal(t, corev1.Container{Name: "my-pool"}, *runtime, "the entry must not change the runtime container")
+	assert.Len(t, env.Spec.Runtime.PodSpec.Containers, 2)
+	assertResources(t, fetcherResources(), containerNamed(env.Spec.Runtime.PodSpec, "fetcher").Resources)
+}
+
+func TestToK8s_RuntimePodSpecNamesACustomRuntimeContainer(t *testing.T) {
+	existing := pythonEnv("py", "ns1")
+	existing.Spec.Runtime.Container = &corev1.Container{Name: "main"}
+
+	updated, err := ToK8s(PoolRequest{Name: "py", Flavor: "python"}, existing, "ns1", testCatalog(t))
+	require.NoError(t, err)
+
+	assert.NotNil(t, containerNamed(updated.Spec.Runtime.PodSpec, "main"))
+	assert.Nil(t, containerNamed(updated.Spec.Runtime.PodSpec, "py"))
+}
+
+func TestToK8s_DroppingTheBuildImageRemovesTheBuilderResources(t *testing.T) {
+	built, err := ToK8s(minimalRequest(), nil, "default", testCatalog(t))
+	require.NoError(t, err)
+
+	updated, err := ToK8s(PoolRequest{Name: "my-pool", Flavor: "perl"}, built, "default", testCatalog(t))
+	require.NoError(t, err)
+
+	assert.Nil(t, updated.Spec.Builder.PodSpec, "a pod spec that held only the fetcher entry goes")
+	require.NotNil(t, updated.Spec.Builder.Container)
+	assert.Empty(t, updated.Spec.Builder.Container.Resources.Limits)
+	assert.Empty(t, updated.Spec.Builder.Container.Resources.Requests)
+}
+
+func TestToK8s_DroppingTheBuildImageKeepsABuilderPodSpecSetElsewhere(t *testing.T) {
+	existing := pythonEnv("py", "ns1")
+	existing.Spec.Builder.PodSpec = &corev1.PodSpec{
+		NodeSelector: map[string]string{"pool": "build"},
+		Containers:   []corev1.Container{{Name: "fetcher", Resources: resourcesOf("1", "1Gi", "1", "1Gi")}},
+	}
+
+	updated, err := ToK8s(PoolRequest{Name: "py", Flavor: "perl"}, existing, "ns1", testCatalog(t))
+	require.NoError(t, err)
+
+	require.NotNil(t, updated.Spec.Builder.PodSpec)
+	assert.Equal(t, map[string]string{"pool": "build"}, updated.Spec.Builder.PodSpec.NodeSelector)
+	assert.Empty(t, updated.Spec.Builder.PodSpec.Containers)
+	assert.NotNil(t, updated.Spec.Builder.PodSpec.Containers, "the CRD requires the containers field")
+}
+
+func TestToK8s_RepeatedUpdateWritesTheSamePodSpecs(t *testing.T) {
+	req := minimalRequest()
+	req.Env = []EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}
+	first, err := ToK8s(req, nil, "default", testCatalog(t))
+	require.NoError(t, err)
+
+	second, err := ToK8s(req, first, "default", testCatalog(t))
+	require.NoError(t, err)
+
+	assert.Equal(t, first.Spec.Runtime.PodSpec, second.Spec.Runtime.PodSpec)
+	assert.Equal(t, first.Spec.Builder.PodSpec, second.Spec.Builder.PodSpec)
+	assert.Equal(t, first.Spec.Builder.Container, second.Spec.Builder.Container)
 }

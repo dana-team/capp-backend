@@ -234,6 +234,12 @@ resources:
   #       image: "jvm-env:1.32.0"
   #       buildImage: "jvm-builder:1.32.0"
   #       keepArchive: true               # the JVM runtime loads the .jar as one file
+  #   fetcherResources:                   # Fission's fetcher container in every pool and builder pod; Fission's chart gives it no limits,
+  #     requests: {cpu: "10m", memory: "16Mi"}   # and a namespace whose ResourceQuota sets limits.cpu/limits.memory refuses such a pod
+  #     limits:   {cpu: "200m", memory: "128Mi"}
+  #   builderResources:                   # the builder container of a pool with a build image (one pod per such pool); Fission sets none
+  #     requests: {cpu: "100m", memory: "256Mi"}
+  #     limits:   {cpu: "1", memory: "1Gi"}
   #   onboardNamespaces: false            # true: the first pool of a namespace sets fission.io/enabled=true on it (Fission tenancy.mode=dynamic)
   #   functions:                          # code from a git repository that runs in a pool, with http and cron triggers
   #     enabled: false
