@@ -12,6 +12,7 @@ import (
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
+	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
+	authenticationv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
+	"k8s.io/client-go/rest"
 )
 
 func init() {
@@ -36,7 +39,10 @@ func decodeError(t *testing.T, w *httptest.ResponseRecorder) apierrors.APIError 
 
 func TestAuth(t *testing.T) {
 	wantCred := auth.ClusterCredential{BearerToken: "tok-123"}
-	ldapCred := auth.ClusterCredential{ImpersonateUser: "Alice", ImpersonateGroups: []string{"Developers"}}
+	ldapCred := auth.ClusterCredential{
+		ImpersonateUser: "Alice", ImpersonateGroups: []string{"Developers"},
+		AuthProvider: "ldap", IdentityAuthority: "capp",
+	}
 
 	tests := []struct {
 		name        string
@@ -98,6 +104,17 @@ func TestAuth(t *testing.T) {
 			wantStatus:  http.StatusServiceUnavailable,
 			wantCode:    apierrors.CodeInternal,
 			wantMessage: auth.ErrDirectoryUnavailable.Error(),
+		},
+		{
+			name: "returns 503 for unavailable identity verification",
+			mgr: &testutil.MockAuthManager{
+				AuthenticateFn: func(_ context.Context, _ string, _ *http.Request) (auth.ClusterCredential, error) {
+					return auth.ClusterCredential{}, fmt.Errorf("private diagnostic: %w", auth.ErrIdentityUnavailable)
+				},
+			},
+			wantStatus:  http.StatusServiceUnavailable,
+			wantCode:    apierrors.CodeInternal,
+			wantMessage: auth.ErrIdentityUnavailable.Error(),
 		},
 		{
 			name: "returns 500 for unexpected error",
@@ -162,5 +179,76 @@ func TestAuth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAuthenticate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before bool
+		err    error
+	}{
+		{name: "canceled before authentication", before: true},
+		{name: "canceled during successful authentication"},
+		{name: "canceled during unavailable identity review", err: auth.ErrIdentityUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.before {
+				cancel()
+			}
+			called := false
+			mgr := &testutil.MockAuthManager{AuthenticateFn: func(context.Context, string, *http.Request) (auth.ClusterCredential, error) {
+				called = true
+				cancel()
+				return auth.ClusterCredential{ImpersonateUser: "alice"}, tc.err
+			}}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
+			_, ok := middleware.Authenticate(c, mgr)
+			require.False(t, ok)
+			require.True(t, c.IsAborted())
+			require.Equal(t, !tc.before, called)
+			require.Equal(t, middleware.StatusClientClosedRequest, w.Code)
+			require.Empty(t, w.Body.String())
+			require.Empty(t, c.Errors)
+			_, attached := c.Get(string(middleware.CredentialKey))
+			require.False(t, attached)
+		})
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("private-upstream-detail"))
+	}))
+	defer upstream.Close()
+	client, err := authenticationv1.NewForConfig(&rest.Config{Host: upstream.URL})
+	require.NoError(t, err)
+	mgr, err := auth.New(&config.Config{
+		Auth:          config.AuthConfig{Mode: config.AuthModePassthrough},
+		Authorization: config.AuthorizationConfig{Mode: config.AuthorizationModeBackendPolicy},
+		Clusters:      []config.ClusterConfig{{Name: "target"}},
+	}, auth.Dependencies{TargetReviewers: map[string]auth.TokenReviewer{
+		"target": {Client: client, Authority: upstream.URL},
+	}})
+	require.NoError(t, err)
+	core, logs := observer.New(zap.DebugLevel)
+	engine := gin.New()
+	engine.Use(middleware.Logging(zap.New(core)), middleware.Auth(mgr))
+	engine.GET("/clusters/:cluster", func(c *gin.Context) { c.Status(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/clusters/target", nil)
+	req.Header.Set("Authorization", "Bearer private-token")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	apiErr := decodeError(t, w)
+	assert.Equal(t, auth.ErrIdentityUnavailable.Error(), apiErr.Message)
+	require.Equal(t, 1, logs.Len())
+	assert.Contains(t, logs.All()[0].ContextMap()["error"], "token review failed: status=403 timeout=false")
+	for _, secret := range []string{"private-token", "private-upstream-detail"} {
+		assert.NotContains(t, fmt.Sprint(logs.All()), secret)
+		assert.NotContains(t, w.Body.String(), secret)
 	}
 }

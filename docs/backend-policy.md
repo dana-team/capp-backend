@@ -2,11 +2,11 @@
 
 This guide describes the backend-policy implementation in this source tree. It does not establish release availability or completed deployment validation; verify the deployed image and configuration before adoption. The default remains `authorization.mode: kubernetes`.
 
-Backend-policy supports LDAP authentication. Users log in with directory credentials and send the returned access JWT to the backend. The backend checks application assignments before using the configured backend identity on Kubernetes. It does not issue end-user Kubernetes credentials, create user RoleBindings, or impersonate users. Kubernetes-mode authentication and RBAC remain available.
+Backend-policy supports LDAP, OpenShift and passthrough authentication. Clients keep their existing provider login and bearer-token flows. The backend checks application assignments before using the configured backend identity on Kubernetes. It does not issue end-user Kubernetes credentials, create user RoleBindings, or impersonate users. Kubernetes-mode authentication and RBAC remain available.
 
 ## Configuration and namespace boundaries
 
-Merge this example into a complete [server configuration](../README.md#configuration), including LDAP keys and directory settings:
+Merge this example into a complete [server configuration](../README.md#configuration), including the settings for your chosen authentication provider. This example selects LDAP; OpenShift and passthrough use the same authorization settings:
 
 ```yaml
 auth:
@@ -21,7 +21,8 @@ clusters:
       inline:
         apiServer: https://api.production.example.com:6443
         caCert: "<base64-encoded PEM>"
-        token: "<backend-token>"
+        token: "" # Inject via CAPP_CLUSTERS_0_CREDENTIAL_INLINE_TOKEN
+        insecure: false
     authorization:
       policyNamespace: capp-platform-system
       protectedNamespaces: [kube-system, kube-public, kube-node-lease]
@@ -29,7 +30,7 @@ clusters:
       operatorGroups: [platform-operators]
 ```
 
-The mode is process-wide. Each cluster needs its own policy namespace and backend service-account credential. LDAP still requires `credential.inline.token` for every cluster; kubeconfig-only configuration is not accepted. The policy namespace is automatically protected. Add all other credential/signing-key storage namespaces to `protectedNamespaces`; keep them outside user-manageable workloads.
+The mode is process-wide. Each cluster needs its own policy namespace and backend service-account credential. All three providers require `credential.inline.token` for every target; kubeconfig-only configuration is not accepted. Supply tokens from Secrets through `CAPP_CLUSTERS_N_CREDENTIAL_INLINE_TOKEN` or Helm `secret.clusterTokens[N]`. Passthrough additionally requires an HTTPS `inline.apiServer`, a valid base64 PEM `inline.caCert`, `inline.insecure: false`, and no `kubeconfigPath`. The policy namespace is automatically protected. Add all other credential/signing-key storage namespaces to `protectedNamespaces`; keep them outside user-manageable workloads.
 
 `allowedNamespaces` is an outer boundary for both users and operators:
 
@@ -42,7 +43,35 @@ Operator authority matches a verified username in `operatorUsers` **OR** any ver
 
 `restrictedBindingNamePrefixes` is required and must be non-null in backend-policy mode. There is no Go default. Deployment YAML/Helm recommends `["system:"]`; an explicit `[]` permits unrestricted prefixes, and empty-string entries are invalid. Matching is exact and case-sensitive for User and Group bindings. With `system:` restricted, service-account User names (`system:serviceaccount:...`) are excluded too. `ServiceAccount` is never a supported binding kind. These restrictions apply to policy bindings, not operator lists or authentication; disabling them does not change LDAP's own identity validation.
 
-Keep mode, cluster mappings, operator lists, allowlists, restrictions and API versions consistent across replicas. Configuration is loaded at startup: restart **all replicas** after changes; there is no hot reload. Supply lists and per-cluster settings in YAML/Helm (`config.authorization` and `config.clusters` in values). `CAPP_AUTHORIZATION_MODE` is a scalar override; there is no new indexed authorization environment-variable syntax. In Kubernetes mode, backend-policy settings are inactive.
+Keep mode, cluster mappings, trusted authorities/CA bundles, operator lists, allowlists, restrictions and API versions equivalent across replicas. LDAP replicas also require consistent issuer, audience and signing/verification keys. Configuration is loaded at startup: restart **all replicas** after changes; there is no hot reload. Supply lists and per-cluster settings in YAML/Helm (`config.authorization` and `config.clusters` in values). `CAPP_AUTHORIZATION_MODE` is a scalar override; there is no new indexed authorization environment-variable syntax. In Kubernetes mode, backend-policy settings are inactive.
+
+## Provider verification and discovery
+
+| Provider | Identity verification | Client flow |
+|---|---|---|
+| LDAP | Local JWT signature, issuer, audience and expiry verification; no TokenReview or directory call on resource requests. | Directory login; log in again after expiry, with no refresh. |
+| OpenShift | In-cluster home TokenReview using the workload service account; never the remote execution targets. | Existing OAuth browser, password/direct-token and refresh flows. |
+| Passthrough | TokenReview at each requested target using that target's configured backend token. | Supply an existing bearer token; login and refresh remain unsupported. |
+
+OpenShift and passthrough accept only authenticated, nonanonymous identities with a nonempty username and no review status error. Empty groups are valid; names retain their exact spelling and case. Review requests verify TLS, reject redirects and have a 10-second deadline subject to request cancellation. They leave audiences unset, using the reviewing API's audience semantics; there is no token exchange or trust inferred from decoding a token.
+
+OpenShift caches successful results for `auth.openshift.tokenCacheTTLSeconds` (default 60 seconds). Unexpired entries remain usable during a reviewer outage; a failed review cannot extend an expired entry. Passthrough retains results only within one HTTP request. Its target-specific identity and operator membership never carry over to another target, even when the caller supplies the same token.
+
+For OpenShift/passthrough backend-policy requests, missing/malformed bearer credentials, explicit token rejection, empty usernames and anonymous identities return 401 `UNAUTHORIZED` with `request is not authenticated`. Reviewer transport, timeout, TLS, malformed-response or status errors, including review API 401/403 responses, return 503 `INTERNAL_ERROR` with `identity verification is unavailable`. A review API 401/403 indicates failure of the backend review credential, not rejection of the caller token. Upstream diagnostics are not returned. LDAP retains its [authentication errors](../README.md#ldap).
+
+Passthrough global cluster discovery verifies every configured target with at most four concurrent reviews before publishing:
+
+| Review results | `GET /api/v1/clusters` |
+|---|---|
+| Some accept, others explicitly reject | Apply visibility rules only to accepted targets. |
+| All explicitly reject | 401 `UNAUTHORIZED`. |
+| Some accept, others are unavailable | Apply visibility rules only to accepted targets; omit unavailable targets. |
+| None accept and any reviewer is unavailable | 503 `INTERNAL_ERROR`; no partial list. |
+| Accepted identities have no visible targets | 200 with `items: []`. |
+
+Successful discovery may be incomplete: omitted unavailable targets are not identified in the response. Reviews still wait for their deadlines; target health flags do not replace identity verification.
+
+Cancellation stops outstanding reviews and produces no partial list. After authentication, missing/unsynchronized policy observations can still omit nonoperator targets; this is distinct from a reviewer outage. Scoped discovery and aggregates use only the selected target's identity. Missing bearer credentials are rejected before target lookup; an unknown scoped target returns `CLUSTER_NOT_FOUND` rather than using another reviewer. Migration has a separate [destination concealment contract](migration.md#authorization).
 
 ## Roles and API access
 
@@ -72,7 +101,7 @@ Viewer reads include **Secret payloads** exposed by the existing API. There is n
 
 Health/readiness, API docs/assets, size definitions, authentication endpoints and the configured monitoring metrics endpoint remain public as registered. Monitoring metrics are distinct from denied Capp metrics. Disabled features stay disabled; unclassified operations receive no grant. Transport-only CORS preflight can return 204 without executing a handler.
 
-Nonoperators see only eligible namespaces and clusters with visible namespaces. Global cluster discovery omits targets with missing or initially unsynchronized stores and returns 200 with an empty `items` array when none are visible. Scoped discovery still returns 503 when required observations are unavailable; a fully observed but invisible cluster detail returns 404. Eligible unhealthy clusters may appear with `healthy: false`, while resource routes retain target-health checks. Operators can discover their configured clusters without synchronized observations and managed, nonprotected namespaces inside the allowlist, including terminating namespaces for inspection.
+Nonoperators see only eligible namespaces and clusters with visible namespaces. After provider verification succeeds, global cluster discovery omits targets with missing or initially unsynchronized stores and returns 200 with an empty `items` array when none are visible. Scoped discovery still returns 503 when required observations are unavailable; a fully observed but invisible cluster detail returns 404. Eligible unhealthy clusters may appear with `healthy: false`, while resource routes retain target-health checks. Operators can discover their configured clusters without synchronized observations and managed, nonprotected namespaces inside the allowlist, including terminating namespaces for inspection.
 
 Aggregate lists return authorized resources in namespace/name order with filtered totals. Access changes or namespace/policy replacement observed before publication exclude affected results; any page failure fails the whole response. After initial synchronization, an empty eligible set returns empty success without resource reads. ConfigMap/Secret managed-resource filters remain in effect.
 
@@ -106,7 +135,7 @@ Removing/restoring the managed label does not reset the UID. A recreated namespa
 
 ## Existing namespace API
 
-Use the existing namespace routes with an operator's LDAP JWT. No policy endpoint is added. Examples below use `C=/api/v1/clusters/production` and `N=$C/namespaces/team-a` as path shorthand; send JSON with `Content-Type: application/json` and `Authorization: Bearer <access-jwt>`.
+Use the existing namespace routes with a bearer token that verifies as an operator on the requested target. No policy endpoint is added. Examples below use `C=/api/v1/clusters/production` and `N=$C/namespaces/team-a` as path shorthand; send JSON with `Content-Type: application/json` and `Authorization: Bearer <provider-token>`.
 
 Create through `POST C/namespaces`:
 
@@ -154,7 +183,11 @@ DELETE refuses a namespace containing Capps. After namespace deletion is accepte
 
 Provision one backend service-account identity per target. Observation, administration and authorized resource operations use the existing `credential.inline.token`. Remote credentials must be issued by the target cluster. The [Helm templates](../helm/capp-backend/templates/) render one `<fullname>-role` ClusterRole and, for the `https://kubernetes.default.svc` target, one ClusterRoleBinding to the configured service account.
 
-On each remote target, install the equivalent [ClusterRole](../helm/capp-backend/templates/clusterrole.yaml), then create its binding:
+Follow the chart's [identity review permissions](../helm/capp-backend/README.md#identity-review-permissions): LDAP needs no TokenReview grant; OpenShift needs `create` on `authentication.k8s.io/tokenreviews` for the workload account at home only; passthrough needs it for each target backend identity. OpenShift with only remote targets gets a home-only `<fullname>-tokenreviewer` role/binding. Local aliases share one binding. Do not copy a local OpenShift review grant to remote execution targets.
+
+The Capp workload selects `serviceAccount.name`, including for passthrough. `serviceAccount.create: false` uses an existing account while retaining workload/binding references; configure OAuth redirect annotations separately for an existing OpenShift account. Created accounts receive OAuth annotations only for OpenShift. Standalone `deploy/` manifests require separately provisioned permissions.
+
+On each remote target, install the equivalent [ClusterRole](../helm/capp-backend/templates/clusterrole.yaml) with the provider-appropriate review permissions, then create its binding:
 
 ```sh
 kubectl --context '<target-context>' create clusterrolebinding capp-backend-role \
@@ -186,13 +219,14 @@ Deployment owns token issuance, expiry monitoring and rotation. Update the inlin
 
 ## Readiness, errors and revocation
 
-`/readyz` returns 200 when at least one target is healthy and both its namespace and policy collections have initially synchronized; otherwise 503. Empty policies and individual pending UID associations do not prevent readiness. Public/auth routes and operator bootstrap can serve during initial sync. Readiness does not prove execution credentials or infrastructure grants work, nor that every target is ready for global discovery.
+`/readyz` returns 200 when at least one target is healthy and both its namespace and policy collections have initially synchronized; otherwise 503. Empty policies and individual pending UID associations do not prevent readiness. Public/auth routes and operator bootstrap can serve during initial sync. Readiness does not prove reviewer trust/permissions, execution grants, every target's availability, or completed adoption. Local passthrough trust errors fail startup; remote TokenReview availability is not a startup prerequisite.
 
 After initial sync, transient watch errors retain the last valid state and emit degraded/recovery logs; they do not independently remove readiness. Confirmed invalid/deleted state and authoritative relists withdraw grants. There is no staleness timeout or fixed revocation deadline. In-flight compound operations may finish under their initial decision; aggregate publication has additional rechecks. Namespace recreation is also subject to observation delay.
 
 | Condition | HTTP / envelope |
 |---|---|
 | Missing/invalid/expired authentication | 401, existing authentication error |
+| OpenShift/passthrough reviewer unavailable (except partial global discovery above) | 503 `INTERNAL_ERROR`, `identity verification is unavailable`; no `POLICY_UNAVAILABLE` reason |
 | Role/target/allowlist denial | 403 `FORBIDDEN`, `details.reason: POLICY_DENIED`, `operation is not permitted` |
 | Required initial observations incomplete, or assigned scoped target awaiting UID association | 503 `INTERNAL_ERROR`, `details.reason: POLICY_UNAVAILABLE`, `authorization policy is unavailable` |
 | Namespace administration invalid/oversized input | 400 / 413 |
@@ -200,11 +234,25 @@ After initial sync, transient watch errors retain the last valid state and emit 
 | Ownership, revision, immutable-data or namespace-UID conflict | 409; operator namespace lists instead include policy ownership, termination or namespace-UID conflicts as invalid, noneditable items |
 | Administration infrastructure authentication/permission/availability failure | 503 `INTERNAL_ERROR`; not a claim that the caller lacks operator authority |
 
-Migration destinations use a stricter disclosure contract: unknown clusters, denied or excluded namespaces, missing/unsynchronized observations, and pending UID association all return the same 403 `FORBIDDEN` / `POLICY_DENIED` envelope. Only after destination policy authorization and the namespace boundary pass may an unhealthy destination return 503 `CLUSTER_UNHEALTHY`. Source policy unavailability retains the 503 contract above. See [migration](migration.md).
+Migration destinations use a stricter disclosure contract: unknown clusters, rejected destination tokens, unavailable destination reviewers, denied or excluded namespaces, missing/unsynchronized observations, and pending UID association all return the same 403 `FORBIDDEN` / `POLICY_DENIED` envelope. Only after destination policy authorization and the namespace boundary pass may an unhealthy destination return 503 `CLUSTER_UNHEALTHY`. Source identity verification and policy unavailability retain their distinct 503 contracts above. See [migration](migration.md).
 
 After initial synchronization, invalid/missing policy, unmanaged/terminating/absent target and UID mismatch deny ordinary scoped access. Before synchronization, otherwise valid scoped targets can return unavailable even when protected; allowlist rejection is independent of readiness. Discovery excludes known ineligible/pending namespaces and can return empty success. Ordinary execution failures retain existing Kubernetes error mapping without fallback.
 
-Directory account/group changes affect newly issued JWTs; existing JWT identities remain valid until expiry or signing-key withdrawal. Audits identify verified caller, operation, target, outcome and policy identity/revision; do not log bodies, policy contents, Secret data, tokens or raw credentials.
+LDAP account/group changes affect newly issued JWTs; existing JWT identities remain valid until expiry or signing-key withdrawal. OpenShift identity changes remain subject to its review cache lifetime; passthrough reviews each request.
+
+Authorization and namespace-administration audits identify verified caller, operation, target, outcome and policy identity/revision, plus `authProvider` and `identityAuthority` (the trusted reviewer endpoint or LDAP issuer). The existing `authority` field still describes policy/operator authorization. Discovery and migration attribute each principal to its own target; failed verification supplies no invented caller. Authority URLs exclude credentials, query strings and fragments. Never log bearer headers, TokenReview bodies, raw reviewer diagnostics, policies or Secret payloads.
+
+## Provider adoption and qualification
+
+Before sharing assignments, establish that matching usernames **and groups** represent the same principals across the intended authorities. Equal strings alone are not evidence. Passthrough can return different identities for the same token at different targets; OpenShift requires the configured OAuth server and in-cluster reviewer to belong to the intended home authority. Incompatible authorities need separate deployments and policy storage; incompatible populations remain on Kubernetes authorization.
+
+- **LDAP:** verify issuer/audience/key consistency and required directory groups. Confirm required automation can explicitly renew expiring JWTs and that its identities pass LDAP validation.
+- **OpenShift:** verify home-cluster reviewer trust and the workload account's review permission independently of remote execution grants. Exercise browser/password/direct-token login and refresh as used by the population, including cache expiry and reviewer outage. Inventory home identities, service accounts and custom Kubernetes grants before replacing authorization.
+- **Passthrough:** verify HTTPS/CA trust and backend TokenReview permission on every target, including remote targets. Record the username/groups returned for each required human and automation token and its accepted audiences. Exercise mixed acceptance/rejection, all rejection and reviewer outage in global discovery; test migration with each endpoint's actual identity.
+
+For every provider, review `system:` automation exclusions: the recommended binding restriction excludes service-account User names as well as system groups, and `ServiceAccount` bindings are unsupported. Do not assume an operator entry grants resource access. Only relax prefixes after reviewing the affected identities and grants; otherwise keep incompatible automation on Kubernetes mode. Custom/global grants are not automatically translated into viewer/editor roles.
+
+Keep code evidence separate from a population qualification record. Record the deployed image/revision, provider, home/target authorities and trust, actual reviewer/execution permission results, reviewed users/groups/automation, required allows and denies, replica consistency, token rotation, direct-access cleanup and rollback after revocations. Required checks include viewer Secret reads, editor resource/Git operations, denied Capp metrics, operator-only administration, filtered discovery/aggregates and both migration endpoints. Verify revoked access remains revoked after rollback. Local tests and rendered charts establish neither live-cluster compatibility nor completed adoption; without operator-run evidence, the population remains unverified.
 
 ## Manual cutover and rollback
 
@@ -213,4 +261,4 @@ Directory account/group changes affect newly issued JWTs; existing JWT identitie
 3. Provision protected storage, backend credentials and consolidated grants on every target. Label intended namespaces, create policies and configure operator/allowlist/restriction settings consistently.
 4. Validate the chosen build in a deployment before routing traffic: test role/target denials despite sufficient execution permissions, operator recovery, token rotation, observation convergence on every replica, and ordinary resource/Git/migration workflows.
 5. Perform an explicit coordinated switch to backend-policy and restart all replicas. Check readiness, then the required per-target operations; do not rely on readiness as a permission test. There is no automatic cutover or fallback.
-6. For rollback, first reconcile Kubernetes-mode grants and credentials against intervening policy edits/revocations. Restore the required impersonation/RBAC infrastructure and compatible client authentication, switch to `authorization.mode: kubernetes`, and restart all replicas before returning traffic. Backend policies do not control Kubernetes-mode access.
+6. For rollback, first reconcile Kubernetes-mode grants and credentials against intervening policy edits/revocations. Restore caller-token RBAC for passthrough or impersonation and user/group RBAC for OpenShift/LDAP, with compatible client authentication, switch to `authorization.mode: kubernetes`, and restart all replicas before returning traffic. Backend policies do not control Kubernetes-mode access.

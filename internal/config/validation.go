@@ -76,14 +76,15 @@ func Validate(cfg *Config) error {
 		errs = append(errs, validateGitOpsPaths(cfg.Clusters)...)
 	}
 
-	// LDAP and OpenShift require an inline system credential in either authorization mode.
-	if cfg.Auth.Mode == AuthModeOpenShift || cfg.Auth.Mode == AuthModeLDAP {
+	// Backend policy always executes with a system credential; LDAP and OpenShift
+	// also require one for Kubernetes impersonation.
+	if cfg.Authorization.Mode == AuthorizationModeBackendPolicy || cfg.Auth.Mode == AuthModeOpenShift || cfg.Auth.Mode == AuthModeLDAP {
 		for i, c := range cfg.Clusters {
 			if c.Credential.Inline == nil || c.Credential.Inline.Token == "" {
 				errs = append(errs, fmt.Errorf(
-					"config: clusters[%d] (%q): credential.inline.token is required when auth.mode is '%s' "+
+					"config: clusters[%d] (%q): credential.inline.token is required when auth.mode is '%s' with authorization.mode %q "+
 						"(used as the system credential for cluster access)",
-					i, c.Name, cfg.Auth.Mode,
+					i, c.Name, cfg.Auth.Mode, cfg.Authorization.Mode,
 				))
 			}
 		}
@@ -921,15 +922,15 @@ func validateAuthorization(cfg *Config) []error {
 		return []error{errors.New("config: authorization.mode must be kubernetes or backend-policy")}
 	}
 	var errs []error
-	if cfg.Auth.Mode != AuthModeLDAP {
-		errs = append(errs, errors.New("config: backend-policy requires auth.mode ldap"))
-	}
 	if cfg.Authorization.RestrictedBindingNamePrefixes == nil {
 		errs = append(errs, errors.New("config: authorization.restrictedBindingNamePrefixes must be explicitly supplied and non-null"))
 	} else if err := authorization.ValidateBindingNamePrefixes(cfg.Authorization.RestrictedBindingNamePrefixes); err != nil {
 		errs = append(errs, fmt.Errorf("config: authorization.restrictedBindingNamePrefixes: %w", err))
 	}
 	for i, c := range cfg.Clusters {
+		if cfg.Auth.Mode == AuthModePassthrough {
+			errs = append(errs, validatePassthroughReviewer(i, c.Credential)...)
+		}
 		a := c.Authorization
 		if len(validation.ValidateNamespaceName(a.PolicyNamespace, false)) != 0 {
 			errs = append(errs, fmt.Errorf("config: clusters[%d].authorization.policyNamespace must be a valid namespace", i))
@@ -945,6 +946,30 @@ func validateAuthorization(cfg *Config) []error {
 					errs = append(errs, fmt.Errorf("config: clusters[%d].authorization operator lists must not contain blank entries", i))
 				}
 			}
+		}
+	}
+	return errs
+}
+
+func validatePassthroughReviewer(index int, credential CredentialConfig) []error {
+	var errs []error
+	prefix := fmt.Sprintf("config: clusters[%d].credential", index)
+	// Kubeconfig takes precedence in client construction. Unused inline
+	// trust must not make a different reviewer connection appear safe.
+	if credential.KubeconfigPath != "" {
+		errs = append(errs, fmt.Errorf("%s.kubeconfigPath must be unset for backend-policy passthrough; configure inline reviewer credentials", prefix))
+	}
+	if inline := credential.Inline; inline != nil {
+		u, err := url.Parse(inline.APIServer)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+			errs = append(errs, fmt.Errorf("%s.inline.apiServer must be an absolute HTTPS URL for backend-policy passthrough", prefix))
+		}
+		ca, err := base64.StdEncoding.DecodeString(inline.CACert)
+		if err != nil || !x509.NewCertPool().AppendCertsFromPEM(ca) {
+			errs = append(errs, fmt.Errorf("%s.inline.caCert must be a base64-encoded PEM certificate bundle for backend-policy passthrough", prefix))
+		}
+		if inline.Insecure {
+			errs = append(errs, fmt.Errorf("%s.inline.insecure must be false for backend-policy passthrough", prefix))
 		}
 	}
 	return errs

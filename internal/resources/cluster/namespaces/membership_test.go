@@ -12,6 +12,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/authorization"
 	"github.com/dana-team/capp-backend/internal/cluster"
+	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
@@ -361,7 +362,7 @@ func membershipRouterWithStore(t *testing.T, storage client.Client, user string,
 		return auth.ClusterCredential{ImpersonateUser: user}, nil
 	}}
 	r := gin.New()
-	r.Use(middleware.Logging(logger), policy.New(identity, mgr, rules, map[string]policy.Target{"c1": {Store: store, OperatorUsers: []string{"operator"}}}, logger))
+	r.Use(middleware.Logging(logger), policy.New(identity, config.AuthModePassthrough, mgr, rules, map[string]policy.Target{"c1": {Store: store, OperatorUsers: []string{"operator"}}}, logger))
 	if before != nil {
 		r.Use(before)
 	}

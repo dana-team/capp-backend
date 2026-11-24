@@ -15,7 +15,9 @@ imagePullSecrets: []
 config:
   # authorization configures access decisions for all target clusters.
   authorization:
-    # mode selects kubernetes or backend-policy; backend-policy requires LDAP.
+    # mode selects kubernetes or backend-policy. The chart provisions backend-policy
+    # permissions for ldap, openshift and passthrough. When overriding the server
+    # image version, ensure it supports the selected authorization/auth combination.
     mode: kubernetes
     # restrictedBindingNamePrefixes blocks User/Group policy bindings by case-sensitive prefix.
     # Backend-policy only. Required and non-null; [] disables restrictions; entries cannot be empty.
@@ -81,6 +83,8 @@ config:
 
   # Cluster entries. At least one is required.
   # Tokens must be provided via the secret block, not here.
+  # Every backend-policy target requires a token, including passthrough.
+  # Backend-policy passthrough requires HTTPS, a valid caCert and insecure: false.
   clusters:
     - name: "default"
       displayName: "Default Cluster"
@@ -309,11 +313,12 @@ rbac:
   # Include OpenShift Projects API permissions in the capp-user role.
   openShiftProjects: false
 
-# ── Service Account (openshift and ldap modes) ────────────────────────────────
-# Created when auth.mode is "openshift" or "ldap" and create is true.
+# ── Service Account ──────────────────────────────────────────────────────────
+# Created for backend-policy or auth.mode "openshift"/"ldap" when create is true.
 # Kubernetes authorization binds impersonation permissions to this account.
 # Backend-policy binds the consolidated backend role for a local target.
-# Only OpenShift receives OAuth annotations and TokenReview permissions.
+# OpenShift receives OAuth annotations and reviews only on the home cluster.
+# Backend-policy passthrough needs TokenReview permissions on every target.
 # Set create to false and name to an existing account to reuse it.
 serviceAccount:
   create: true

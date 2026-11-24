@@ -10,6 +10,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/util/cert"
 )
 
 // writeTempConfig writes content to a temp file and returns its path.
@@ -304,24 +307,6 @@ func TestValidate_OpenShift_MissingRequiredFields(t *testing.T) {
 	assert.Contains(t, err.Error(), "auth.openshift.clientId")
 	assert.Contains(t, err.Error(), "auth.openshift.clientSecret")
 	assert.Contains(t, err.Error(), "auth.openshift.redirectUri")
-}
-
-func TestValidate_OpenShift_ClusterMissingToken(t *testing.T) {
-	cfg := passthroughConfig(ClusterConfig{
-		Name: "home",
-		Credential: CredentialConfig{
-			Inline: &InlineCredential{
-				APIServer: "https://kubernetes.default.svc",
-			},
-		},
-	})
-	cfg.Auth = AuthConfig{
-		Mode:      "openshift",
-		OpenShift: validOpenShiftConfig(),
-	}
-	err := Validate(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "credential.inline.token is required")
 }
 
 func TestValidate_OpenShift_Defaults(t *testing.T) {
@@ -1186,18 +1171,13 @@ func TestValidateLDAPModeIsolation(t *testing.T) {
 }
 
 func TestValidateLDAPClusterCredentials(t *testing.T) {
-	for _, credential := range []CredentialConfig{
-		{KubeconfigPath: "/etc/kubeconfig"},
-		validInlineCredential(),
-	} {
-		cfg := passthroughConfig()
-		cfg.Auth.Mode = AuthModeLDAP
-		cfg.Auth.LDAP = validLDAPConfig(t)
-		cfg.Clusters[0].Credential = credential
-		err := Validate(cfg)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "credential.inline.token is required when auth.mode is 'ldap'")
-	}
+	cfg := passthroughConfig()
+	cfg.Auth.Mode = AuthModeLDAP
+	cfg.Auth.LDAP = validLDAPConfig(t)
+	cfg.Clusters[0].Credential = CredentialConfig{KubeconfigPath: "/etc/kubeconfig"}
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential.inline.token is required when auth.mode is 'ldap'")
 }
 
 func TestValidateLDAPRedactsSecrets(t *testing.T) {
@@ -1284,7 +1264,6 @@ func TestValidateAuthorization(t *testing.T) {
 		change func(*Config)
 	}{
 		{"unsupported mode", func(c *Config) { c.Authorization.Mode = "unknown" }},
-		{"non LDAP", func(c *Config) { c.Auth.Mode = AuthModeOpenShift }},
 		{"missing namespace", func(c *Config) { c.Clusters[0].Authorization.PolicyNamespace = "" }},
 		{"invalid protected namespace", func(c *Config) { c.Clusters[0].Authorization.ProtectedNamespaces = []string{"bad/name"} }},
 		{"blank user", func(c *Config) { c.Clusters[0].Authorization.OperatorUsers = []string{" "} }},
@@ -1315,5 +1294,72 @@ func TestLoadAuthorizationModeEnvironment(t *testing.T) {
 	}
 	if cfg.Authorization.RestrictedBindingNamePrefixes != nil {
 		t.Fatal("prefix restrictions must not have a compiled default")
+	}
+}
+
+func TestValidateBackendPolicyProviders(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.NotFoundHandler())
+	defer upstream.Close()
+	ca := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: cert.CertificateBlockType, Bytes: upstream.Certificate().Raw}))
+	for _, provider := range []string{AuthModeLDAP, AuthModeOpenShift, AuthModePassthrough} {
+		for _, mode := range []string{"", AuthorizationModeKubernetes, AuthorizationModeBackendPolicy} {
+			t.Run(provider+"/"+mode, func(t *testing.T) {
+				cfg := passthroughConfig()
+				cfg.Auth = AuthConfig{Mode: provider, OpenShift: validOpenShiftConfig(), LDAP: validLDAPConfig(t)}
+				cfg.Authorization = AuthorizationConfig{Mode: mode, RestrictedBindingNamePrefixes: []string{}}
+				cfg.Clusters[0].Authorization.PolicyNamespace = "policies"
+				cfg.Clusters[0].Credential.Inline = &InlineCredential{APIServer: upstream.URL, CACert: ca, Token: "backend"}
+				if err := Validate(cfg); err != nil {
+					t.Fatalf("Validate(%s, %s) = %v, want success", provider, mode, err)
+				}
+				cfg.Clusters[0].Credential.Inline.Token = ""
+				err := Validate(cfg)
+				wantError := mode == AuthorizationModeBackendPolicy || provider != AuthModePassthrough
+				if (err != nil) != wantError || (err != nil && !strings.Contains(err.Error(), "credential.inline.token")) {
+					t.Fatalf("Validate(missing token, %s, %s) = %v, want token error %t", provider, mode, err, wantError)
+				}
+			})
+		}
+	}
+}
+
+func TestValidatePassthroughReviewerTrust(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.NotFoundHandler())
+	defer upstream.Close()
+	ca := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: cert.CertificateBlockType, Bytes: upstream.Certificate().Raw}))
+	for _, tc := range []struct {
+		name   string
+		change func(*CredentialConfig)
+		want   string
+	}{
+		{"missing inline", func(c *CredentialConfig) { c.Inline = nil }, "credential.inline.token"},
+		{"HTTP", func(c *CredentialConfig) { c.Inline.APIServer = "http://reviewer" }, "inline.apiServer"},
+		{"relative URL", func(c *CredentialConfig) { c.Inline.APIServer = "reviewer" }, "inline.apiServer"},
+		{"missing host", func(c *CredentialConfig) { c.Inline.APIServer = "https:///reviewer" }, "inline.apiServer"},
+		{"empty CA", func(c *CredentialConfig) { c.Inline.CACert = "" }, "inline.caCert"},
+		{"invalid base64", func(c *CredentialConfig) { c.Inline.CACert = "private-secret" }, "inline.caCert"},
+		{"invalid PEM", func(c *CredentialConfig) {
+			c.Inline.CACert = base64.StdEncoding.EncodeToString([]byte("private-secret"))
+		}, "inline.caCert"},
+		{"insecure with CA", func(c *CredentialConfig) { c.Inline.Insecure = true }, "inline.insecure"},
+		{"kubeconfig overrides safe inline", func(c *CredentialConfig) { c.KubeconfigPath = "private-secret" }, "credential.kubeconfigPath"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := passthroughConfig()
+			cfg.Authorization = AuthorizationConfig{Mode: AuthorizationModeBackendPolicy, RestrictedBindingNamePrefixes: []string{}}
+			cfg.Clusters[0].Authorization.PolicyNamespace = "policies"
+			cfg.Clusters[0].Credential.Inline = &InlineCredential{APIServer: upstream.URL, CACert: ca, Token: "backend"}
+			tc.change(&cfg.Clusters[0].Credential)
+			err := Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "private-secret") {
+				t.Fatalf("Validate(%s) = %v, want sanitized %s error", tc.name, err, tc.want)
+			}
+			if cfg.Clusters[0].Credential.Inline != nil {
+				cfg.Authorization.Mode = AuthorizationModeKubernetes
+				if err := Validate(cfg); err != nil {
+					t.Fatalf("Validate(legacy %s) = %v, want unchanged acceptance", tc.name, err)
+				}
+			}
+		})
 	}
 }
