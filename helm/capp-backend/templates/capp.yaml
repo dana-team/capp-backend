@@ -11,6 +11,8 @@ kind: Capp
 metadata:
   name: {{ include "capp-backend.fullname" . }}
   namespace: {{ .Values.namespace }}
+  annotations:
+    rcs.dana.io/rollout-on-bound-resource-change: "true"
   labels:
     {{- include "capp-backend.labels" . | nindent 4 }}
 spec:
