@@ -81,6 +81,11 @@ spec:
                     name: {{ include "capp-backend.secretName" . }}
                     key: cfuncGitToken
               {{- end }}
+              {{- if .Values.trustedCA.configMap }}
+              # Go adds this file to the public roots it reads from /etc/ssl/certs.
+              - name: SSL_CERT_FILE
+                value: /etc/capp-trusted-ca/{{ required "trustedCA.key is required when trustedCA.configMap is set" .Values.trustedCA.key }}
+              {{- end }}
               {{- if (dig "resources" "observability" "enabled" false .Values.config) }}
               - name: CAPP_RESOURCES_OBSERVABILITY_QUERYURL
                 valueFrom:
@@ -95,6 +100,11 @@ spec:
               {{- if and .Values.config.gitops.enabled (eq .Values.config.gitops.authMethod "ssh") }}
               - name: ssh-key
                 mountPath: /etc/capp/ssh
+                readOnly: true
+              {{- end }}
+              {{- if .Values.trustedCA.configMap }}
+              - name: trusted-ca
+                mountPath: /etc/capp-trusted-ca
                 readOnly: true
               {{- end }}
               - name: tmp
@@ -119,6 +129,11 @@ spec:
                 - key: id_rsa
                   path: id_rsa
               defaultMode: 420
+          {{- end }}
+          {{- if .Values.trustedCA.configMap }}
+          - name: trusted-ca
+            configMap:
+              name: {{ .Values.trustedCA.configMap }}
           {{- end }}
           - name: tmp
             emptyDir: {}

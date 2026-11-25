@@ -63,3 +63,11 @@ the existing backend token; there is no separate reviewer credential.
 Backend-policy roles grant neither impersonation nor user-RBAC management.
 Rendered grants do not certify live permissions; verify each identity's permissions
 on its intended cluster before deployment.
+
+## Trusted CA bundle
+
+Set `trustedCA.configMap` to a ConfigMap in `namespace` when the backend reaches
+servers signed by an internal CA, such as the cfunc git server. The chart mounts
+it at `/etc/capp-trusted-ca` and points `SSL_CERT_FILE` at `trustedCA.key`
+(default `ca-bundle.crt`). The public roots of the image stay trusted, so the
+bundle needs only the internal CAs. Restart the pods after the bundle changes.
