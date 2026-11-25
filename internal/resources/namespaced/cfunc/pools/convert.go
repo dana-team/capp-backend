@@ -39,6 +39,12 @@ const (
 
 	// fetcherContainerName is Fission's util.FetcherContainerName.
 	fetcherContainerName = "fetcher"
+
+	// TrustedCAMountPath is where the trusted CA ConfigMap is mounted in the
+	// runtime and builder containers; each of its keys is a file there.
+	TrustedCAMountPath = "/etc/cfunc/trusted-ca"
+
+	trustedCAVolumeName = "cfunc-trusted-ca"
 )
 
 // ToK8s converts a PoolRequest into a fission.io/v1 Environment
@@ -119,81 +125,239 @@ func ToK8s(req PoolRequest, existing *fissionv1.Environment, namespace string, c
 	env.Spec.ImagePullSecret = catalog.cfg.ImagePullSecret
 	env.Spec.Poolsize = poolSize
 	env.Spec.Resources = resources
-	setRuntimePodSpec(env, catalog.fetcherResources)
-	setBuilderResources(env, catalog)
+	setRuntimePodSpec(env, flavor, catalog)
+	setBuilderPodSpec(env, catalog)
 
 	return env, nil
 }
 
-// setRuntimePodSpec sets the fetcher's resources in the runtime pod spec, the
-// only field Fission merges over the fetcher. It also names the runtime
-// container, which Fission requires once a pod spec exists.
-func setRuntimePodSpec(env *fissionv1.Environment, fetcher corev1.ResourceRequirements) {
-	setContainerResources(&env.Spec.Runtime.PodSpec, fetcherContainerName, fetcher)
-	if env.Spec.Runtime.PodSpec == nil {
-		return
-	}
+// setRuntimePodSpec writes what the configuration adds to every pool pod into
+// spec.runtime.podspec, which Fission merges into the pod it generates,
+// container by container by name: the fetcher's resources and, on the
+// runtime container, the flavor's runtimeEnv and the trusted CA mount, plus
+// the CA volume. Those parts are rewritten from the configuration on every
+// write, so a variable taken out of it leaves the pool on its next PUT. The
+// pool's own env is in spec.runtime.container, the only env FromK8s reads, so
+// none of this reaches a client or comes back in a PUT as the pool's env.
+//
+// The runtime container is named in the pod spec whenever one exists,
+// because Fission refuses a pool whose spec.runtime.container the pod spec
+// lacks.
+func setRuntimePodSpec(env *fissionv1.Environment, flavor config.CfuncFlavor, catalog *Catalog) {
 	runtimeName := env.Name
-	if container := env.Spec.Runtime.Container; container != nil && container.Name != "" {
-		runtimeName = container.Name
-	}
-	for _, container := range env.Spec.Runtime.PodSpec.Containers {
-		if container.Name == runtimeName {
-			return
+	var own []corev1.EnvVar
+	if container := env.Spec.Runtime.Container; container != nil {
+		if container.Name != "" {
+			runtimeName = container.Name
 		}
+		own = container.Env
 	}
-	env.Spec.Runtime.PodSpec.Containers = append(env.Spec.Runtime.PodSpec.Containers, corev1.Container{Name: runtimeName})
+	podSpec := &env.Spec.Runtime.PodSpec
+	volume, mount := catalog.trustedCA()
+
+	setContainerResources(podSpec, fetcherContainerName, catalog.fetcherResources)
+	setTrustedCAVolume(podSpec, volume)
+	variables := configuredEnv(flavor.RuntimeEnv, own)
+	runtime := podSpecContainer(*podSpec, runtimeName)
+	if runtime == nil && (len(variables) > 0 || mount != nil) {
+		runtime = addPodSpecContainer(podSpec, runtimeName)
+	}
+	if runtime != nil {
+		runtime.Env = variables
+		runtime.VolumeMounts = setTrustedCAMount(runtime.VolumeMounts, mount)
+	}
+
+	removeBareContainer(podSpec, fetcherContainerName)
+	dropEmptyPodSpec(podSpec, runtimeName)
+	if *podSpec != nil && podSpecContainer(*podSpec, runtimeName) == nil {
+		addPodSpecContainer(podSpec, runtimeName)
+	}
 }
 
-// setBuilderResources sets the builder and builder-fetcher resources, or
-// removes them when the pool has no build image.
-func setBuilderResources(env *fissionv1.Environment, catalog *Catalog) {
+// setBuilderPodSpec sets the builder and builder-fetcher resources and the
+// builder's trusted CA mount, or removes them when the pool has no build
+// image. Fission merges spec.builder.container into the builder container
+// and spec.builder.podspec into the builder pod.
+func setBuilderPodSpec(env *fissionv1.Environment, catalog *Catalog) {
 	builder, fetcher := catalog.builderResources, catalog.fetcherResources
+	volume, mount := catalog.trustedCA()
 	if env.Spec.Builder.Image == "" {
 		builder, fetcher = corev1.ResourceRequirements{}, corev1.ResourceRequirements{}
+		volume, mount = nil, nil
 	}
-	setContainerResources(&env.Spec.Builder.PodSpec, fetcherContainerName, fetcher)
+	podSpec := &env.Spec.Builder.PodSpec
+	setContainerResources(podSpec, fetcherContainerName, fetcher)
+	setTrustedCAVolume(podSpec, volume)
+	removeBareContainer(podSpec, fetcherContainerName)
+	dropEmptyPodSpec(podSpec, "")
 
-	if env.Spec.Builder.Container == nil {
-		if isEmptyResources(builder) {
+	container := env.Spec.Builder.Container
+	if container == nil {
+		if isEmptyResources(builder) && mount == nil {
 			return
 		}
-		env.Spec.Builder.Container = &corev1.Container{Name: fissionv1.BuilderContainerName}
+		container = &corev1.Container{Name: fissionv1.BuilderContainerName}
+		env.Spec.Builder.Container = container
 	}
-	env.Spec.Builder.Container.Resources = *builder.DeepCopy()
+	container.Resources = *builder.DeepCopy()
+	container.VolumeMounts = setTrustedCAMount(container.VolumeMounts, mount)
+}
+
+// configuredEnv returns the configured variables the pool's own env does not
+// set. Fission refuses to merge a container with two variables of one name,
+// and the pool's value is the one its owner asked for.
+func configuredEnv(configured []config.CfuncEnvVar, own []corev1.EnvVar) []corev1.EnvVar {
+	taken := make(map[string]bool, len(own))
+	for _, variable := range own {
+		taken[variable.Name] = true
+	}
+	var out []corev1.EnvVar
+	for _, variable := range configured {
+		if !taken[variable.Name] {
+			out = append(out, corev1.EnvVar{Name: variable.Name, Value: variable.Value})
+		}
+	}
+	return out
 }
 
 // setContainerResources sets the resources of the named container, adding it
-// and the pod spec when missing. Empty resources remove the entry, and the
-// pod spec when nothing else is left.
+// and the pod spec when missing. Empty resources clear them; the caller
+// removes an entry left with nothing but its name.
 func setContainerResources(podSpec **corev1.PodSpec, name string, resources corev1.ResourceRequirements) {
-	empty := isEmptyResources(resources)
-	spec := *podSpec
-	if spec == nil {
-		if empty {
-			return
-		}
-		spec = &corev1.PodSpec{}
-		*podSpec = spec
-	}
-	for i := range spec.Containers {
-		if spec.Containers[i].Name != name {
-			continue
-		}
-		spec.Containers[i].Resources = *resources.DeepCopy()
-		if !empty || !apiequality.Semantic.DeepEqual(spec.Containers[i], corev1.Container{Name: name}) {
-			return
-		}
-		// Keep a non-nil list: the CRD requires containers.
-		spec.Containers = slices.Delete(spec.Containers, i, i+1)
-		if apiequality.Semantic.DeepEqual(*spec, corev1.PodSpec{}) {
-			*podSpec = nil
+	container := podSpecContainer(*podSpec, name)
+	if isEmptyResources(resources) {
+		if container != nil {
+			container.Resources = corev1.ResourceRequirements{}
 		}
 		return
 	}
-	if !empty {
-		spec.Containers = append(spec.Containers, corev1.Container{Name: name, Resources: *resources.DeepCopy()})
+	if container == nil {
+		container = addPodSpecContainer(podSpec, name)
 	}
+	container.Resources = *resources.DeepCopy()
+}
+
+// setTrustedCAVolume puts the trusted CA volume in the pod spec, replacing
+// one of the same name, or removes it when volume is nil.
+func setTrustedCAVolume(podSpec **corev1.PodSpec, volume *corev1.Volume) {
+	spec := *podSpec
+	if spec == nil {
+		if volume == nil {
+			return
+		}
+		spec = newPodSpec()
+		*podSpec = spec
+	}
+	for i := range spec.Volumes {
+		if spec.Volumes[i].Name != trustedCAVolumeName {
+			continue
+		}
+		if volume != nil {
+			spec.Volumes[i] = *volume
+			return
+		}
+		spec.Volumes = slices.Delete(spec.Volumes, i, i+1)
+		if len(spec.Volumes) == 0 {
+			spec.Volumes = nil
+		}
+		return
+	}
+	if volume != nil {
+		spec.Volumes = append(spec.Volumes, *volume)
+	}
+}
+
+// setTrustedCAMount returns mounts with the trusted CA mount set in place,
+// or removed when mount is nil.
+func setTrustedCAMount(mounts []corev1.VolumeMount, mount *corev1.VolumeMount) []corev1.VolumeMount {
+	for i := range mounts {
+		if mounts[i].Name != trustedCAVolumeName {
+			continue
+		}
+		if mount != nil {
+			mounts[i] = *mount
+			return mounts
+		}
+		mounts = slices.Delete(mounts, i, i+1)
+		if len(mounts) == 0 {
+			return nil
+		}
+		return mounts
+	}
+	if mount != nil {
+		mounts = append(mounts, *mount)
+	}
+	return mounts
+}
+
+// podSpecContainer returns the named container of the pod spec, or nil.
+func podSpecContainer(spec *corev1.PodSpec, name string) *corev1.Container {
+	if spec == nil {
+		return nil
+	}
+	for i := range spec.Containers {
+		if spec.Containers[i].Name == name {
+			return &spec.Containers[i]
+		}
+	}
+	return nil
+}
+
+// addPodSpecContainer appends an entry for the named container, adding the
+// pod spec when missing, and returns it.
+func addPodSpecContainer(podSpec **corev1.PodSpec, name string) *corev1.Container {
+	if *podSpec == nil {
+		*podSpec = newPodSpec()
+	}
+	spec := *podSpec
+	spec.Containers = append(spec.Containers, corev1.Container{Name: name})
+	return &spec.Containers[len(spec.Containers)-1]
+}
+
+// newPodSpec returns an empty pod spec with a non-nil container list: the
+// CRD requires the containers field, and a nil list is written as null.
+func newPodSpec() *corev1.PodSpec {
+	return &corev1.PodSpec{Containers: []corev1.Container{}}
+}
+
+// removeBareContainer removes the named entry when it holds nothing but its
+// name.
+func removeBareContainer(podSpec **corev1.PodSpec, name string) {
+	spec := *podSpec
+	if spec == nil {
+		return
+	}
+	for i := range spec.Containers {
+		if spec.Containers[i].Name == name && isBareContainer(spec.Containers[i]) {
+			// Keep a non-nil list: the CRD requires containers.
+			spec.Containers = slices.Delete(spec.Containers, i, i+1)
+			return
+		}
+	}
+}
+
+// dropEmptyPodSpec removes the pod spec when nothing is left in it but,
+// optionally, a bare entry for the container named keep.
+func dropEmptyPodSpec(podSpec **corev1.PodSpec, keep string) {
+	spec := *podSpec
+	if spec == nil {
+		return
+	}
+	rest := *spec
+	rest.Containers = nil
+	if !apiequality.Semantic.DeepEqual(rest, corev1.PodSpec{}) {
+		return
+	}
+	for _, container := range spec.Containers {
+		if keep == "" || container.Name != keep || !isBareContainer(container) {
+			return
+		}
+	}
+	*podSpec = nil
+}
+
+func isBareContainer(container corev1.Container) bool {
+	return apiequality.Semantic.DeepEqual(container, corev1.Container{Name: container.Name})
 }
 
 func isEmptyResources(resources corev1.ResourceRequirements) bool {

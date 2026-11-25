@@ -732,13 +732,38 @@ func validateCfunc(e *CfuncConfig) []error {
 				errs = append(errs, fmt.Errorf("%s.flavors.%s.%s %q: %w", prefix, name, field.key, field.image, err))
 			}
 		}
-		for i, variable := range flavor.BuilderEnv {
-			if variable.Name == "" {
-				errs = append(errs, fmt.Errorf("%s.flavors.%s.builderEnv[%d].name is required", prefix, name, i))
-			}
+		for _, list := range []struct {
+			key       string
+			variables []CfuncEnvVar
+		}{{"builderEnv", flavor.BuilderEnv}, {"runtimeEnv", flavor.RuntimeEnv}} {
+			errs = append(errs, validateCfuncEnvVars(fmt.Sprintf("%s.flavors.%s.%s", prefix, name, list.key), list.variables)...)
 		}
 	}
 
+	if e.TrustedCA.ConfigMap != "" {
+		if msgs := validation.NameIsDNSSubdomain(e.TrustedCA.ConfigMap, false); len(msgs) > 0 {
+			errs = append(errs, fmt.Errorf("%s.trustedCA.configMap: %s", prefix, strings.Join(msgs, "; ")))
+		}
+	}
+
+	return errs
+}
+
+// validateCfuncEnvVars checks a flavor's variable list. Fission refuses to
+// merge a container with two variables of one name, so the pool's
+// Deployment would never be written.
+func validateCfuncEnvVars(key string, variables []CfuncEnvVar) []error {
+	var errs []error
+	seen := make(map[string]bool, len(variables))
+	for i, variable := range variables {
+		switch {
+		case variable.Name == "":
+			errs = append(errs, fmt.Errorf("%s[%d].name is required", key, i))
+		case seen[variable.Name]:
+			errs = append(errs, fmt.Errorf("%s[%d]: variable %q is set twice", key, i, variable.Name))
+		}
+		seen[variable.Name] = true
+	}
 	return errs
 }
 

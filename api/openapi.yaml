@@ -579,7 +579,7 @@ components:
           description: Number of warm pods kept ready. 0 keeps none, so the first call of a function waits for a pod. It must not exceed the backend's resources.cfunc.maxPoolSize (default 10); a higher value is rejected with 400.
         env:
           type: array
-          description: Environment variables set on every warm pod, so every function that runs in the pool sees them. Full replace on update; omit it or send [] to remove all. A valueFrom reference reads a Secret or ConfigMap of the pool's namespace; its existence is not checked.
+          description: Environment variables set on every warm pod, so every function that runs in the pool sees them. Full replace on update; omit it or send [] to remove all. A valueFrom reference reads a Secret or ConfigMap of the pool's namespace; its existence is not checked. The backend configuration can set more variables for the flavor (for example the ones that point at the trusted CA bundle); they are not returned here, and a variable of the same name in this list replaces the configured one.
           items:
             $ref: '#/components/schemas/EnvVar'
         advanced:
@@ -2750,6 +2750,13 @@ paths:
         and image pull secret of the flavor from its configuration, and the
         resources of the size. It always creates interface version 3 with a
         termination grace period of 360 seconds.
+        When the backend is configured with a trusted CA bundle
+        (resources.cfunc.trustedCA.configMap), that ConfigMap is mounted
+        read-only at /etc/cfunc/trusted-ca in the runtime container and, for a
+        pool with a build image, the builder container. The ConfigMap must
+        already exist, with data, in the namespace: the backend never creates
+        it and answers 409 where it is missing or empty, because the pool's
+        pods could not start.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
@@ -2836,6 +2843,10 @@ paths:
         An Environment with interface version 1 or 2, which can only come from
         outside this API, cannot be updated and answers 409: Fission ignores
         the pool size below version 3 and does not let the version change.
+        With a trusted CA bundle configured, an update also answers 409 when
+        the namespace lacks the ConfigMap or it is empty (see create); a pool
+        created before the bundle was configured gets the mount on its next
+        update.
       parameters:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'

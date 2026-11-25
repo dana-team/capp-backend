@@ -1,6 +1,7 @@
 package pools
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -120,6 +121,11 @@ func (h *Handler) create(c *gin.Context) {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return
 	}
+	// Before the label, which stays when the create is refused.
+	if err := h.checkTrustedCA(c.Request.Context(), k8sClient, namespace); err != nil {
+		apierrors.Respond(c, err)
+		return
+	}
 	// The label comes first: a pool in a namespace Fission does not serve
 	// gets no pods, and a repeated request finds the label already there.
 	if h.onboard {
@@ -187,6 +193,38 @@ func onboardNamespace(c *gin.Context, userClient client.Client, namespace string
 	return adminErr
 }
 
+// checkTrustedCA refuses a pool in a namespace that lacks the trusted CA
+// ConfigMap or holds it with no data. Every pod of the pool mounts it: a
+// missing one keeps the pods in ContainerCreating while the pool itself
+// reports nothing, and an empty one leaves the variables that point into it
+// naming no file, which breaks every TLS call of a runtime that reads one.
+//
+// A caller who may not read ConfigMaps is let through, because the kubelet
+// mounts the ConfigMap with its own credential, not the caller's.
+func (h *Handler) checkTrustedCA(ctx context.Context, k8sClient client.Client, namespace string) error {
+	name := h.catalog.cfg.TrustedCA.ConfigMap
+	if name == "" {
+		return nil
+	}
+	var configMap corev1.ConfigMap
+	err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &configMap)
+	switch {
+	case k8serrors.IsNotFound(err):
+		return apierrors.NewConflict(fmt.Sprintf(
+			"namespace %s has no ConfigMap %s, the trusted CA bundle that every pool pod mounts; ask a cluster administrator to provide it",
+			namespace, name))
+	case k8serrors.IsForbidden(err):
+		return nil
+	case err != nil:
+		return err
+	case len(configMap.Data) == 0 && len(configMap.BinaryData) == 0:
+		return apierrors.NewConflict(fmt.Sprintf(
+			"ConfigMap %s in namespace %s is empty; it must hold the trusted CA bundle that every pool pod mounts, so ask a cluster administrator to fill it",
+			name, namespace))
+	}
+	return nil
+}
+
 func labelNamespace(c *gin.Context, k8sClient client.Client, namespace string) error {
 	var ns corev1.Namespace
 	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Name: namespace}, &ns); err != nil {
@@ -249,6 +287,12 @@ func (h *Handler) update(c *gin.Context) {
 	updated, err := ToK8s(req, &existing, namespace, h.catalog)
 	if err != nil {
 		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
+		return
+	}
+	// Also for a pool that mounts the bundle already: an update can replace
+	// its pods, and new pods cannot start without the ConfigMap.
+	if err := h.checkTrustedCA(ctx, k8sClient, namespace); err != nil {
+		apierrors.Respond(c, err)
 		return
 	}
 

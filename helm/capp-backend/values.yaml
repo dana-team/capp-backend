@@ -211,6 +211,10 @@ config:
       #   builderEnv:   list of {name, value} set on the builder container,
       #                 e.g. PIP_INDEX_URL or NPM_REGISTRY for a private
       #                 registry. It is stored in a ConfigMap: no tokens.
+      #   runtimeEnv:   list of {name, value} set on the runtime container of
+      #                 every pool of the flavor, e.g. the variables that point
+      #                 the language at the trusted CA bundle (see trustedCA).
+      #                 A variable of the same name in a pool's own env wins.
       #   keepArchive:  hand the runtime the package as one archive (JVM .jar).
       # The image must speak the Fission v2 interface; perl-env does not.
       # Example:
@@ -218,6 +222,15 @@ config:
       #     python:
       #       image: "python-env:1.35.0"
       #       buildImage: "python-builder:1.35.0"
+      #       builderEnv:
+      #         - {name: PIP_CERT, value: /etc/cfunc/trusted-ca/ca-bundle.crt}
+      #       runtimeEnv:
+      #         - {name: SSL_CERT_FILE, value: /etc/cfunc/trusted-ca/ca-bundle.crt}
+      #         - {name: REQUESTS_CA_BUNDLE, value: /etc/cfunc/trusted-ca/ca-bundle.crt}
+      #     node:
+      #       image: "node-env:1.35.0"
+      #       runtimeEnv:
+      #         - {name: NODE_EXTRA_CA_CERTS, value: /etc/cfunc/trusted-ca/ca-bundle.crt}
       #     java:
       #       image: "jvm-env:1.32.0"
       #       buildImage: "jvm-builder:1.32.0"
@@ -239,6 +252,25 @@ config:
       builderResources:
         requests: {cpu: "100m", memory: "256Mi"}
         limits: {cpu: "1", memory: "1Gi"}
+      # CA bundle for pools on a network with a private CA, such as an
+      # internal package mirror for builds or internal APIs called by
+      # functions. configMap names a ConfigMap that is mounted read-only at
+      # /etc/cfunc/trusted-ca in the runtime container of every pool and the
+      # builder container of every pool with a build image; each key is a
+      # file there. Empty mounts nothing.
+      #   - The ConfigMap must already exist, with data, in every namespace
+      #     that holds a pool. The backend never creates it and answers 409 on
+      #     a pool create or update where it is missing or empty. On OpenShift,
+      #     a ConfigMap labelled config.openshift.io/inject-trusted-cabundle=true
+      #     is filled with the cluster bundle (key ca-bundle.crt); elsewhere
+      #     trust-manager can sync one into the namespaces.
+      #   - A mounted file is trusted by nothing until a flavor's runtimeEnv
+      #     and builderEnv point the language at it (see flavors).
+      #     SSL_CERT_FILE and REQUESTS_CA_BUNDLE replace the default roots, so
+      #     the bundle must also hold the public CAs; both sources above do.
+      #   - Existing pools get the mount on their next update.
+      trustedCA:
+        configMap: ""
       # Makes the first pool of a namespace set the fission.io/enabled=true
       # label on that namespace. Turn it on only when Fission runs with
       # tenancy.mode=dynamic; it gives the backend the right to patch

@@ -107,6 +107,28 @@ resources:
 	assert.True(t, env.Flavors["java"].KeepArchive)
 }
 
+func TestLoad_CfuncTrustedCAAndRuntimeEnv(t *testing.T) {
+	cfg := loadTempConfig(t, `
+resources:
+  cfunc:
+    trustedCA:
+      configMap: trusted-ca
+    flavors:
+      node:
+        image: "node-env:1.35.0"
+        runtimeEnv:
+          - name: NODE_EXTRA_CA_CERTS
+            value: /etc/cfunc/trusted-ca/ca-bundle.crt
+`)
+	assert.Equal(t, "trusted-ca", cfg.Resources.Cfunc.TrustedCA.ConfigMap)
+	// The variable name must keep its case, which is why runtimeEnv is a list.
+	assert.Equal(t, []CfuncEnvVar{{Name: "NODE_EXTRA_CA_CERTS", Value: "/etc/cfunc/trusted-ca/ca-bundle.crt"}},
+		cfg.Resources.Cfunc.Flavors["node"].RuntimeEnv)
+
+	t.Setenv("CAPP_RESOURCES_CFUNC_TRUSTEDCA_CONFIGMAP", "from-env")
+	assert.Equal(t, "from-env", loadTempConfig(t, "resources: {}\n").Resources.Cfunc.TrustedCA.ConfigMap)
+}
+
 func TestLoad_CfuncRegistryPrefixFromEnv(t *testing.T) {
 	t.Setenv("CAPP_RESOURCES_CFUNC_REGISTRYPREFIX", "mirror.internal/fission")
 	cfg := loadTempConfig(t, `
@@ -314,6 +336,51 @@ func TestValidate_Cfunc(t *testing.T) {
 				e.Flavors["python"] = flavor
 			},
 			errContain: "flavors.python.builderEnv[0].name is required",
+		},
+		{
+			name: "runtime variable without a name",
+			mutate: func(e *CfuncConfig) {
+				flavor := e.Flavors["python"]
+				flavor.RuntimeEnv = []CfuncEnvVar{{Value: "x"}}
+				e.Flavors["python"] = flavor
+			},
+			errContain: "flavors.python.runtimeEnv[0].name is required",
+		},
+		{
+			name: "runtime variable set twice",
+			mutate: func(e *CfuncConfig) {
+				flavor := e.Flavors["python"]
+				flavor.RuntimeEnv = []CfuncEnvVar{{Name: "SSL_CERT_FILE", Value: "a"}, {Name: "SSL_CERT_FILE", Value: "b"}}
+				e.Flavors["python"] = flavor
+			},
+			errContain: `flavors.python.runtimeEnv[1]: variable "SSL_CERT_FILE" is set twice`,
+		},
+		{
+			name: "builder variable set twice",
+			mutate: func(e *CfuncConfig) {
+				flavor := e.Flavors["python"]
+				flavor.BuilderEnv = []CfuncEnvVar{{Name: "PIP_CERT", Value: "a"}, {Name: "PIP_CERT", Value: "b"}}
+				e.Flavors["python"] = flavor
+			},
+			errContain: `flavors.python.builderEnv[1]: variable "PIP_CERT" is set twice`,
+		},
+		{
+			name: "one variable in both the builder and the runtime",
+			mutate: func(e *CfuncConfig) {
+				flavor := e.Flavors["python"]
+				flavor.BuilderEnv = []CfuncEnvVar{{Name: "SSL_CERT_FILE", Value: "a"}}
+				flavor.RuntimeEnv = []CfuncEnvVar{{Name: "SSL_CERT_FILE", Value: "a"}}
+				e.Flavors["python"] = flavor
+			},
+		},
+		{
+			name:   "trusted CA ConfigMap",
+			mutate: func(e *CfuncConfig) { e.TrustedCA.ConfigMap = "trusted-ca" },
+		},
+		{
+			name:       "trusted CA ConfigMap name that is not a valid name",
+			mutate:     func(e *CfuncConfig) { e.TrustedCA.ConfigMap = "Trusted_CA" },
+			errContain: "resources.cfunc.trustedCA.configMap:",
 		},
 	}
 	for _, tt := range tests {
