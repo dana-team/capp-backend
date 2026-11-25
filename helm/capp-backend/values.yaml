@@ -9,6 +9,18 @@ image:
 
 imagePullSecrets: []
 
+# ── Trusted CA bundle ─────────────────────────────────────────────────────────
+# A ConfigMap in `namespace` holding PEM CAs the backend trusts on top of the
+# public roots of its image: the cfunc git server, GitOps, Prometheus, LDAP
+# without auth.ldap.caCert, and clusters without a CA of their own. Mounted
+# read-only at /etc/capp-trusted-ca and named by SSL_CERT_FILE. Go reads it once
+# at start, so restart the pods after the bundle changes. Empty mounts nothing.
+# This is the backend's own trust; config.resources.cfunc.trustedCA is the one
+# mounted into Fission pools.
+trustedCA:
+  configMap: ""
+  key: "ca-bundle.crt"
+
 
 # ── Backend configuration ─────────────────────────────────────────────────────
 # config supplies application settings; put credentials in Secrets.
