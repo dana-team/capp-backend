@@ -91,6 +91,10 @@ update would silently record changes that somebody made directly in the cluster.
 - `?onDrift=accept` starts from the live object.
 - `?onDrift=revert` starts from the desired state. On a namespace `PATCH` it also needs the
   permission that `PUT` needs, because it resets the quota and removes users.
+- `&liveVersion=…&generation=…` limit the decision to the drift that was shown, taken from the
+  409. If the object or its desired state changed since, the request answers 409 again with the
+  current drift. Without them, `onDrift` applies to whatever drift there is, as
+  `cappctl --on-drift` intends. The console always sends them.
 
 Fields in the request always win. A client that fills a form from the live object must
 load the desired values before it sends `onDrift=revert`. `cappctl update --on-drift revert`

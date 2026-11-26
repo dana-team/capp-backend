@@ -2169,6 +2169,30 @@ components:
         cannot be read, the request starts from the live object and its response
         carries a warning, except that `revert` answers 503.
 
+    driftLiveVersionParam:
+      name: liveVersion
+      in: query
+      schema:
+        type: string
+      description: |
+        The `drift.liveVersion` the `onDrift` decision is about, from the 409 or
+        the read that showed the drift. If the live object changed since, the
+        request answers 409 with the current drift instead of keeping or
+        discarding changes nobody saw. Optional: without it, `onDrift` applies to
+        whatever drift there is.
+
+    driftGenerationParam:
+      name: generation
+      in: query
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+      description: |
+        The `drift.generation` the `onDrift` decision is about. If the desired
+        state changed since, the request answers 409 with the current drift.
+        Optional, like `liveVersion`.
+
   responses:
     DriftDetected:
       description: |
@@ -2718,6 +2742,8 @@ paths:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/onDriftParam'
+        - $ref: '#/components/parameters/driftLiveVersionParam'
+        - $ref: '#/components/parameters/driftGenerationParam'
       requestBody:
         required: true
         content:
@@ -2769,6 +2795,8 @@ paths:
         - $ref: '#/components/parameters/clusterParam'
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/onDriftParam'
+        - $ref: '#/components/parameters/driftLiveVersionParam'
+        - $ref: '#/components/parameters/driftGenerationParam'
       requestBody:
         required: true
         content:
@@ -3591,6 +3619,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
         - $ref: '#/components/parameters/onDriftParam'
+        - $ref: '#/components/parameters/driftLiveVersionParam'
+        - $ref: '#/components/parameters/driftGenerationParam'
       requestBody:
         required: true
         content:
@@ -3864,6 +3894,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
         - $ref: '#/components/parameters/onDriftParam'
+        - $ref: '#/components/parameters/driftLiveVersionParam'
+        - $ref: '#/components/parameters/driftGenerationParam'
       requestBody:
         required: true
         content:
@@ -4089,6 +4121,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
         - $ref: '#/components/parameters/onDriftParam'
+        - $ref: '#/components/parameters/driftLiveVersionParam'
+        - $ref: '#/components/parameters/driftGenerationParam'
       requestBody:
         required: true
         content:
@@ -4348,6 +4382,8 @@ paths:
         - $ref: '#/components/parameters/namespaceParam'
         - $ref: '#/components/parameters/objectNameParam'
         - $ref: '#/components/parameters/onDriftParam'
+        - $ref: '#/components/parameters/driftLiveVersionParam'
+        - $ref: '#/components/parameters/driftGenerationParam'
       responses:
         "200":
           description: Strategy removed.

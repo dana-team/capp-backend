@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
@@ -256,6 +258,48 @@ func TestUpdateOfDriftedObject(t *testing.T) {
 	})
 	t.Run("invalid value", func(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, drifted(t).PutJSON(itemPath+"?onDrift=force", update).Code)
+	})
+
+	// What the console does: it shows the drift of the 409, then repeats the
+	// update for exactly that drift.
+	shown := func(d *drift.Drift, onDrift string, generation int64) string {
+		return fmt.Sprintf("%s?onDrift=%s&liveVersion=%s&generation=%d", itemPath, onDrift, url.QueryEscape(d.LiveVersion), generation)
+	}
+	t.Run("accept the drift that was shown", func(t *testing.T) {
+		e := drifted(t)
+		d := trackingtest.Drift(t, e.PutJSON(itemPath, update))
+		require.Equal(t, http.StatusOK, e.PutJSON(shown(d, drift.OnDriftAccept, d.Generation), update).Code)
+		assert.Equal(t, update.Data, e.live().Data)
+		assert.Equal(t, drift.StateInSync, e.drift().State)
+	})
+	t.Run("the object changed after its drift was shown", func(t *testing.T) {
+		for _, onDrift := range []string{drift.OnDriftAccept, drift.OnDriftRevert} {
+			e := drifted(t)
+			d := trackingtest.Drift(t, e.PutJSON(itemPath, update))
+			e.edit(func(cm *corev1.ConfigMap) { cm.BinaryData["later"] = []byte{2} })
+
+			w := e.PutJSON(shown(d, onDrift, d.Generation), update)
+			require.Equal(t, http.StatusConflict, w.Code, onDrift)
+			assert.Contains(t, w.Body.String(), apierrors.CodeDriftDetected)
+			current := trackingtest.Drift(t, w)
+			assert.NotEqual(t, d.LiveVersion, current.LiveVersion, onDrift)
+			assert.Equal(t, "2", e.live().Data["a"], "%s: the update must not be made", onDrift)
+
+			require.Equal(t, http.StatusOK, e.PutJSON(shown(current, onDrift, current.Generation), update).Code, onDrift)
+		}
+	})
+	t.Run("the desired state changed after its drift was shown", func(t *testing.T) {
+		e := drifted(t)
+		d := trackingtest.Drift(t, e.PutJSON(itemPath, update))
+		w := e.PutJSON(shown(d, drift.OnDriftAccept, d.Generation+1), update)
+		require.Equal(t, http.StatusConflict, w.Code)
+		assert.Equal(t, "2", e.live().Data["a"])
+	})
+	t.Run("invalid generation", func(t *testing.T) {
+		for _, generation := range []string{"x", "-1"} {
+			w := drifted(t).PutJSON(itemPath+"?onDrift=accept&generation="+generation, update)
+			require.Equal(t, http.StatusBadRequest, w.Code, generation)
+		}
 	})
 	t.Run("no drift", func(t *testing.T) {
 		e := newDriftEngine(t, testutil.FakeClient(t))

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -245,7 +246,9 @@ func (t *Tracker) available(c *gin.Context) bool {
 }
 
 // CheckDrift decides how an update treats an object that has drifted. Without
-// the onDrift parameter it answers 409 with the differences. It returns
+// the onDrift parameter it answers 409 with the differences. With the
+// liveVersion or generation parameters, onDrift applies only to the drift they
+// name, and a drift that changed since answers 409 again. It returns
 // revert=true when the update must start from the desired state, and ok=false
 // when it already wrote a response. When the record cannot be read or compared,
 // the update starts from the live object; only an explicit revert is refused.
@@ -258,6 +261,11 @@ func (w *Write) CheckDrift(c *gin.Context, live any) (revert, ok bool) {
 	case "", drift.OnDriftAccept, drift.OnDriftRevert:
 	default:
 		apierrors.Respond(c, apierrors.NewBadRequest(fmt.Sprintf("onDrift must be %q or %q", drift.OnDriftAccept, drift.OnDriftRevert)))
+		return false, false
+	}
+	shown, err := shownDriftOf(c)
+	if err != nil {
+		apierrors.Respond(c, apierrors.NewBadRequest(err.Error()))
 		return false, false
 	}
 	var current *drift.Drift
@@ -276,7 +284,41 @@ func (w *Write) CheckDrift(c *gin.Context, live any) (revert, ok bool) {
 			"the object differs from its desired state; repeat the request with onDrift=accept to keep the live changes, or onDrift=revert to discard them", current))
 		return false, false
 	}
+	// Somebody changed the object or its desired state after the caller decided:
+	// accepting would record a change nobody saw, reverting would discard one.
+	if !shown.matches(current) {
+		apierrors.Respond(c, apierrors.NewDriftDetected(
+			"the object or its desired state changed since its drift was shown; review the drift again", current))
+		return false, false
+	}
 	return onDrift == drift.OnDriftRevert, true
+}
+
+// shownDrift is the drift an update's onDrift decision is about, as the
+// liveVersion and generation query parameters name it. Both are optional, so
+// that a client may decide for whatever drift there is, as cappctl --on-drift
+// does.
+type shownDrift struct {
+	liveVersion string
+	generation  *int64
+}
+
+func shownDriftOf(c *gin.Context) (shownDrift, error) {
+	shown := shownDrift{liveVersion: c.Query("liveVersion")}
+	if value := c.Query("generation"); value != "" {
+		generation, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || generation < 0 {
+			return shownDrift{}, errors.New("generation must be a non-negative integer")
+		}
+		shown.generation = &generation
+	}
+	return shown, nil
+}
+
+// matches reports whether current is the drift that was shown.
+func (s shownDrift) matches(current *drift.Drift) bool {
+	return (s.liveVersion == "" || s.liveVersion == current.LiveVersion) &&
+		(s.generation == nil || *s.generation == current.Generation)
 }
 
 // ResolveDrift is CheckDrift for a Kubernetes object. When the caller chose to
