@@ -36,6 +36,7 @@ type configMapUpdateInput struct {
 	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string `json:"namespace" jsonschema:"the namespace containing the config map"`
 	Name      string `json:"name" jsonschema:"the config map name to update"`
+	OnDriftInput
 	configmaps.ConfigMapUpdateRequest
 }
 
@@ -114,7 +115,7 @@ func (ConfigMapToolSet) Register(s *mcp.Server, be *Backend) {
 		}
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/configmaps/%s", in.Cluster, in.Namespace, in.Name)
 		var out configmaps.ConfigMapResponse
-		if err := c.Put(ctx, path, in.ConfigMapUpdateRequest, &out); err != nil {
+		if err := c.Put(ctx, path+in.query(), in.ConfigMapUpdateRequest, &out); err != nil {
 			return nil, configmaps.ConfigMapResponse{}, err
 		}
 		return nil, out, nil

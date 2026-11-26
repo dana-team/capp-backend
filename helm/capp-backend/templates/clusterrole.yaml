@@ -24,7 +24,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
     resources: ["resourcequotas"]
-    verbs: ["get", "create", "update"]
+    verbs: ["get", "create", "update"{{ if (dig "desiredState" "enabled" false .Values.config) }}, "delete"{{ end }}]
   {{- if (dig "resources" "cfunc" "enabled" false .Values.config) }}
   - apiGroups: ["fission.io"]
     resources: ["environments"]

@@ -11,10 +11,11 @@ import (
 	"strconv"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
 	"github.com/gin-gonic/gin"
@@ -25,15 +26,20 @@ import (
 // Handler implements resources.ResourceHandler for CappRevisions. Revisions
 // are addressed by their revision number under the owning Capp's path.
 type Handler struct {
-	gitopsEnabled bool
-	gitops        capps.GitOpsSyncer
-	sizes         config.CappSizes
+	sizes   config.CappSizes
+	tracker *tracking.Tracker
 }
 
-// New returns a ready-to-use CappRevision Handler. When gitops is disabled,
-// pass nil for the syncer — rollbacks then skip the Git backup.
-func New(gitopsEnabled bool, gitops capps.GitOpsSyncer, sizes config.CappSizes) *Handler {
-	return &Handler{gitopsEnabled: gitopsEnabled, gitops: gitops, sizes: sizes}
+// New returns a ready-to-use CappRevision Handler.
+func New(sizes config.CappSizes) *Handler {
+	return &Handler{sizes: sizes}
+}
+
+// WithTracker records the desired state of a Capp after a rollback. A nil
+// tracker leaves it off.
+func (h *Handler) WithTracker(tracker *tracking.Tracker) *Handler {
+	h.tracker = tracker
+	return h
 }
 
 // Name returns the handler's identifier, matching the resources.capprevisions config key.
@@ -116,28 +122,16 @@ func (h *Handler) rollback(c *gin.Context) {
 
 	updated := applyTemplate(&existing, revision.Spec.CappTemplate)
 
-	backup := h.gitopsEnabled && h.gitops != nil && k8s.HasBackupLabel(existing.Labels)
-	var meta cluster.ClusterMeta
-	if backup {
-		meta, err = capps.ExtractClusterMeta(c)
-		if err != nil {
-			apierrors.Respond(c, apierrors.NewInternal(err))
-			return
-		}
-	}
-
+	// A rollback replaces the whole spec, so it takes over no live change and
+	// does not ask what to do with drift.
+	write := h.tracker.Begin(c, tracking.Ref(c, desiredstate.KindCapp, namespace, name))
 	if err := k8sClient.Update(ctx, updated); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
 
 	resp := capps.FromK8s(updated, h.sizes)
-	if backup {
-		if _, err := capps.SyncCappValues(ctx, h.gitops, meta, updated); err != nil {
-			resp.Warnings = append(resp.Warnings, capps.BackupWarning(c, err))
-		}
-	}
-
+	resp.Warnings = append(resp.Warnings, write.Save(c, k8sClient, updated)...)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -181,8 +175,7 @@ func findRevision(c *gin.Context, k8sClient client.Client) (*cappv1alpha1.CappRe
 }
 
 // applyTemplate returns a copy of live with the template's spec, labels and
-// annotations. The backup-to-git label is kept as it is on the live Capp:
-// it tracks the current state of the GitOps repo, not of the Capp spec.
+// annotations.
 func applyTemplate(live *cappv1alpha1.Capp, tmpl cappv1alpha1.CappTemplate) *cappv1alpha1.Capp {
 	updated := live.DeepCopy()
 	updated.Spec = *tmpl.Spec.DeepCopy()
@@ -191,14 +184,6 @@ func applyTemplate(live *cappv1alpha1.Capp, tmpl cappv1alpha1.CappTemplate) *cap
 	// The operator records every annotation in the revision, including an action
 	// that was pending at the time. Restoring it would replay that action.
 	delete(updated.Annotations, k8s.AnnotationRollout)
-
-	delete(updated.Labels, k8s.LabelBackupToGit)
-	if v, ok := live.Labels[k8s.LabelBackupToGit]; ok {
-		if updated.Labels == nil {
-			updated.Labels = map[string]string{}
-		}
-		updated.Labels[k8s.LabelBackupToGit] = v
-	}
 	return updated
 }
 

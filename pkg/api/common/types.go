@@ -49,3 +49,15 @@ type ConfigMapVolume struct {
 	ConfigMapName string `json:"configMapName" binding:"required"`
 	MountPath     string `json:"mountPath"     binding:"required"`
 }
+
+// Warning is a non-fatal problem attached to a successful response.
+type Warning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// DeleteResponse is returned instead of an empty response when a delete
+// succeeded with warnings.
+type DeleteResponse struct {
+	Warnings []Warning `json:"warnings,omitempty"`
+}

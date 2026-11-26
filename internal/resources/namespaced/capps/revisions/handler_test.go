@@ -3,13 +3,10 @@ package revisions
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"testing"
 
-	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/capps"
 	"github.com/dana-team/capp-backend/internal/testutil"
@@ -55,31 +52,7 @@ func makeRevision(cappName, namespace string, number int, image string, labels m
 }
 
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(false, nil, config.CappSizes{}))
-}
-
-type mockGitOpsSyncer struct {
-	syncErr   error
-	syncCalls int
-}
-
-func (m *mockGitOpsSyncer) SyncValues(_ context.Context, _, _, _ string, _ []byte) (string, error) {
-	m.syncCalls++
-	return "abc123", m.syncErr
-}
-
-func (m *mockGitOpsSyncer) DeleteValues(_ context.Context, _, _, _ string) (string, error) {
-	return "def456", nil
-}
-
-func (m *mockGitOpsSyncer) BuildRelPath(gitOpsPath, namespace, cappName string) string {
-	return gitOpsPath + "/" + namespace + "/" + cappName
-}
-
-func syncEngine(t *testing.T, mock *mockGitOpsSyncer, objects ...client.Object) *testutil.EngineHelper {
-	t.Helper()
-	k8sClient := testutil.FakeClient(t, objects...)
-	return testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, cluster.ClusterMeta{Name: "test"}, New(true, mock, config.CappSizes{}))
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), New(config.CappSizes{}))
 }
 
 func TestList_SortedNewestFirstAndFilteredByCapp(t *testing.T) {
@@ -145,7 +118,7 @@ func TestRollback_AppliesTemplate(t *testing.T) {
 		makeCapp(map[string]string{"team": "b"}),
 		makeRevision("app1", "ns1", 1, "nginx:1", map[string]string{"team": "a"}),
 	)
-	w := testutil.NewEngineHelper(t, k8sClient, New(false, nil, config.CappSizes{})).
+	w := testutil.NewEngineHelper(t, k8sClient, New(config.CappSizes{})).
 		Post("/namespaces/ns1/capps/app1/revisions/1/rollback", nil)
 
 	require.Equal(t, http.StatusOK, w.Code)
@@ -174,81 +147,6 @@ func TestRollback_CappNotFound(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, w.Code)
 	assert.Contains(t, w.Body.String(), "Capp")
-}
-
-func TestApplyTemplate_KeepsLiveBackupLabel(t *testing.T) {
-	tests := []struct {
-		name       string
-		liveLabels map[string]string
-		tmplLabels map[string]string
-		want       map[string]string
-	}{
-		{
-			name:       "live backed up, revision not",
-			liveLabels: map[string]string{k8s.LabelBackupToGit: "true"},
-			tmplLabels: map[string]string{"team": "a"},
-			want:       map[string]string{"team": "a", k8s.LabelBackupToGit: "true"},
-		},
-		{
-			name:       "revision backed up, live not",
-			liveLabels: nil,
-			tmplLabels: map[string]string{"team": "a", k8s.LabelBackupToGit: "true"},
-			want:       map[string]string{"team": "a"},
-		},
-		{
-			name:       "nil template labels",
-			liveLabels: map[string]string{k8s.LabelBackupToGit: "true"},
-			tmplLabels: nil,
-			want:       map[string]string{k8s.LabelBackupToGit: "true"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			live := makeCapp(tt.liveLabels)
-			got := applyTemplate(live, cappv1alpha1.CappTemplate{Spec: cappSpec("nginx:1"), Labels: tt.tmplLabels})
-			assert.Equal(t, tt.want, got.Labels)
-			assert.Equal(t, tt.liveLabels, live.Labels, "live object must not be mutated")
-		})
-	}
-}
-
-func TestRollback_GitSynced_PushesValues(t *testing.T) {
-	mock := &mockGitOpsSyncer{}
-	w := syncEngine(t, mock,
-		makeCapp(map[string]string{k8s.LabelBackupToGit: "true"}),
-		makeRevision("app1", "ns1", 1, "nginx:1", nil),
-	).Post("/namespaces/ns1/capps/app1/revisions/1/rollback", nil)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 1, mock.syncCalls)
-	var resp capps.CappResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Empty(t, resp.Warnings)
-}
-
-func TestRollback_GitSyncFails_ReturnsWarning(t *testing.T) {
-	mock := &mockGitOpsSyncer{syncErr: errors.New("push rejected")}
-	w := syncEngine(t, mock,
-		makeCapp(map[string]string{k8s.LabelBackupToGit: "true"}),
-		makeRevision("app1", "ns1", 1, "nginx:1", nil),
-	).Post("/namespaces/ns1/capps/app1/revisions/1/rollback", nil)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var resp capps.CappResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Len(t, resp.Warnings, 1)
-	assert.Equal(t, apierrors.CodeGitopsFailed, resp.Warnings[0].Code)
-}
-
-func TestRollback_NotGitSynced_SkipsGit(t *testing.T) {
-	mock := &mockGitOpsSyncer{}
-	w := syncEngine(t, mock,
-		makeCapp(nil),
-		makeRevision("app1", "ns1", 1, "nginx:1", nil),
-	).Post("/namespaces/ns1/capps/app1/revisions/1/rollback", nil)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 0, mock.syncCalls)
 }
 
 func TestApplyTemplate_StripsRolloutAnnotation(t *testing.T) {

@@ -34,6 +34,11 @@ func (h *Handler) updateManagedNamespace(c *gin.Context) {
 		progress.respondError(c, err)
 		return
 	}
+	access := admin.access(progress.namespace)
+	write := h.tracker.Begin(c, namespaceRef(c))
+	if !h.resolveDrift(c, write, access) {
+		return
+	}
 	proposal, err := admin.prepareMembership(c.Request.Context(), c.Param("namespace"), req, c.Request.Method == http.MethodPatch)
 	if proposal != nil {
 		progress.policy = proposal.policy
@@ -80,6 +85,7 @@ func (h *Handler) updateManagedNamespace(c *gin.Context) {
 	}
 	item := admin.policyNamespaceItem(proposal.namespace, policy)
 	item.Quota = quotaInfo
+	item.Warnings = record(c, write, access)
 	c.JSON(http.StatusOK, item)
 }
 

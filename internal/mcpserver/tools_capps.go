@@ -8,12 +8,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// CappToolSet exposes full CRUD plus sync, migrate and rollout actions for the Capp custom
+// CappToolSet exposes full CRUD plus migrate and rollout actions for the Capp custom
 // resource, mirroring the backend's own capps.Handler routes.
 type CappToolSet struct{}
 
 // cappUpdateDescription is the capp_update tool description.
-const cappUpdateDescription = "Replace an existing Capp's spec. This is a full replacement of everything capp_get returns as editable fields, not a partial patch — fields you omit are cleared, not left as-is. The exception is routeSpec.rolloutStrategy: omitting it keeps the current strategy; use capp_rollout_strategy_remove to remove one. Call capp_get first and send back the full desired state. If Git sync is enabled, the change is also committed to git."
+const cappUpdateDescription = "Replace an existing Capp's spec. This is a full replacement of everything capp_get returns as editable fields, not a partial patch — fields you omit are cleared, not left as-is. The exception is routeSpec.rolloutStrategy: omitting it keeps the current strategy; use capp_rollout_strategy_remove to remove one. Call capp_get first and send back the full desired state."
 
 func (CappToolSet) Name() string { return "capps" }
 
@@ -37,6 +37,7 @@ type cappCreateInput struct {
 type cappUpdateInput struct {
 	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string `json:"namespace" jsonschema:"the namespace containing the capp"`
+	OnDriftInput
 	capps.CappRequest
 }
 
@@ -51,12 +52,6 @@ type cappDeleteOutput struct {
 	Cluster   string `json:"cluster"`
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
-}
-
-type cappSyncInput struct {
-	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
-	Namespace string `json:"namespace" jsonschema:"the namespace containing the capp"`
-	Name      string `json:"name" jsonschema:"the capp name to sync"`
 }
 
 type cappMigrateInput struct {
@@ -77,6 +72,7 @@ type cappRolloutStrategyRemoveInput struct {
 	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string `json:"namespace" jsonschema:"the namespace containing the capp"`
 	Name      string `json:"name" jsonschema:"the capp name whose rollout strategy to remove"`
+	OnDriftInput
 }
 
 func (CappToolSet) Register(s *mcp.Server, be *Backend) {
@@ -141,7 +137,7 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 		}
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", in.Cluster, in.Namespace, in.Name)
 		var out capps.CappResponse
-		if err := c.Put(ctx, path, in.CappRequest, &out); err != nil {
+		if err := c.Put(ctx, path+in.query(), in.CappRequest, &out); err != nil {
 			return nil, capps.CappResponse{}, err
 		}
 		return nil, out, nil
@@ -149,7 +145,7 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "capp_delete",
-		Description: "Delete a Capp. This is irreversible. If Git sync is enabled, its values file is also deleted.",
+		Description: "Delete a Capp. This is irreversible.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappDeleteInput) (*mcp.CallToolResult, cappDeleteOutput, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -160,38 +156,6 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 			return nil, cappDeleteOutput{}, err
 		}
 		return nil, cappDeleteOutput{Deleted: true, Cluster: in.Cluster, Namespace: in.Namespace, Name: in.Name}, nil
-	})
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "capp_sync",
-		Description: "Enable Git sync for a Capp (or re-sync it). Updates are then committed to the GitOps repository automatically.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappSyncInput) (*mcp.CallToolResult, capps.SyncResponse, error) {
-		c, err := be.Client(ctx)
-		if err != nil {
-			return nil, capps.SyncResponse{}, err
-		}
-		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", in.Cluster, in.Namespace, in.Name)
-		var out capps.SyncResponse
-		if err := c.Post(ctx, path, nil, &out); err != nil {
-			return nil, capps.SyncResponse{}, err
-		}
-		return nil, out, nil
-	})
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "capp_sync_disable",
-		Description: "Disable Git sync for a Capp. Deletes its values file from the GitOps repository.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappSyncInput) (*mcp.CallToolResult, capps.SyncResponse, error) {
-		c, err := be.Client(ctx)
-		if err != nil {
-			return nil, capps.SyncResponse{}, err
-		}
-		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", in.Cluster, in.Namespace, in.Name)
-		var out capps.SyncResponse
-		if err := c.Delete(ctx, path, &out); err != nil {
-			return nil, capps.SyncResponse{}, err
-		}
-		return nil, out, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -228,7 +192,7 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "capp_rollout_strategy_remove",
-		Description: "Remove a Capp's rollout strategy. This moves live traffic: a Ready candidate that is rolling out is promoted to 100%, otherwise traffic is pinned to the stable revision until a newer revision is Ready. To stop a rollout and keep the strategy, use capp_rollout with action abort. If Git sync is enabled, the change is also committed to git.",
+		Description: "Remove a Capp's rollout strategy. This moves live traffic: a Ready candidate that is rolling out is promoted to 100%, otherwise traffic is pinned to the stable revision until a newer revision is Ready. To stop a rollout and keep the strategy, use capp_rollout with action abort.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cappRolloutStrategyRemoveInput) (*mcp.CallToolResult, capps.CappResponse, error) {
 		c, err := be.Client(ctx)
 		if err != nil {
@@ -236,7 +200,7 @@ func (CappToolSet) Register(s *mcp.Server, be *Backend) {
 		}
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/rollout/strategy", in.Cluster, in.Namespace, in.Name)
 		var out capps.CappResponse
-		if err := c.Delete(ctx, path, &out); err != nil {
+		if err := c.Delete(ctx, path+in.query(), &out); err != nil {
 			return nil, capps.CappResponse{}, err
 		}
 		return nil, out, nil

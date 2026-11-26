@@ -88,7 +88,7 @@ func TestBackendPolicyAudit(t *testing.T) {
 				r.Use(requestpolicy.New(p.auth, mode, p.manager, rules, targets, zap.New(core)))
 				r.GET("/api/v1/clusters", listClusters(p.manager))
 				configmaps.New().RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
-				newCappsHandler(t, true, &policyGitRecorder{}, p.manager, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
+				newCappsHandler(t, p.manager, config.ObservabilityConfig{}).RegisterRoutes(r.Group("/api/v1/clusters/:cluster"))
 				method, path, status, count := http.MethodGet, "/api/v1/clusters", http.StatusOK, 3
 				switch scenario {
 				case "discovery rejected", "discovery unavailable":

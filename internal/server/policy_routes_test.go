@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/authorization"
@@ -16,6 +17,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/cfunc/pools"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/configmaps"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/secrets"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -50,7 +52,10 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 					switch rule.Category {
 					case policy.Namespace, policy.Discovery, policy.Aggregate, policy.Migration:
 						want := []string{authorization.RoleEditor}
-						if route.Method == http.MethodGet {
+						// Accepting and adopting drift change only the desired state
+						// store, so they need no more than a read.
+						storeOnly := strings.HasSuffix(route.Path, "/drift/accept") || strings.HasSuffix(route.Path, "/drift/adopt")
+						if route.Method == http.MethodGet || storeOnly {
 							want = []string{authorization.RoleViewer, authorization.RoleEditor}
 						}
 						require.Equal(t, want, rule.AllowedRoles, "%s %s", route.Method, route.Path)
@@ -65,10 +70,11 @@ func TestNewPolicyRouteCoverage(t *testing.T) {
 
 func policyRegistry(t testing.TB, optional bool) *resources.Registry {
 	r := resources.NewRegistry(map[string]bool{"configmaps": optional, "secrets": optional, "cfuncpools": optional, "cfuncfunctions": optional})
-	r.Register(newCappsHandler(t, false, nil, nil, config.ObservabilityConfig{}))
-	r.Register(revisions.New(false, nil, config.CappSizes{}))
+	r.Register(newCappsHandler(t, nil, config.ObservabilityConfig{}))
+	r.Register(revisions.New(config.CappSizes{}))
 	r.Register(configmaps.New())
 	r.Register(secrets.New())
+	r.Register(tracking.NewAdopter(nil))
 	poolHandler, err := pools.New(config.CfuncConfig{})
 	require.NoError(t, err)
 	r.Register(poolHandler)
@@ -82,9 +88,9 @@ func policyRegistry(t testing.TB, optional bool) *resources.Registry {
 
 // newCappsHandler builds a capps handler for policy tests, failing the test
 // when the observability config cannot produce a Prometheus client.
-func newCappsHandler(t testing.TB, gitopsEnabled bool, git capps.GitOpsSyncer, mgr cluster.ClusterManager, observability config.ObservabilityConfig) *capps.Handler {
+func newCappsHandler(t testing.TB, mgr cluster.ClusterManager, observability config.ObservabilityConfig) *capps.Handler {
 	t.Helper()
-	h, err := capps.New(gitopsEnabled, git, mgr, config.CappSizes{}, observability)
+	h, err := capps.New(mgr, config.CappSizes{}, observability)
 	require.NoError(t, err)
 	return h
 }

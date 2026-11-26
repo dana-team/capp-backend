@@ -112,15 +112,6 @@ func TestNewNotSupported(t *testing.T) {
 	assert.Equal(t, http.StatusNotImplemented, e.Status)
 }
 
-func TestNewGitopsFailed(t *testing.T) {
-	cause := errors.New("push rejected: https://git.example.com/org/repo.git")
-	e := NewGitopsFailed(cause)
-	assert.Equal(t, CodeGitopsFailed, e.Code)
-	assert.Equal(t, http.StatusBadGateway, e.Status)
-	require.ErrorIs(t, e, cause)
-	assert.NotContains(t, e.Message, "git.example.com", "cause must not leak to clients")
-}
-
 func TestNewPrometheusQueryFailed(t *testing.T) {
 	cause := errors.New("Get \"http://vm.monitoring.svc:8428/api/v1/query\": connection refused")
 	e := NewPrometheusQueryFailed(cause)

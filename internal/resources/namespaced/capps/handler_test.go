@@ -7,10 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
-	"github.com/dana-team/capp-backend/internal/apierrors"
 	"github.com/dana-team/capp-backend/internal/auth"
 	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/config"
@@ -22,7 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -32,12 +29,6 @@ import (
 func makeCapp(name, namespace string) *cappv1alpha1.Capp {
 	return &cappv1alpha1.Capp{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-	}
-}
-
-func makeCappWithLabel(name, namespace string, labels map[string]string) *cappv1alpha1.Capp {
-	return &cappv1alpha1.Capp{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
 	}
 }
 
@@ -64,55 +55,16 @@ func makeSizes() config.CappSizes {
 // mustHandler calls New and fails the test immediately if it errors, so
 // call sites that always pass a valid configuration don't need to repeat
 // that check.
-func mustHandler(t *testing.T, gitopsEnabled bool, gitops GitOpsSyncer, clusterMgr cluster.ClusterManager, sizes config.CappSizes) *Handler {
+func mustHandler(t *testing.T, clusterMgr cluster.ClusterManager, sizes config.CappSizes) *Handler {
 	o := config.ObservabilityConfig{}
 	t.Helper()
-	h, err := New(gitopsEnabled, gitops, clusterMgr, sizes, o)
+	h, err := New(clusterMgr, sizes, o)
 	require.NoError(t, err)
 	return h
 }
 
 func engine(t *testing.T, objects ...client.Object) *testutil.EngineHelper {
-	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), mustHandler(t, false, nil, nil, makeSizes()))
-}
-
-// syncEngine creates an engine with gitops enabled, ClusterMeta in context,
-// and a mock GitOpsSyncer.
-func syncEngine(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, sizes config.CappSizes, objects ...client.Object) *testutil.EngineHelper {
-	t.Helper()
-	k8sClient := testutil.FakeClient(t, objects...)
-	return syncEngineWithClient(t, mock, meta, sizes, k8sClient)
-}
-
-func syncEngineWithClient(t *testing.T, mock *mockGitOpsSyncer, meta cluster.ClusterMeta, sizes config.CappSizes, k8sClient client.Client) *testutil.EngineHelper {
-	t.Helper()
-	handler := mustHandler(t, true, mock, nil, sizes)
-	return testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
-}
-
-type mockGitOpsSyncer struct {
-	syncFn       func(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error)
-	deleteFn     func(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error)
-	buildRelPath func(gitOpsPath, namespace, cappName string) string
-
-	syncCalls   [][]byte
-	deleteCalls int
-}
-
-func (m *mockGitOpsSyncer) SyncValues(ctx context.Context, gitOpsPath, namespace, cappName string, valuesYAML []byte) (string, error) {
-	m.syncCalls = append(m.syncCalls, valuesYAML)
-	if m.syncFn != nil {
-		return m.syncFn(ctx, gitOpsPath, namespace, cappName, valuesYAML)
-	}
-	return "abc123", nil
-}
-
-func (m *mockGitOpsSyncer) DeleteValues(ctx context.Context, gitOpsPath, namespace, cappName string) (string, error) {
-	m.deleteCalls++
-	if m.deleteFn != nil {
-		return m.deleteFn(ctx, gitOpsPath, namespace, cappName)
-	}
-	return "def456", nil
+	return testutil.NewEngineHelper(t, testutil.FakeClient(t, objects...), mustHandler(t, nil, makeSizes()))
 }
 
 // failWrites returns a fake client whose Update, Patch and Delete calls fail
@@ -141,17 +93,6 @@ func getCapp(t *testing.T, k8sClient client.Client) (*cappv1alpha1.Capp, error) 
 	var capp cappv1alpha1.Capp
 	err := k8sClient.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "app1"}, &capp)
 	return &capp, err
-}
-
-func gitSyncedCapp() *cappv1alpha1.Capp {
-	return makeCappWithLabel("app1", "ns1", map[string]string{k8s.LabelBackupToGit: "true"})
-}
-
-func (m *mockGitOpsSyncer) BuildRelPath(gitOpsPath, namespace, cappName string) string {
-	if m.buildRelPath != nil {
-		return m.buildRelPath(gitOpsPath, namespace, cappName)
-	}
-	return filepath.Join("sites", gitOpsPath, namespace, cappName+".yaml")
 }
 
 // -- ListAll tests --
@@ -248,7 +189,7 @@ func TestUpdate_PreservesMetadata(t *testing.T) {
 	capp.Finalizers = []string{"dana.io/capp-cleanup"}
 
 	k8sClient := testutil.FakeClient(t, capp)
-	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, nil, makeSizes()))
 
 	w := e.PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
 	require.Equal(t, http.StatusOK, w.Code)
@@ -266,7 +207,7 @@ func TestUpdate_OmittedStrategyIsPreserved(t *testing.T) {
 		Stages: []cappv1alpha1.RolloutStage{{Percent: 50}},
 	}
 	k8sClient := testutil.FakeClient(t, capp)
-	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, nil, makeSizes()))
 
 	w := e.PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
 	require.Equal(t, http.StatusOK, w.Code)
@@ -297,83 +238,6 @@ func TestCreate_RolloutStage_PercentValidation(t *testing.T) {
 	}
 }
 
-func TestUpdate_GitSyncEnabled_SyncsNewValues(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-	k8sClient := testutil.FakeClient(t, gitSyncedCapp())
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
-
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Len(t, mock.syncCalls, 1)
-	assert.Contains(t, string(mock.syncCalls[0]), "nginx:2")
-
-	updated, err := getCapp(t, k8sClient)
-	require.NoError(t, err)
-	assert.Equal(t, "nginx:2", updated.Spec.ConfigurationSpec.Template.Spec.Containers[0].Image)
-	assert.True(t, k8s.HasBackupLabel(updated.Labels))
-}
-
-func TestUpdate_BackupFailure_SucceedsWithWarning(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{
-		syncFn: func(context.Context, string, string, string, []byte) (string, error) {
-			return "", errors.New("push failed")
-		},
-	}
-	k8sClient := testutil.FakeClient(t, gitSyncedCapp())
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
-
-	require.Equal(t, http.StatusOK, w.Code, "the cluster write succeeded; only the backup is stale")
-	var resp CappResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Len(t, resp.Warnings, 1)
-	assert.Equal(t, apierrors.CodeGitopsFailed, resp.Warnings[0].Code)
-
-	live, err := getCapp(t, k8sClient)
-	require.NoError(t, err)
-	assert.Equal(t, "nginx:2", live.Spec.ConfigurationSpec.Template.Spec.Containers[0].Image)
-}
-
-func TestUpdate_BackupSucceeds_NoWarnings(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-
-	w := syncEngine(t, &mockGitOpsSyncer{}, meta, makeSizes(), gitSyncedCapp()).
-		PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var resp CappResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Empty(t, resp.Warnings)
-}
-
-func TestUpdate_GitSyncNotEnabled_SkipsGit(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-
-	w := syncEngine(t, mock, meta, makeSizes(), makeCapp("app1", "ns1")).
-		PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Empty(t, mock.syncCalls)
-	assert.Zero(t, mock.deleteCalls)
-}
-
-func TestUpdate_ClusterWriteFailure_SkipsGit(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-	k8sClient := failWrites(t, gitSyncedCapp())
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		PutJSON("/namespaces/ns1/capps/app1", CappRequest{Name: "app1", Image: "nginx:2"})
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Empty(t, mock.syncCalls, "git must not be written when the cluster write fails")
-}
-
 // -- Delete tests --
 
 func TestDelete_Success(t *testing.T) {
@@ -384,65 +248,6 @@ func TestDelete_Success(t *testing.T) {
 func TestDelete_NotFound(t *testing.T) {
 	w := engine(t).Delete("/namespaces/ns1/capps/missing")
 	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestDelete_GitSyncEnabled_DeletesValues(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-	k8sClient := testutil.FakeClient(t, gitSyncedCapp())
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		Delete("/namespaces/ns1/capps/app1")
-
-	assert.Equal(t, http.StatusNoContent, w.Code)
-	assert.Equal(t, 1, mock.deleteCalls)
-	_, err := getCapp(t, k8sClient)
-	assert.True(t, k8serrors.IsNotFound(err))
-}
-
-func TestDelete_BackupFailure_SucceedsWithWarning(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{
-		deleteFn: func(context.Context, string, string, string) (string, error) {
-			return "", errors.New("push failed")
-		},
-	}
-	k8sClient := testutil.FakeClient(t, gitSyncedCapp())
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		Delete("/namespaces/ns1/capps/app1")
-
-	require.Equal(t, http.StatusOK, w.Code, "the Capp is gone, which is what was asked for")
-	var resp DeleteResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Len(t, resp.Warnings, 1)
-	assert.Equal(t, apierrors.CodeGitopsFailed, resp.Warnings[0].Code)
-
-	_, err := getCapp(t, k8sClient)
-	assert.True(t, k8serrors.IsNotFound(err))
-}
-
-func TestDelete_ClusterWriteFailure_SkipsGit(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-	k8sClient := failWrites(t, gitSyncedCapp())
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		Delete("/namespaces/ns1/capps/app1")
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Zero(t, mock.deleteCalls)
-}
-
-func TestDelete_GitSyncNotEnabled_SkipsGit(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-
-	w := syncEngine(t, mock, meta, makeSizes(), makeCapp("app1", "ns1")).
-		Delete("/namespaces/ns1/capps/app1")
-
-	assert.Equal(t, http.StatusNoContent, w.Code)
-	assert.Zero(t, mock.deleteCalls)
 }
 
 // -- respondList tests --
@@ -457,261 +262,6 @@ func TestRespondList_CorrectTotalAndMapping(t *testing.T) {
 	assert.Len(t, resp.Items, 2)
 }
 
-// -- Sync tests --
-
-func TestSync_GitOpsDisabled(t *testing.T) {
-	h := mustHandler(t, false, nil, nil, makeSizes())
-	e := testutil.NewEngineHelper(t, testutil.FakeClient(t, makeCapp("app1", "ns1")), h)
-	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
-}
-
-func TestSync_CappNotFound(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "test1"}
-	w := syncEngine(t, &mockGitOpsSyncer{}, meta, makeSizes()).
-		Post("/namespaces/ns1/capps/missing/sync", nil)
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestSync_ReSync(t *testing.T) {
-	capp := makeCappWithLabel("app1", "ns1", map[string]string{
-		k8s.LabelBackupToGit: "true",
-	})
-	capp.Spec.ConfigurationSpec.Template.Spec.Containers = []corev1.Container{
-		{Name: "main", Image: "nginx:9"},
-	}
-	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "test1"}
-	mock := &mockGitOpsSyncer{}
-
-	w := syncEngine(t, mock, meta, makeSizes(), capp).
-		Post("/namespaces/ns1/capps/app1/sync", nil)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	var resp SyncResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "abc123", resp.CommitSHA)
-	assert.NotEmpty(t, resp.Path)
-
-	// Syncing an already-synced Capp is a manual re-push of whatever the
-	// cluster holds right now, not a no-op.
-	require.Len(t, mock.syncCalls, 1)
-	assert.Contains(t, string(mock.syncCalls[0]), "nginx:9")
-}
-
-func TestSync_Success(t *testing.T) {
-	capp := makeCapp("app1", "ns1")
-	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "test"}
-	mock := &mockGitOpsSyncer{}
-
-	e := syncEngine(t, mock, meta, makeSizes(), capp)
-	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	var resp SyncResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "abc123", resp.CommitSHA)
-	assert.Equal(t, "sites/test/ns1/app1.yaml", resp.Path)
-}
-
-func TestSync_GitPushError(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "test1"}
-	mock := &mockGitOpsSyncer{
-		syncFn: func(_ context.Context, _, _, _ string, _ []byte) (string, error) {
-			return "", errors.New("push failed")
-		},
-	}
-	k8sClient := testutil.FakeClient(t, makeCapp("app1", "ns1"))
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		Post("/namespaces/ns1/capps/app1/sync", nil)
-
-	require.Equal(t, http.StatusBadGateway, w.Code)
-	live, err := getCapp(t, k8sClient)
-	require.NoError(t, err)
-	assert.False(t, k8s.HasBackupLabel(live.Labels),
-		"git is written first: when it fails the Capp must not be marked as backed up")
-}
-
-func TestSync_PatchFailure_AfterGitWrite(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-	k8sClient := failWrites(t, makeCapp("app1", "ns1"))
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		Post("/namespaces/ns1/capps/app1/sync", nil)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Len(t, mock.syncCalls, 1, "git is written before the label patch")
-}
-
-// -- Unsync tests --
-
-func TestUnsync_RemovesLabelAndValues(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{}
-	capp := makeCappWithLabel("app1", "ns1", map[string]string{k8s.LabelBackupToGit: "true", "team": "alpha"})
-	k8sClient := testutil.FakeClient(t, capp)
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		Delete("/namespaces/ns1/capps/app1/sync")
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var resp SyncResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.False(t, resp.Enabled)
-	assert.Equal(t, "def456", resp.CommitSHA)
-	assert.Equal(t, "sites/test/ns1/app1.yaml", resp.Path)
-	assert.Equal(t, 1, mock.deleteCalls)
-
-	live, err := getCapp(t, k8sClient)
-	require.NoError(t, err)
-	assert.False(t, k8s.HasBackupLabel(live.Labels))
-	assert.Equal(t, "alpha", live.Labels["team"], "other labels must be kept")
-}
-
-func TestUnsync_NotEnabled_Idempotent(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{
-		deleteFn: func(context.Context, string, string, string) (string, error) { return "", nil },
-	}
-
-	w := syncEngine(t, mock, meta, makeSizes(), makeCapp("app1", "ns1")).
-		Delete("/namespaces/ns1/capps/app1/sync")
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var resp SyncResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.False(t, resp.Enabled)
-	assert.Empty(t, resp.CommitSHA)
-
-	// Git is still asked to remove the file, so an orphaned values file left by
-	// an earlier failure can be cleaned up even though the label is gone.
-	assert.Equal(t, 1, mock.deleteCalls)
-}
-
-func TestUnsync_GitOpsDisabled(t *testing.T) {
-	w := engine(t, gitSyncedCapp()).Delete("/namespaces/ns1/capps/app1/sync")
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
-}
-
-func TestUnsync_CappNotFound(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	w := syncEngine(t, &mockGitOpsSyncer{}, meta, makeSizes()).
-		Delete("/namespaces/ns1/capps/missing/sync")
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestUnsync_GitFailure_ReturnsBadGateway(t *testing.T) {
-	meta := cluster.ClusterMeta{Name: "test"}
-	mock := &mockGitOpsSyncer{
-		deleteFn: func(context.Context, string, string, string) (string, error) {
-			return "", errors.New("push failed")
-		},
-	}
-	k8sClient := testutil.FakeClient(t, gitSyncedCapp())
-
-	w := syncEngineWithClient(t, mock, meta, makeSizes(), k8sClient).
-		Delete("/namespaces/ns1/capps/app1/sync")
-
-	assert.Equal(t, http.StatusBadGateway, w.Code)
-	live, err := getCapp(t, k8sClient)
-	require.NoError(t, err)
-	assert.True(t, k8s.HasBackupLabel(live.Labels),
-		"git is written first: when it fails the label must survive, or the values file is orphaned")
-}
-
-func TestSync_SuccessVerifyLabel(t *testing.T) {
-	capp := makeCapp("app1", "ns1")
-	meta := cluster.ClusterMeta{Name: "test", GitOpsPath: "test1"}
-	mock := &mockGitOpsSyncer{}
-
-	k8sClient := testutil.FakeClient(t, capp)
-	handler := mustHandler(t, true, mock, nil, makeSizes())
-	e := testutil.NewEngineHelperWithAdmin(t, k8sClient, k8sClient, meta, handler)
-
-	w := e.Post("/namespaces/ns1/capps/app1/sync", nil)
-	require.Equal(t, http.StatusOK, w.Code)
-
-	var updated cappv1alpha1.Capp
-	err := k8sClient.Get(context.Background(), client.ObjectKey{
-		Namespace: "ns1", Name: "app1",
-	}, &updated)
-	require.NoError(t, err)
-	assert.Equal(t, "true", updated.Labels[k8s.LabelBackupToGit])
-}
-
-func TestSync_UsesClusterNameNotGitOpsPath(t *testing.T) {
-	tests := []struct {
-		name        string
-		clusterName string
-		gitOpsPath  string
-		namespace   string
-		cappName    string
-		wantPath    string
-	}{
-		{
-			name:        "cluster name differs from gitOpsPath",
-			clusterName: "production-east",
-			gitOpsPath:  "east",
-			namespace:   "team-alpha",
-			cappName:    "web-api",
-			wantPath:    "sites/production-east/team-alpha/web-api.yaml",
-		},
-		{
-			name:        "cluster name equals gitOpsPath",
-			clusterName: "staging",
-			gitOpsPath:  "staging",
-			namespace:   "apps",
-			cappName:    "frontend",
-			wantPath:    "sites/staging/apps/frontend.yaml",
-		},
-		{
-			name:        "gitOpsPath is default but cluster name is not",
-			clusterName: "managed-cluster-1",
-			gitOpsPath:  "default",
-			namespace:   "workloads",
-			cappName:    "worker",
-			wantPath:    "sites/managed-cluster-1/workloads/worker.yaml",
-		},
-		{
-			name:        "namespace is not default",
-			clusterName: "hub",
-			gitOpsPath:  "hub-old",
-			namespace:   "my-project",
-			cappName:    "backend-svc",
-			wantPath:    "sites/hub/my-project/backend-svc.yaml",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			capp := makeCapp(tt.cappName, tt.namespace)
-			meta := cluster.ClusterMeta{Name: tt.clusterName, GitOpsPath: tt.gitOpsPath}
-			var capturedPath, capturedNS, capturedName string
-			mock := &mockGitOpsSyncer{
-				syncFn: func(_ context.Context, gitOpsPath, namespace, cappName string, _ []byte) (string, error) {
-					capturedPath = gitOpsPath
-					capturedNS = namespace
-					capturedName = cappName
-					return "sha-ok", nil
-				},
-			}
-
-			w := syncEngine(t, mock, meta, makeSizes(), capp).
-				Post("/namespaces/"+tt.namespace+"/capps/"+tt.cappName+"/sync", nil)
-
-			require.Equal(t, http.StatusOK, w.Code)
-			assert.Equal(t, tt.clusterName, capturedPath, "should use ClusterMeta.Name, not GitOpsPath")
-			assert.Equal(t, tt.namespace, capturedNS, "should use capp.Namespace from K8s object")
-			assert.Equal(t, tt.cappName, capturedName)
-
-			var resp SyncResponse
-			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-			assert.Equal(t, tt.wantPath, resp.Path)
-		})
-	}
-}
-
 // -- Migrate tests --
 
 // migrateEngine creates an engine for migrate tests. It injects the source K8s
@@ -719,7 +269,7 @@ func TestSync_UsesClusterNameNotGitOpsPath(t *testing.T) {
 func migrateEngine(t *testing.T, sourceClient client.Client, clusterMgr *testutil.MockClusterManager) *testutil.EngineHelper {
 	t.Helper()
 	meta := cluster.ClusterMeta{Name: "source-cluster"}
-	handler := mustHandler(t, false, nil, clusterMgr, makeSizes())
+	handler := mustHandler(t, clusterMgr, makeSizes())
 
 	_, engine := gin.CreateTestContext(httptest.NewRecorder())
 	engine.Use(func(c *gin.Context) {

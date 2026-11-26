@@ -61,6 +61,7 @@ type policyDecision struct {
 	namespaceAllowed                  func(string) bool
 	discover                          func(string) ([]authorization.NamespaceState, bool, error)
 	aggregate                         func(*gin.Context, client.ObjectList, ...client.ListOption) error
+	aggregateNamespaces               func() ([]string, error)
 	prepareMigration                  func(string, string) (client.Client, client.Client, error)
 }
 
@@ -191,6 +192,9 @@ func New(authMgr auth.AuthManager, authMode string, clusterMgr cluster.ClusterMa
 		case Aggregate:
 			decision.aggregate = func(c *gin.Context, list client.ObjectList, options ...client.ListOption) error {
 				return listAggregate(c, list, target, cred, rule.AllowedRoles, decision, logger, options...)
+			}
+			decision.aggregateNamespaces = func() ([]string, error) {
+				return eligibleNamespaces(target, cred, rule.AllowedRoles, decision)
 			}
 		default:
 			respondPolicyError(c, authorization.ErrDenied)
@@ -376,7 +380,7 @@ func RequireExecution(c *gin.Context) bool {
 		return true
 	}
 	decision, ok := requestPolicyDecision(c)
-	if !ok || decision.category != Namespace || decision.route == namespacePath {
+	if !ok || decision.category != Namespace || decision.route == namespacePath || decision.isNamespaceDetail() {
 		respondPolicyError(c, authorization.ErrDenied)
 		return false
 	}
@@ -475,8 +479,12 @@ func auditPolicy(logger *zap.Logger, caller string, decision policyDecision, out
 	)
 }
 
+// isNamespaceDetail reports whether the request acts on the namespace itself
+// with the authority of a read. Accepting drift counts: it reads the namespace
+// and changes only the desired state store.
 func (d policyDecision) isNamespaceDetail() bool {
-	return d.method == http.MethodGet && d.route == namespacePath
+	return (d.method == http.MethodGet && d.route == namespacePath) ||
+		(d.method == http.MethodPost && d.route == namespacePath+driftAccept)
 }
 
 func (t Target) authorizeNamespace(namespace, caller string, groups, roles []string, operatorRead bool) (authorization.NamespaceState, error) {

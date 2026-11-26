@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
-	"github.com/dana-team/capp-backend/internal/cluster"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/dana-team/capp-backend/pkg/k8s"
 	cappv1alpha1 "github.com/dana-team/container-app-operator/api/v1alpha1"
@@ -131,7 +130,7 @@ func TestValidateRolloutAction_StaleRevisionNamesCandidate(t *testing.T) {
 
 func TestRolloutAction_SetsAnnotation(t *testing.T) {
 	k8sClient := testutil.FakeClient(t, rollingOutCapp(cappv1alpha1.RolloutPhaseProgressing))
-	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, nil, makeSizes()))
 
 	w := e.PostJSON(rolloutPath, RolloutActionRequest{Action: "promote", Revision: "app-00002"})
 
@@ -170,28 +169,16 @@ func TestRolloutAction_Conflict(t *testing.T) {
 				return k8serrors.NewConflict(gr, "app1", errors.New("changed"))
 			},
 		}).Build()
-	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, nil, makeSizes()))
 
 	w := e.PostJSON(rolloutPath, RolloutActionRequest{Action: "promote", Revision: "app-00002"})
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
 
-func TestRolloutAction_GitSynced_NoGitWrite(t *testing.T) {
-	capp := rollingOutCapp(cappv1alpha1.RolloutPhaseProgressing)
-	capp.Labels = map[string]string{k8s.LabelBackupToGit: "true"}
-	mock := &mockGitOpsSyncer{}
-
-	w := syncEngine(t, mock, cluster.ClusterMeta{Name: "test"}, makeSizes(), capp).
-		PostJSON(rolloutPath, RolloutActionRequest{Action: "abort", Revision: "app-00002"})
-
-	require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
-	assert.Empty(t, mock.syncCalls)
-}
-
 func TestRemoveRolloutStrategy_Success(t *testing.T) {
 	k8sClient := testutil.FakeClient(t, rollingOutCapp(cappv1alpha1.RolloutPhaseProgressing))
-	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, k8sClient, mustHandler(t, nil, makeSizes()))
 
 	w := e.Delete(rolloutPath + "/strategy")
 
@@ -203,7 +190,7 @@ func TestRemoveRolloutStrategy_Success(t *testing.T) {
 
 func TestRemoveRolloutStrategy_NoStrategy(t *testing.T) {
 	// Writes fail on this client, so a 200 proves the handler did not write.
-	e := testutil.NewEngineHelper(t, failWrites(t, makeCapp("app1", "ns1")), mustHandler(t, false, nil, nil, makeSizes()))
+	e := testutil.NewEngineHelper(t, failWrites(t, makeCapp("app1", "ns1")), mustHandler(t, nil, makeSizes()))
 
 	w := e.Delete(rolloutPath + "/strategy")
 
@@ -213,35 +200,4 @@ func TestRemoveRolloutStrategy_NoStrategy(t *testing.T) {
 func TestRemoveRolloutStrategy_NotFound(t *testing.T) {
 	w := engine(t).Delete(rolloutPath + "/strategy")
 	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestRemoveRolloutStrategy_GitSynced(t *testing.T) {
-	gitSynced := func() *cappv1alpha1.Capp {
-		capp := rollingOutCapp(cappv1alpha1.RolloutPhaseProgressing)
-		capp.Labels = map[string]string{k8s.LabelBackupToGit: "true"}
-		return capp
-	}
-
-	t.Run("syncs values without the strategy", func(t *testing.T) {
-		mock := &mockGitOpsSyncer{}
-		w := syncEngine(t, mock, cluster.ClusterMeta{Name: "test"}, makeSizes(), gitSynced()).
-			Delete(rolloutPath + "/strategy")
-
-		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-		require.Len(t, mock.syncCalls, 1)
-		assert.NotContains(t, string(mock.syncCalls[0]), "rolloutStrategy")
-	})
-
-	t.Run("sync failure is a warning", func(t *testing.T) {
-		mock := &mockGitOpsSyncer{
-			syncFn: func(context.Context, string, string, string, []byte) (string, error) {
-				return "", errors.New("push failed")
-			},
-		}
-		w := syncEngine(t, mock, cluster.ClusterMeta{Name: "test"}, makeSizes(), gitSynced()).
-			Delete(rolloutPath + "/strategy")
-
-		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-		assert.Contains(t, w.Body.String(), apierrors.CodeGitopsFailed)
-	})
 }

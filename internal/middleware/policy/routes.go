@@ -33,6 +33,13 @@ const (
 	clusterPath             = "/api/v1/clusters/:cluster"
 	namespaceCollectionPath = clusterPath + "/namespaces"
 	namespacePath           = namespaceCollectionPath + "/:namespace"
+
+	configMaps = "configmaps"
+	secrets    = "secrets"
+
+	driftRevert = "/drift/revert"
+	driftAccept = "/drift/accept"
+	driftAdopt  = "/drift/adopt"
 )
 
 type policyRoute struct{ method, path string }
@@ -71,7 +78,21 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		declarations = append(declarations, declaration{method: method, path: namespacePath, rule: Rule{Category: Administration}})
 	}
-	for _, resource := range []string{"capps", "configmaps", "secrets", "cfunc/pools", "cfunc/functions"} {
+	// Accepting and adopting change only the desired state store, so whoever can
+	// read an object may do it. Reverting changes the cluster like an update.
+	declarations = append(declarations,
+		declaration{method: http.MethodPost, path: namespacePath + driftRevert, rule: Rule{Category: Administration}},
+		declaration{method: http.MethodPost, path: namespacePath + driftAccept, rule: read},
+		declaration{method: http.MethodPost, path: namespacePath + driftAdopt, rule: read},
+	)
+	for _, resource := range []string{"capps", configMaps, secrets} {
+		path := namespacePath + "/" + resource + "/:name"
+		declarations = append(declarations,
+			declaration{method: http.MethodPost, path: path + driftRevert, rule: write},
+			declaration{method: http.MethodPost, path: path + driftAccept, rule: read},
+		)
+	}
+	for _, resource := range []string{"capps", configMaps, secrets, "cfunc/pools", "cfunc/functions"} {
 		path := namespacePath + "/" + resource
 		declarations = append(declarations,
 			declaration{method: http.MethodGet, path: clusterPath + "/" + resource, rule: Rule{Category: Aggregate, AllowedRoles: read.AllowedRoles}},
@@ -81,7 +102,7 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 			declaration{method: http.MethodPut, path: path + "/:name", rule: write},
 			declaration{method: http.MethodDelete, path: path + "/:name", rule: write},
 		)
-		if resource == "configmaps" || resource == "secrets" {
+		if resource == configMaps || resource == secrets {
 			declarations = append(declarations,
 				declaration{method: http.MethodGet, path: path + "/names", rule: read},
 				declaration{method: http.MethodGet, path: path + "/:name/bound", rule: read},
@@ -102,8 +123,6 @@ func NewRoutes(metricsPath string) (*Routes, error) {
 		declaration{method: http.MethodPost, path: cappPath + "/revisions/:revision/rollback", rule: write},
 		declaration{method: http.MethodPost, path: cappPath + "/rollout", rule: write},
 		declaration{method: http.MethodDelete, path: cappPath + "/rollout/strategy", rule: write},
-		declaration{method: http.MethodPost, path: cappPath + "/sync", rule: write},
-		declaration{method: http.MethodDelete, path: cappPath + "/sync", rule: write},
 		declaration{method: http.MethodPost, path: cappPath + "/migrate", rule: Rule{Category: Migration, AllowedRoles: write.AllowedRoles}},
 		declaration{method: http.MethodGet, path: cappPath + "/metrics", rule: Rule{Category: Denied}},
 		declaration{method: http.MethodGet, path: cappPath + "/metrics/:metric", rule: Rule{Category: Denied}},

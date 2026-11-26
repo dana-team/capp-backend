@@ -26,6 +26,7 @@ type namespaceCreateInput struct {
 type namespaceUpdateInput struct {
 	Cluster   string `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string `json:"namespace" jsonschema:"the namespace to update"`
+	OnDriftInput
 	ns.UpdateNamespaceRequest
 }
 
@@ -48,6 +49,7 @@ type namespaceAddUsersInput struct {
 	Cluster   string   `json:"cluster" jsonschema:"the target cluster name"`
 	Namespace string   `json:"namespace" jsonschema:"the namespace to add users to"`
 	Users     []string `json:"users" jsonschema:"usernames to grant the capp-user role in Kubernetes authorization mode or direct editor access in backend-policy mode; existing grants are kept"`
+	OnDriftInput
 }
 
 func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
@@ -122,7 +124,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 		}
 		var out ns.NamespaceItem
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s", in.Cluster, in.Namespace)
-		if err := c.Put(ctx, path, in.UpdateNamespaceRequest, &out); err != nil {
+		if err := c.Put(ctx, path+in.query(), in.UpdateNamespaceRequest, &out); err != nil {
 			return nil, ns.NamespaceItem{}, err
 		}
 		return nil, out, nil
@@ -139,7 +141,7 @@ func (NamespaceToolSet) Register(s *mcp.Server, be *Backend) {
 		var out ns.NamespaceItem
 		path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s", in.Cluster, in.Namespace)
 		body := ns.PatchNamespaceRequest{Users: &in.Users}
-		if err := c.Patch(ctx, path, body, &out); err != nil {
+		if err := c.Patch(ctx, path+in.query(), body, &out); err != nil {
 			return nil, ns.NamespaceItem{}, err
 		}
 		return nil, out, nil

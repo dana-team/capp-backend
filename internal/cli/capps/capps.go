@@ -15,6 +15,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/cli/utils"
 	"github.com/dana-team/capp-backend/pkg/api/boundcapps"
 	apitypes "github.com/dana-team/capp-backend/pkg/api/capps"
+	"github.com/dana-team/capp-backend/pkg/api/drift"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 
@@ -39,6 +40,7 @@ var tableCols = []output.Column[apitypes.CappResponse]{
 		}
 		return c.Status.Rollout.Phase
 	}, Wide: true},
+	{Header: "DRIFT", Value: driftState, Wide: true},
 	{Header: "RELOAD-ON-CHANGE", Value: func(c apitypes.CappResponse) string {
 		return fmt.Sprintf("%t", c.ReloadOnBoundResourceChange)
 	}, Wide: true},
@@ -290,6 +292,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 		rolloutAutoRB     bool
 		rolloutDeadline   string
 		reloadOnChange    bool
+		onDrift           string
 	)
 
 	cmd := &cobra.Command{
@@ -307,6 +310,9 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 				return fmt.Errorf("--namespace is required")
 			}
 			cappName := args[0]
+			if err := validateOnDrift(onDrift); err != nil {
+				return err
+			}
 
 			hasCustom := cmd.Flags().Changed("cpu-request") || cmd.Flags().Changed("cpu-limit") ||
 				cmd.Flags().Changed("memory-request") || cmd.Flags().Changed("memory-limit")
@@ -318,6 +324,11 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 			var current apitypes.CappResponse
 			if err := h.state.Client.Get(cmd.Context(), getPath, &current); err != nil {
 				return fmt.Errorf("fetching current state: %w", err)
+			}
+			if onDrift == drift.OnDriftRevert {
+				if err := h.revertDrift(cmd.Context(), getPath, &current); err != nil {
+					return err
+				}
 			}
 
 			// Seed request from current state to preserve all fields.
@@ -395,8 +406,8 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 
 			putPath := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s", cluster, ns, cappName)
 			var updated apitypes.CappResponse
-			if err := h.state.Client.Put(cmd.Context(), putPath, req, &updated); err != nil {
-				return err
+			if err := h.state.Client.Put(cmd.Context(), putPath+acceptQuery(onDrift), req, &updated); err != nil {
+				return explainDrift(err)
 			}
 			return h.render(cmd.OutOrStdout(), []apitypes.CappResponse{updated}, updated)
 		},
@@ -421,6 +432,7 @@ func (h *handler) RegisterUpdateCommand(parent *cobra.Command) {
 	cmd.Flags().Int64Var(&routeTimeoutSecs, "timeout-seconds", 0, "maximum request duration for the Capp route, in seconds")
 	addRolloutFlags(cmd, &rolloutStages, &rolloutAutoRB, &rolloutDeadline)
 	addReloadOnChangeFlag(cmd, &reloadOnChange)
+	addOnDriftFlag(cmd, &onDrift)
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames
 }
@@ -463,69 +475,6 @@ func (h *handler) RegisterDeleteCommand(parent *cobra.Command) {
 		},
 	}
 
-	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
-	parent.AddCommand(cmd)
-	cmd.ValidArgsFunction = h.completeCappNames
-}
-
-func (h *handler) RegisterSyncCommand(parent *cobra.Command) {
-	var disable, skipConfirm bool
-
-	cmd := &cobra.Command{
-		Use:     useWithName,
-		Aliases: h.Aliases(),
-		Short:   "Enable or disable Git sync for a Capp",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cluster := h.state.Cluster
-			ns := h.state.Namespace
-			if cluster == "" {
-				return fmt.Errorf("--cluster is required")
-			}
-			if ns == "" {
-				return fmt.Errorf("--namespace is required")
-			}
-			cappName := args[0]
-
-			if disable && !skipConfirm {
-				fmt.Fprintf(cmd.OutOrStdout(), "Disable Git sync for Capp %q? [y/N] ", cappName) //nolint:errcheck
-				var answer string
-				fmt.Fscan(cmd.InOrStdin(), &answer) //nolint:errcheck
-				if answer != "y" && answer != "Y" {
-					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.") //nolint:errcheck
-					return nil
-				}
-			}
-
-			path := fmt.Sprintf("/api/v1/clusters/%s/namespaces/%s/capps/%s/sync", cluster, ns, cappName)
-			var result apitypes.SyncResponse
-			var err error
-			if disable {
-				err = h.state.Client.Delete(cmd.Context(), path, &result)
-			} else {
-				err = h.state.Client.Post(cmd.Context(), path, nil, &result)
-			}
-			if err != nil {
-				return err
-			}
-
-			switch h.state.OutputFmt {
-			case outputJSON:
-				return output.PrintJSON(cmd.OutOrStdout(), result)
-			case outputYAML:
-				return output.PrintYAML(cmd.OutOrStdout(), result)
-			default:
-				if disable {
-					fmt.Fprintf(cmd.OutOrStdout(), "Git sync disabled for %q\n", cappName) //nolint:errcheck
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Synced %q to git (commit: %s, path: %s)\n", cappName, result.CommitSHA, result.Path) //nolint:errcheck
-				}
-			}
-			return nil
-		},
-	}
-
-	cmd.Flags().BoolVar(&disable, "disable", false, "disable Git sync")
 	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "skip confirmation prompt")
 	parent.AddCommand(cmd)
 	cmd.ValidArgsFunction = h.completeCappNames

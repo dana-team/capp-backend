@@ -90,13 +90,13 @@ func (h *handler) RegisterGetCommand(parent *cobra.Command) {
 	parent.AddCommand(cmd)
 }
 
-func (h *handler) RegisterCreateCommand(parent *cobra.Command)   {}
-func (h *handler) RegisterUpdateCommand(parent *cobra.Command)   {}
-func (h *handler) RegisterDeleteCommand(parent *cobra.Command)   {}
-func (h *handler) RegisterSyncCommand(parent *cobra.Command)     {}
-func (h *handler) RegisterMigrateCommand(parent *cobra.Command)  {}
-func (h *handler) RegisterRollbackCommand(parent *cobra.Command) {}
-func (h *handler) RegisterRolloutCommand(parent *cobra.Command)  {}
+func (h *handler) RegisterCreateCommand(parent *cobra.Command)        {}
+func (h *handler) RegisterUpdateCommand(parent *cobra.Command)        {}
+func (h *handler) RegisterDeleteCommand(parent *cobra.Command)        {}
+func (h *handler) RegisterMigrateCommand(parent *cobra.Command)       {}
+func (h *handler) RegisterRollbackCommand(parent *cobra.Command)      {}
+func (h *handler) RegisterRolloutCommand(parent *cobra.Command)       {}
+func (h *handler) RegisterDriftCommand(revert, accept *cobra.Command) {}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

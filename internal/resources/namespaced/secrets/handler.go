@@ -13,9 +13,12 @@ import (
 	"strings"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
+	"github.com/dana-team/capp-backend/pkg/api/drift"
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +28,7 @@ import (
 // Handler implements resources.ResourceHandler for Kubernetes Secrets.
 type Handler struct {
 	functions boundcapps.FunctionGuard
+	tracker   *tracking.Tracker
 }
 
 // New returns a ready-to-use secret Handler.
@@ -34,6 +38,13 @@ func New() *Handler { return &Handler{} }
 // secret. See boundcapps.FunctionGuard.
 func (h *Handler) WithFunctionGuard(enabled bool) *Handler {
 	h.functions.Enabled = enabled
+	return h
+}
+
+// WithTracker records the desired state of Secrets and reports their drift. A
+// nil tracker leaves both off.
+func (h *Handler) WithTracker(tracker *tracking.Tracker) *Handler {
+	h.tracker = tracker
 	return h
 }
 
@@ -54,6 +65,33 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	s.PUT("/:name", h.update)
 	s.DELETE("/:name", h.delete)
 	s.GET("/:name/bound", h.bound)
+
+	tracking.Actions{
+		Tracker:  h.tracker,
+		Kind:     desiredstate.KindSecret,
+		New:      func() client.Object { return &corev1.Secret{} },
+		Managed:  isManaged,
+		Reverted: restartBoundCapps,
+	}.Register(s)
+}
+
+func isManaged(object client.Object) bool {
+	return object.GetLabels()[consts.ManagedLabelKey] == consts.ManagedLabelValue
+}
+
+// restartBoundCapps restarts the opted-in Capps that have not yet been
+// restarted for the object's resourceVersion.
+func restartBoundCapps(c *gin.Context, k8sClient client.Client, object client.Object) error {
+	ctx := c.Request.Context()
+	bound, err := boundcapps.Find(ctx, k8sClient, object.GetNamespace(), boundcapps.KindSecret, object.GetName())
+	if err != nil {
+		return err
+	}
+	return boundcapps.TriggerRollouts(ctx, k8sClient, object.GetNamespace(), bound.ToReload, boundcapps.KindSecret, object.GetName(), object.GetResourceVersion())
+}
+
+func refOf(c *gin.Context) desiredstate.Ref {
+	return tracking.Ref(c, desiredstate.KindSecret, c.Param("namespace"), c.Param("name"))
 }
 
 func (h *Handler) listAll(c *gin.Context) {
@@ -64,7 +102,8 @@ func (h *Handler) listAll(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, convertToResponseList(secretList.Items))
+	drifts, missing := h.tracker.InspectAll(c, desiredstate.KindSecret, tracking.Objects(secretList.Items))
+	c.JSON(http.StatusOK, convertToResponseList(secretList.Items, drifts, missing))
 }
 
 // list handles GET /api/v1/clusters/:cluster/namespaces/:namespace/secrets.
@@ -84,7 +123,8 @@ func (h *Handler) list(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, convertToResponseList(secretList.Items))
+	drifts, missing := h.tracker.InspectList(c, desiredstate.KindSecret, namespace, tracking.Objects(secretList.Items))
+	c.JSON(http.StatusOK, convertToResponseList(secretList.Items, drifts, missing))
 }
 
 // listNames handles GET /api/v1/clusters/:cluster/namespaces/:namespace/secrets/names.
@@ -127,7 +167,7 @@ func (h *Handler) bound(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
+	if !isManaged(secret) {
 		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
 		return
 	}
@@ -181,22 +221,15 @@ func (h *Handler) create(c *gin.Context) {
 		Data: data,
 	}
 
+	write := h.tracker.Begin(c, tracking.Ref(c, desiredstate.KindSecret, namespace, secret.Name))
 	if err := k8sClient.Create(c.Request.Context(), secret); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
 
-	c.JSON(http.StatusCreated, SecretResponse{
-		Name:            secret.Name,
-		Namespace:       secret.Namespace,
-		Type:            string(secret.Type),
-		CreatedAt:       secret.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-		UID:             string(secret.UID),
-		ResourceVersion: secret.ResourceVersion,
-		Labels:          secret.Labels,
-		Annotations:     secret.Annotations,
-		Data:            bytesToStringMap(secret.Data),
-	})
+	resp := toResponse(secret)
+	resp.Warnings = write.Save(c, k8sClient, secret)
+	c.JSON(http.StatusCreated, resp)
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -210,26 +243,18 @@ func (h *Handler) get(c *gin.Context) {
 
 	secret := &corev1.Secret{}
 	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, secret); err != nil {
-		apierrors.Respond(c, err)
+		h.tracker.RespondReadError(c, refOf(c), nil, err)
 		return
 	}
 
-	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
-		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
+	if !isManaged(secret) {
+		h.tracker.RespondReadError(c, refOf(c), secret, apierrors.NewNotFound("secret", name))
 		return
 	}
 
-	c.JSON(http.StatusOK, SecretResponse{
-		Name:            secret.Name,
-		Namespace:       secret.Namespace,
-		Type:            string(secret.Type),
-		CreatedAt:       secret.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-		UID:             string(secret.UID),
-		ResourceVersion: secret.ResourceVersion,
-		Labels:          secret.Labels,
-		Annotations:     secret.Annotations,
-		Data:            bytesToStringMap(secret.Data),
-	})
+	resp := toResponse(secret)
+	resp.Drift = h.tracker.Inspect(c, refOf(c), secret)
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) update(c *gin.Context) {
@@ -253,7 +278,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
+	if !isManaged(secret) {
 		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
 		return
 	}
@@ -263,9 +288,15 @@ func (h *Handler) update(c *gin.Context) {
 		data[k] = []byte(v)
 	}
 
+	write := h.tracker.Begin(c, refOf(c))
+	reverted, ok := write.ResolveDrift(c, secret)
+	if !ok {
+		return
+	}
+
 	// Skip the write when nothing changed so the resourceVersion, which keys
 	// Capp restarts, stays the same.
-	if !maps.EqualFunc(secret.Data, data, bytes.Equal) {
+	if reverted || !maps.EqualFunc(secret.Data, data, bytes.Equal) {
 		secret.Data = data
 		if err := k8s.Update(c.Request.Context(), secret); err != nil {
 			apierrors.Respond(c, err)
@@ -273,30 +304,20 @@ func (h *Handler) update(c *gin.Context) {
 		}
 	}
 
+	warnings := write.Save(c, k8s, secret)
+
 	// Restart opted-in Capps that have not yet been restarted for this
 	// resourceVersion. This is not gated on the data changing: an unchanged
 	// PUT keeps the resourceVersion, so it restarts only Capps a previous
 	// attempt failed to restart, which makes retrying a failed PUT safe.
-	bound, err := boundcapps.Find(c.Request.Context(), k8s, namespace, boundcapps.KindSecret, name)
-	if err == nil {
-		err = boundcapps.TriggerRollouts(c.Request.Context(), k8s, namespace, bound.ToReload, boundcapps.KindSecret, name, secret.ResourceVersion)
-	}
-	if err != nil {
+	if err := restartBoundCapps(c, k8s, secret); err != nil {
 		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("secret updated, but restarting bound Capps failed: %w", err)))
 		return
 	}
 
-	c.JSON(http.StatusOK, SecretResponse{
-		Name:            secret.Name,
-		Namespace:       secret.Namespace,
-		Type:            string(secret.Type),
-		CreatedAt:       secret.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-		UID:             string(secret.UID),
-		ResourceVersion: secret.ResourceVersion,
-		Labels:          secret.Labels,
-		Annotations:     secret.Annotations,
-		Data:            bytesToStringMap(secret.Data),
-	})
+	resp := toResponse(secret)
+	resp.Warnings = warnings
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -314,7 +335,7 @@ func (h *Handler) delete(c *gin.Context) {
 		return
 	}
 
-	if value, ok := secret.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
+	if !isManaged(secret) {
 		apierrors.Respond(c, apierrors.NewNotFound("secret", name))
 		return
 	}
@@ -338,31 +359,37 @@ func (h *Handler) delete(c *gin.Context) {
 		return
 	}
 
+	write := h.tracker.Begin(c, refOf(c))
 	if err := k8sClient.Delete(c.Request.Context(), secret); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
+	tracking.RespondDeleted(c, write.Delete(c))
+}
 
-	c.Status(http.StatusNoContent)
+// toResponse converts a corev1.Secret into its API response.
+func toResponse(secret *corev1.Secret) SecretResponse {
+	return SecretResponse{
+		Name:            secret.Name,
+		Namespace:       secret.Namespace,
+		Type:            string(secret.Type),
+		CreatedAt:       secret.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		UID:             string(secret.UID),
+		ResourceVersion: secret.ResourceVersion,
+		Labels:          secret.Labels,
+		Annotations:     secret.Annotations,
+		Data:            bytesToStringMap(secret.Data),
+	}
 }
 
 // convertToResponseList transforms a list of corev1.Secret objects into a SecretListResponse for the API response.
-func convertToResponseList(secrets []corev1.Secret) SecretListResponse {
+func convertToResponseList(secrets []corev1.Secret, drifts []*drift.Drift, missing []drift.Missing) SecretListResponse {
 	items := make([]SecretResponse, len(secrets))
-	for i, s := range secrets {
-		items[i] = SecretResponse{
-			Name:            s.Name,
-			Namespace:       s.Namespace,
-			Type:            string(s.Type),
-			CreatedAt:       s.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-			UID:             string(s.UID),
-			ResourceVersion: s.ResourceVersion,
-			Labels:          s.Labels,
-			Annotations:     s.Annotations,
-			Data:            bytesToStringMap(s.Data),
-		}
+	for i := range secrets {
+		items[i] = toResponse(&secrets[i])
+		items[i].Drift = drifts[i]
 	}
-	return SecretListResponse{Items: items, Total: len(items)}
+	return SecretListResponse{Items: items, Total: len(items), Missing: missing}
 }
 
 // bytesToStringMap decodes the base64-stored []byte values in a Secret's Data

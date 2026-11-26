@@ -52,6 +52,10 @@ Configuration is loaded from a YAML file specified with the `--config` flag (e.g
 
 `authorization.mode` defaults to `kubernetes`. With LDAP, OpenShift or passthrough authentication, `backend-policy` uses application viewer/editor assignments and configured namespace operators, with one backend credential per cluster and no user impersonation. See the [adoption and operations guide](docs/backend-policy.md) for configuration, Secret-read access, infrastructure permissions, namespace API examples, and manual cutover/rollback. This describes the implementation in this source tree, not release availability or completed deployment validation.
 
+### Desired state and drift
+
+With `desiredState.enabled`, the backend records the desired state of Capps, ConfigMaps, Secrets and namespaces in MongoDB and reports drift when they are read. See the [desired state guide](docs/desired-state.md) for what is compared, how to resolve drift, how to enable it on an existing installation, and how to move off Git sync. The [design document](docs/desired-state-design.md) explains the decisions behind it.
+
 ### Full reference
 
 ```yaml
@@ -121,21 +125,20 @@ tracing:
   serviceName: "capp-backend"
   sampleRate: 0.1
 
-gitops:
+desiredState:
   enabled: false
-  repoURL: "https://github.com/org/capp-gitops.git"
-  branch: "main"
-  authMethod: "token"    # "token" or "ssh"
-  token: ""              # inject via CAPP_GITOPS_TOKEN
-  sshKeyPath: ""         # path to SSH private key (when authMethod is "ssh")
-  pathPrefix: "sites"    # prefix for values files in the repo
-  timeoutSeconds: 20     # timeout for each git sync/delete operation
+  mongo:
+    uri: ""                # mongodb:// or mongodb+srv://; inject via CAPP_DESIREDSTATE_MONGO_URI
+    database: "capp"
+    timeoutSeconds: 3      # bounds every MongoDB operation
+  encryption:
+    activeKeyID: ""        # key that encrypts new Secret values
+    keys: ""               # "<id>=<base64 of 32 bytes>,..."; inject via CAPP_DESIREDSTATE_ENCRYPTION_KEYS
 
 clusters:
   - name: "local"                 # Used as path parameter in /api/v1/clusters/:cluster
     displayName: "Local Cluster"  # Human-readable label for the UI
     allowedNamespaces: []         # Empty = no extra name filter; mode-specific authorization still applies
-    gitOpsPath: ""                # Sub-path within gitops.pathPrefix for this cluster
     credential:
       # Option A: kubeconfig file (Kubernetes-mode passthrough)
       kubeconfigPath: "/home/user/.kube/config"
@@ -295,10 +298,11 @@ The full OpenAPI 3.1 spec is embedded in the binary and served at runtime:
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Get a Capp |
 | `PUT` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Update a Capp |
 | `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name` | ✓ | Delete a Capp |
-| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Enable Git sync / re-sync |
-| `DELETE` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/sync` | ✓ | Disable Git sync |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/migrate` | ✓ | Migrate Capp to another cluster/namespace; requires `targetHostname` on copy when source has a hostname |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/capps/:name/logs` | ✓ | Live logs of the Capp's pods as Server-Sent Events (`?pod=`, `?container=`, `?tailLines=`, or `?podSinceTime=<pod>=<time>` per pod plus `?sinceTime=` to resume); Kubernetes authorization mode only, denied in backend-policy mode |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/{capps,configmaps,secrets}/:name/drift/{revert,accept}` | ✓ | Resolve drift of one object; 501 unless `desiredState.enabled` |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/drift/{revert,accept}` | ✓ | Resolve drift of the namespace itself |
+| `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/drift/adopt` | ✓ | Record everything in the namespace that has no desired state |
 | `GET` | `/api/v1/clusters/:cluster/configmaps` | ✓ | List all ConfigMaps across namespaces |
 | `GET` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | List ConfigMaps in a namespace |
 | `POST` | `/api/v1/clusters/:cluster/namespaces/:namespace/configmaps` | ✓ | Create a ConfigMap |
@@ -357,7 +361,7 @@ Notes:
 
 - **Full replace on update.** `PUT` replaces the list, like `env` and volumes. Omit the field or send `[]` to remove all pull secrets.
 - **Validation.** Names must be valid DNS-1123 subdomains and unique, otherwise the request fails with 400. The backend doesn't check that the Secret exists or has the right type; a missing Secret shows up later as an image pull error on the revision.
-- **Migration and Git sync.** Migrate copies all managed Secrets in the namespace, including pull secrets created through the API. GitOps values files embed the Capp spec, so `imagePullSecrets` is synced too.
+- **Migration.** Migrate copies all managed Secrets in the namespace, including pull secrets created through the API.
 
 ### cfunc (function as a service)
 
@@ -552,7 +556,7 @@ The server exposes `POST /mcp` (Streamable HTTP transport) and `GET /healthz` (l
 |---|---|---|
 | `clusters` | `cluster_list`, `cluster_get` | Discover valid `cluster` values for every other tool |
 | `namespaces` | `namespace_list`, `namespace_create`, `namespace_update`, `namespace_add_users` | `namespace_update` is a full replace; use `namespace_add_users` to append without disturbing existing users |
-| `capps` | `capp_list`, `capp_get`, `capp_create`, `capp_update`, `capp_delete`, `capp_sync`, `capp_sync_disable`, `capp_rollout`, `capp_rollout_strategy_remove` | `capp_update` is a full replace, not a patch — call `capp_get` first and send back the full desired state. The exception is `routeSpec.rolloutStrategy`, which only `capp_rollout_strategy_remove` removes, and that moves live traffic |
+| `capps` | `capp_list`, `capp_get`, `capp_create`, `capp_update`, `capp_delete`, `capp_rollout`, `capp_rollout_strategy_remove` | `capp_update` is a full replace, not a patch — call `capp_get` first and send back the full desired state. The exception is `routeSpec.rolloutStrategy`, which only `capp_rollout_strategy_remove` removes, and that moves live traffic |
 | `configmaps` | `configmap_list`, `configmap_get`, `configmap_create`, `configmap_update`, `configmap_delete`, `configmap_bound` | Only ConfigMaps labeled `dana.io/capp-managed=true` are visible. `configmap_bound` lists the Capps that reference one (deletion is refused while any do) and which of them restart on update |
 | `secrets` | `secret_list`, `secret_get`, `secret_bound` | **Read-only.** Returns metadata only (name, type, labels, data key names) — secret values are never exposed. `secret_bound` lists the Capps that reference a Secret and which of them restart on update |
 
@@ -592,14 +596,15 @@ internal/
 │   └── root/       # Root Cobra command, PersistentPreRunE, token refresh
 ├── cluster/        # ClusterManager — multi-cluster routing and health checks
 ├── config/         # Config structs, Viper loading, and validation
-├── gitops/         # GitOps client — clone, commit, push per-capp values files
+├── desiredstate/   # Desired state records: projection, comparison, Secret encryption, MongoDB store
 ├── mcpserver/      # capp-mcp: MCP tool sets (clusters, namespaces, capps, configmaps, secrets), auth middleware
 ├── middleware/      # Gin middleware: auth, cluster resolution, CORS, logging, metrics, rate limiting
 ├── resources/      # Resource handler registry
 │   ├── cluster/
 │   │   └── namespaces/  # Namespace list + create handler
+│   ├── tracking/        # Connects handlers to desired state: drift on reads, revert, accept, adopt
 │   └── namespaced/
-│       ├── capps/       # Capp CRUD, sync, and migrate handler
+│       ├── capps/       # Capp CRUD and migrate handler
 │       ├── configmaps/  # ConfigMap CRUD handler
 │       ├── secrets/     # Secret CRUD handler
 │       ├── cfunc/pools/ # cfunc pool CRUD handler (Fission Environments; flavors and sizes from config)
@@ -608,8 +613,7 @@ internal/
 pkg/k8s/            # Kubernetes scheme builder (registers CRD types)
 helm/
 ├── capp-backend/   # Helm chart for the server
-├── capp-mcp/       # Helm chart for the capp-mcp server
-└── capp-template/  # Generic Helm chart for deploying a single Capp resource
+└── capp-mcp/       # Helm chart for the capp-mcp server
 ```
 
 ## Kubernetes Deployment

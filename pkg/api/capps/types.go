@@ -1,12 +1,15 @@
 // Package capps holds the Capp request/response DTOs of the REST API.
 //
-// It imports only the shared DTOs in pkg/api/common, so clients (cappctl,
+// It imports only the shared DTOs in pkg/api/common and pkg/api/drift, so clients (cappctl,
 // capp-mcp) can share these types without pulling in the server handler and
 // its Kubernetes/Gin dependencies.
 // The handler package internal/resources/namespaced/capps aliases them.
 package capps
 
-import "github.com/dana-team/capp-backend/pkg/api/common"
+import (
+	"github.com/dana-team/capp-backend/pkg/api/common"
+	"github.com/dana-team/capp-backend/pkg/api/drift"
+)
 
 // ── Request / Response DTOs ───────────────────────────────────────────────────
 // These types are the public API contract between the backend and the frontend.
@@ -29,6 +32,8 @@ type (
 	EnvVar             = common.EnvVar
 	SecretVolume       = common.SecretVolume
 	ConfigMapVolume    = common.ConfigMapVolume
+	Warning            = common.Warning
+	DeleteResponse     = common.DeleteResponse
 )
 
 // VolumeMount maps a volume into a container at a path.
@@ -265,8 +270,12 @@ type CappResponse struct {
 	BareCappResponse
 	Status CappStatusResponse `json:"status"`
 
-	// Warnings reports side effects that failed while the requested cluster operation succeeded. for example, capp gitops backup operation failure.
+	// Warnings reports side effects that failed while the requested cluster operation succeeded, for example recording the desired state.
 	Warnings []Warning `json:"warnings,omitempty"`
+
+	// Drift compares the Capp with its recorded desired state. It is omitted
+	// when desired state is disabled.
+	Drift *drift.Drift `json:"drift,omitempty"`
 }
 
 // CappRevisionResponse is a historical snapshot of a Capp, recorded by the
@@ -276,20 +285,14 @@ type CappRevisionResponse struct {
 	RevisionNumber int `json:"revisionNumber"`
 }
 
-// Warning is a non-fatal problem attached to a successful response.
-type Warning struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-type DeleteResponse struct {
-	Warnings []Warning `json:"warnings,omitempty"`
-}
-
 // CappListResponse is the envelope returned by the list endpoints.
 type CappListResponse struct {
 	Items []CappResponse `json:"items"`
 	Total int            `json:"total"`
+
+	// Missing lists Capps that have a recorded desired state but no longer
+	// exist. They are not counted in Total.
+	Missing []drift.Missing `json:"missing,omitempty"`
 }
 
 // CappRevisionListResponse is the envelope returned by the revision list endpoint.
@@ -327,11 +330,7 @@ type MigrateResponse struct {
 	SourceDeleted    bool     `json:"sourceDeleted"`
 	CopiedSecrets    []string `json:"copiedSecrets,omitempty"`
 	CopiedConfigMaps []string `json:"copiedConfigMaps,omitempty"`
-}
 
-// SyncResponse is the JSON body returned by the sync endpoints.
-type SyncResponse struct {
-	Enabled   bool   `json:"enabled"`
-	CommitSHA string `json:"commitSha,omitempty"`
-	Path      string `json:"path,omitempty"`
+	// Warnings reports desired states that could not be recorded.
+	Warnings []Warning `json:"warnings,omitempty"`
 }

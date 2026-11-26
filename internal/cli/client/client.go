@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dana-team/capp-backend/pkg/api/drift"
 	"github.com/dana-team/capp-backend/pkg/clientversion"
 )
 
@@ -19,6 +20,20 @@ type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Status  int    `json:"status"`
+
+	// Details is the structured context of some errors.
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+// Drift returns the drift an error carries, or nil.
+func (e *APIError) Drift() *drift.Drift {
+	var details struct {
+		Drift *drift.Drift `json:"drift"`
+	}
+	if len(e.Details) == 0 || json.Unmarshal(e.Details, &details) != nil {
+		return nil
+	}
+	return details.Drift
 }
 
 func (e *APIError) Error() string {

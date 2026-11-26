@@ -24,10 +24,6 @@ type ClusterMeta struct {
 	// Set at startup by probing the route.openshift.io API group.
 	IsOpenShift bool `json:"isOpenShift"`
 
-	// GitOpsPath is the directory name used in the GitOps repository path:
-	// <pathPrefix>/<gitOpsPath>/<namespace>/<cappName>.yaml
-	GitOpsPath string `json:"gitOpsPath"`
-
 	// AllowedNamespaces is a copy of the config value. If non-empty, only the
 	// listed namespaces are accessible through this cluster entry.
 	AllowedNamespaces []string `json:"-"`

@@ -17,7 +17,6 @@ import (
 // default: NewInternal, for example, wraps whatever error a lower layer
 // returned, which can carry credentials or other request-specific detail.
 var causeSafeToLog = map[string]bool{
-	apierrors.CodeGitopsFailed:          true,
 	apierrors.CodePrometheusQueryFailed: true,
 	apierrors.CodePrometheusTimeout:     true,
 }

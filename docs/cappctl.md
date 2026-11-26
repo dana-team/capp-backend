@@ -84,7 +84,7 @@ LDAP contexts store the access token, expiry, and context metadata only. They ne
 
 Authorization mode is selected by the server, independently of the CLI's authentication mode. Backend-policy supports all three authentication providers with unchanged login commands: LDAP login and explicit re-login after expiry, OpenShift browser/password/direct-token login and refresh, or passthrough token import. No new authorization flag or second migration token is required. Backend-policy assignments replace user RoleBindings for API access; passthrough still requires a caller token accepted by the requested target. `GET /api/v1/auth/mode` reports authentication mode, not authorization mode.
 
-Viewer/editor grants control reads; editor is required for mutations and Git sync. Operator status alone grants no Capp access. All-namespace lists contain only authorized namespaces inside the cluster allowlist. Migration requires editor at both endpoints, including copy-only requests. A 403 `POLICY_DENIED` requires checking verified identity, assignments and namespace boundaries; a 503 `POLICY_UNAVAILABLE` can reflect initial synchronization or pending namespace association.
+Viewer/editor grants control reads; editor is required for mutations. Operator status alone grants no Capp access. All-namespace lists contain only authorized namespaces inside the cluster allowlist. Migration requires editor at both endpoints, including copy-only requests. A 403 `POLICY_DENIED` requires checking verified identity, assignments and namespace boundaries; a 503 `POLICY_UNAVAILABLE` can reflect initial synchronization or pending namespace association.
 
 OpenShift verifies tokens at its home authority; passthrough verifies at each requested target and may resolve the same token to different users/groups. In backend-policy mode, rejected identities return 401; unavailable reviewers return 503 `INTERNAL_ERROR` with `identity verification is unavailable`. Passthrough cluster discovery omits unavailable targets when another target accepts; the response does not identify these omissions. It returns 503 if none accept and any reviewer is unavailable, 401 if all reject, or an empty successful list when accepted identities have no visible targets. Migration conceals destination rejection or reviewer outage behind 403 `POLICY_DENIED`; source reviewer outages retain 503. See [provider verification](backend-policy.md#provider-verification-and-discovery).
 
@@ -492,6 +492,29 @@ cappctl update capps my-app --cluster prod --namespace my-team --state disabled 
 cappctl update capps my-app --cluster prod --namespace my-team --env DB_HOST=newhost --env DB_PORT=5433
 ```
 
+#### When the Capp has drifted
+
+If [desired state](desired-state.md) is enabled and somebody changed the Capp directly in the cluster, `update` fails and lists the differences. Choose what to do with them:
+
+```bash
+cappctl update capps my-app --image web:2 --on-drift accept   # keep the live changes
+cappctl update capps my-app --image web:2 --on-drift revert   # discard them first
+```
+
+`rollout capps <name> --remove-strategy` takes the same flag. Pipelines that must not stop on drift need to pass one of the two values.
+
+### Drift
+
+Requires a backend with [desired state](desired-state.md) enabled. `get capps -o wide` has a `DRIFT` column.
+
+```bash
+cappctl drift revert capps my-app [-y]   # make the cluster match the desired state
+cappctl drift accept capps my-app [-y]   # make the desired state match the cluster
+cappctl drift adopt                      # record everything in the namespace that has no desired state
+```
+
+`revert` and `accept` show the differences and ask for confirmation. They fail when the Capp changes between showing and confirming. `revert` recreates a Capp that is missing.
+
 ### Delete
 
 ```
@@ -513,33 +536,6 @@ cappctl delete capps my-app --cluster prod --namespace my-team
 # → Delete Capp "my-app" in namespace "my-team" on cluster "prod"? [y/N]
 
 cappctl delete capps my-app --cluster prod --namespace my-team -y
-```
-
-If Git sync is enabled for the Capp, its values file is also deleted from the GitOps repository.
-
-### Sync
-
-```
-cappctl sync capps <name> [flags]
-```
-
-Enables Git sync for a Capp, or re-syncs it. While enabled, updates made through capp-backend are committed to the GitOps repository.
-
-**Flags:**
-
-| Flag        | Short | Description                                   |
-|-------------|-------|-----------------------------------------------|
-| `--disable` |       | Disable Git sync and delete the values file   |
-| `--yes`     | `-y`  | Skip confirmation prompt (with `--disable`)   |
-
-**Example:**
-
-```bash
-cappctl sync capps my-app --cluster prod --namespace my-team
-# → Synced "my-app" to git (commit: a1b2c3d, path: sites/prod/my-team/my-app.yaml)
-
-cappctl sync capps my-app --cluster prod --namespace my-team --disable -y
-# → Git sync disabled for "my-app"
 ```
 
 ### Migrate

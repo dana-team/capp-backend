@@ -12,9 +12,12 @@ import (
 	"strings"
 
 	"github.com/dana-team/capp-backend/internal/apierrors"
+	"github.com/dana-team/capp-backend/internal/desiredstate"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced"
 	"github.com/dana-team/capp-backend/internal/resources/namespaced/boundcapps"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
+	"github.com/dana-team/capp-backend/pkg/api/drift"
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,6 +27,7 @@ import (
 // Handler implements resources.ResourceHandler for Kubernetes ConfigMaps.
 type Handler struct {
 	functions boundcapps.FunctionGuard
+	tracker   *tracking.Tracker
 }
 
 // New returns a ready-to-use config map Handler.
@@ -33,6 +37,13 @@ func New() *Handler { return &Handler{} }
 // configmap. See boundcapps.FunctionGuard.
 func (h *Handler) WithFunctionGuard(enabled bool) *Handler {
 	h.functions.Enabled = enabled
+	return h
+}
+
+// WithTracker records the desired state of ConfigMaps and reports their drift. A
+// nil tracker leaves both off.
+func (h *Handler) WithTracker(tracker *tracking.Tracker) *Handler {
+	h.tracker = tracker
 	return h
 }
 
@@ -53,6 +64,33 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	cm.PUT("/:name", h.update)
 	cm.DELETE("/:name", h.delete)
 	cm.GET("/:name/bound", h.bound)
+
+	tracking.Actions{
+		Tracker:  h.tracker,
+		Kind:     desiredstate.KindConfigMap,
+		New:      func() client.Object { return &corev1.ConfigMap{} },
+		Managed:  isManaged,
+		Reverted: restartBoundCapps,
+	}.Register(cm)
+}
+
+func isManaged(object client.Object) bool {
+	return object.GetLabels()[consts.ManagedLabelKey] == consts.ManagedLabelValue
+}
+
+// restartBoundCapps restarts the opted-in Capps that have not yet been
+// restarted for the object's resourceVersion.
+func restartBoundCapps(c *gin.Context, k8sClient client.Client, object client.Object) error {
+	ctx := c.Request.Context()
+	bound, err := boundcapps.Find(ctx, k8sClient, object.GetNamespace(), boundcapps.KindConfigMap, object.GetName())
+	if err != nil {
+		return err
+	}
+	return boundcapps.TriggerRollouts(ctx, k8sClient, object.GetNamespace(), bound.ToReload, boundcapps.KindConfigMap, object.GetName(), object.GetResourceVersion())
+}
+
+func refOf(c *gin.Context) desiredstate.Ref {
+	return tracking.Ref(c, desiredstate.KindConfigMap, c.Param("namespace"), c.Param("name"))
 }
 
 func (h *Handler) listAll(c *gin.Context) {
@@ -62,7 +100,8 @@ func (h *Handler) listAll(c *gin.Context) {
 	}) {
 		return
 	}
-	c.JSON(http.StatusOK, convertToResponseList(configMapList.Items))
+	drifts, missing := h.tracker.InspectAll(c, desiredstate.KindConfigMap, tracking.Objects(configMapList.Items))
+	c.JSON(http.StatusOK, convertToResponseList(configMapList.Items, drifts, missing))
 }
 
 // list handles GET /api/v1/clusters/:cluster/namespaces/:namespace/configmaps.
@@ -80,7 +119,8 @@ func (h *Handler) list(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, convertToResponseList(configMapList.Items))
+	drifts, missing := h.tracker.InspectList(c, desiredstate.KindConfigMap, namespace, tracking.Objects(configMapList.Items))
+	c.JSON(http.StatusOK, convertToResponseList(configMapList.Items, drifts, missing))
 }
 
 // listNames handles GET /api/v1/clusters/:cluster/namespaces/:namespace/configmaps/names.
@@ -120,7 +160,7 @@ func (h *Handler) bound(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
+	if !isManaged(configMap) {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
@@ -162,20 +202,15 @@ func (h *Handler) create(c *gin.Context) {
 		Data: req.Data,
 	}
 
+	write := h.tracker.Begin(c, tracking.Ref(c, desiredstate.KindConfigMap, namespace, configMap.Name))
 	if err := k8sClient.Create(c.Request.Context(), configMap); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, ConfigMapResponse{
-		Name:            configMap.Name,
-		Namespace:       configMap.Namespace,
-		Data:            configMap.Data,
-		CreatedAt:       configMap.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-		UID:             string(configMap.UID),
-		ResourceVersion: configMap.ResourceVersion,
-		Labels:          configMap.Labels,
-		Annotations:     configMap.Annotations,
-	})
+
+	resp := toResponse(configMap)
+	resp.Warnings = write.Save(c, k8sClient, configMap)
+	c.JSON(http.StatusCreated, resp)
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -188,23 +223,16 @@ func (h *Handler) get(c *gin.Context) {
 
 	configMap := &corev1.ConfigMap{}
 	if err := k8sClient.Get(c.Request.Context(), client.ObjectKey{Namespace: namespace, Name: name}, configMap); err != nil {
-		apierrors.Respond(c, err)
+		h.tracker.RespondReadError(c, refOf(c), nil, err)
 		return
 	}
-	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
-		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
+	if !isManaged(configMap) {
+		h.tracker.RespondReadError(c, refOf(c), configMap, apierrors.NewNotFound("configmap", name))
 		return
 	}
-	c.JSON(http.StatusOK, ConfigMapResponse{
-		Name:            configMap.Name,
-		Namespace:       configMap.Namespace,
-		Data:            configMap.Data,
-		CreatedAt:       configMap.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-		UID:             string(configMap.UID),
-		ResourceVersion: configMap.ResourceVersion,
-		Labels:          configMap.Labels,
-		Annotations:     configMap.Annotations,
-	})
+	resp := toResponse(configMap)
+	resp.Drift = h.tracker.Inspect(c, refOf(c), configMap)
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) update(c *gin.Context) {
@@ -225,13 +253,19 @@ func (h *Handler) update(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
+	if !isManaged(configMap) {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
+	write := h.tracker.Begin(c, refOf(c))
+	reverted, ok := write.ResolveDrift(c, configMap)
+	if !ok {
+		return
+	}
+
 	// Skip the write when nothing changed so the resourceVersion, which keys
 	// Capp restarts, stays the same.
-	if !maps.Equal(configMap.Data, req.Data) {
+	if reverted || !maps.Equal(configMap.Data, req.Data) {
 		configMap.Data = req.Data
 		if err := k8s.Update(c.Request.Context(), configMap); err != nil {
 			apierrors.Respond(c, err)
@@ -239,28 +273,19 @@ func (h *Handler) update(c *gin.Context) {
 		}
 	}
 
+	warnings := write.Save(c, k8s, configMap)
+
 	// Restart opted-in Capps that have not yet been restarted for this
 	// resourceVersion. This is not gated on the data changing: an unchanged
 	// PUT keeps the resourceVersion, so it restarts only Capps a previous
 	// attempt failed to restart, which makes retrying a failed PUT safe.
-	bound, err := boundcapps.Find(c.Request.Context(), k8s, namespace, boundcapps.KindConfigMap, name)
-	if err == nil {
-		err = boundcapps.TriggerRollouts(c.Request.Context(), k8s, namespace, bound.ToReload, boundcapps.KindConfigMap, name, configMap.ResourceVersion)
-	}
-	if err != nil {
+	if err := restartBoundCapps(c, k8s, configMap); err != nil {
 		apierrors.Respond(c, apierrors.NewInternal(fmt.Errorf("configmap updated, but restarting bound Capps failed: %w", err)))
 		return
 	}
-	c.JSON(http.StatusOK, ConfigMapResponse{
-		Name:            configMap.Name,
-		Namespace:       configMap.Namespace,
-		Data:            configMap.Data,
-		CreatedAt:       configMap.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-		UID:             string(configMap.UID),
-		ResourceVersion: configMap.ResourceVersion,
-		Labels:          configMap.Labels,
-		Annotations:     configMap.Annotations,
-	})
+	resp := toResponse(configMap)
+	resp.Warnings = warnings
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -276,7 +301,7 @@ func (h *Handler) delete(c *gin.Context) {
 		apierrors.Respond(c, err)
 		return
 	}
-	if value, ok := configMap.Labels[consts.ManagedLabelKey]; !ok || value != consts.ManagedLabelValue {
+	if !isManaged(configMap) {
 		apierrors.Respond(c, apierrors.NewNotFound("configmap", name))
 		return
 	}
@@ -298,27 +323,34 @@ func (h *Handler) delete(c *gin.Context) {
 		apierrors.Respond(c, apierrors.NewConflict(fmt.Sprintf("configmap %s is still in use by functions: %s", name, strings.Join(functions, ", "))))
 		return
 	}
+	write := h.tracker.Begin(c, refOf(c))
 	if err := k8sClient.Delete(c.Request.Context(), configMap); err != nil {
 		apierrors.Respond(c, err)
 		return
 	}
-	c.Status(http.StatusNoContent)
+	tracking.RespondDeleted(c, write.Delete(c))
+}
+
+// toResponse converts a corev1.ConfigMap into its API response.
+func toResponse(configMap *corev1.ConfigMap) ConfigMapResponse {
+	return ConfigMapResponse{
+		Name:            configMap.Name,
+		Namespace:       configMap.Namespace,
+		CreatedAt:       configMap.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		UID:             string(configMap.UID),
+		ResourceVersion: configMap.ResourceVersion,
+		Labels:          configMap.Labels,
+		Annotations:     configMap.Annotations,
+		Data:            configMap.Data,
+	}
 }
 
 // convertToResponseList transforms a list of corev1.ConfigMap objects into a ConfigMapListResponse for the API response.
-func convertToResponseList(configMaps []corev1.ConfigMap) ConfigMapListResponse {
+func convertToResponseList(configMaps []corev1.ConfigMap, drifts []*drift.Drift, missing []drift.Missing) ConfigMapListResponse {
 	items := make([]ConfigMapResponse, len(configMaps))
-	for i, cm := range configMaps {
-		items[i] = ConfigMapResponse{
-			Name:            cm.Name,
-			Namespace:       cm.Namespace,
-			CreatedAt:       cm.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
-			UID:             string(cm.UID),
-			ResourceVersion: cm.ResourceVersion,
-			Labels:          cm.Labels,
-			Annotations:     cm.Annotations,
-			Data:            cm.Data,
-		}
+	for i := range configMaps {
+		items[i] = toResponse(&configMaps[i])
+		items[i].Drift = drifts[i]
 	}
-	return ConfigMapListResponse{Items: items, Total: len(items)}
+	return ConfigMapListResponse{Items: items, Total: len(items), Missing: missing}
 }

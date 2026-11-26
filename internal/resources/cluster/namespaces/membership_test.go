@@ -16,6 +16,7 @@ import (
 	"github.com/dana-team/capp-backend/internal/middleware"
 	"github.com/dana-team/capp-backend/internal/middleware/policy"
 	"github.com/dana-team/capp-backend/internal/resources/consts"
+	"github.com/dana-team/capp-backend/internal/resources/tracking"
 	"github.com/dana-team/capp-backend/internal/testutil"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -346,6 +347,11 @@ func membershipRouter(t *testing.T, storage client.Client, user string, logger *
 
 func membershipRouterWithStore(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, store *authorization.Store, allowedNamespaces ...string) *gin.Engine {
 	t.Helper()
+	return membershipRouterWithTracker(t, storage, user, logger, before, store, nil, allowedNamespaces...)
+}
+
+func membershipRouterWithTracker(t *testing.T, storage client.Client, user string, logger *zap.Logger, before gin.HandlerFunc, store *authorization.Store, tracker *tracking.Tracker, allowedNamespaces ...string) *gin.Engine {
+	t.Helper()
 	boundary, boundaryErr := cluster.New(nil, nil, zap.NewNop())
 	require.NoError(t, boundaryErr)
 	admin, err := NewAdministration(storage, "capp-system", nil, []string{"system:"})
@@ -366,7 +372,7 @@ func membershipRouterWithStore(t *testing.T, storage client.Client, user string,
 	if before != nil {
 		r.Use(before)
 	}
-	h := NewWithAdministration(logger, map[string]*Administration{"c1": admin})
+	h := NewWithAdministration(logger, map[string]*Administration{"c1": admin}).WithTracker(tracker)
 	group := r.Group("/api/v1/clusters/:cluster")
 	h.RegisterRoutes(group)
 	return r

@@ -1,8 +1,8 @@
 package k8s
 
-// LabelBackupToGit is set on a Capp that has been backed up to the GitOps
-// repository. It marks the Capp as participating in GitOps sync and allows
-// filtering backed-up Capps via label selectors.
+// LabelBackupToGit was set on a Capp by the removed Git sync. Nothing sets or
+// reads it any more; desired state ignores it, so that removing the leftover
+// label from a Capp is not drift.
 const LabelBackupToGit = "rcs.dana.io/backup-to-git"
 
 // LabelCappName is set by the operator on every CappRevision and holds the
@@ -13,9 +13,3 @@ const LabelCappName = "rcs.dana.io/cappName"
 // promote:<revision>, abort:<revision> or retry:<revision>. The operator
 // removes it once processed. Its own constant is in an internal package.
 const AnnotationRollout = "rcs.dana.io/rollout"
-
-// HasBackupLabel reports whether the given label map contains the
-// backup-to-git marker.
-func HasBackupLabel(labels map[string]string) bool {
-	return labels != nil && labels[LabelBackupToGit] == "true"
-}
